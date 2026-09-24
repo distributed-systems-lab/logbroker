@@ -1,0 +1,17 @@
+# Java build outputs
+target/
+build/
+.gradle/
+*.class
+
+# Local IDE settings
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+
+# Runtime data and logs
+/data/
+/logs/
+*.log
