@@ -2,11 +2,6 @@ package vn.huyqt.logbroker.storage;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.CharBuffer;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CodingErrorAction;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.zip.CRC32C;
@@ -26,35 +21,13 @@ final class BatchCodec {
         }
         try {
             Math.addExact(baseOffset, records.size());
-            long size = HEADER_BYTES;
-            for (LogRecord record : records) {
-                Objects.requireNonNull(record, "record");
-                size = Math.addExact(size, 20);
-                size = Math.addExact(size, length(record.key()));
-                size = Math.addExact(size, length(record.value()));
-                for (RecordHeader header : record.headers()) {
-                    size = Math.addExact(size, 8);
-                    size = Math.addExact(size, utf8(header.key()).length);
-                    size = Math.addExact(size, length(header.value()));
-                }
-                if (size > maxBatchBytes) throw new IllegalArgumentException("Batch too large");
-            }
+            long size = Math.addExact(HEADER_BYTES, RecordPayloadCodec.encodedSize(records));
             if (size > maxBatchBytes) throw new IllegalArgumentException("Batch too large");
             byte[] bytes = new byte[(int) size];
             ByteBuffer b = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
             b.put(MAGIC).putShort((short) 1).putInt(bytes.length);
             b.putLong(baseOffset).putInt(records.size()).putInt(0).putInt(0);
-            for (LogRecord record : records) {
-                b.putLong(record.timestamp());
-                putNullable(b, record.key());
-                putNullable(b, record.value());
-                b.putInt(record.headers().size());
-                for (RecordHeader header : record.headers()) {
-                    byte[] key = utf8(header.key());
-                    b.putInt(key.length).put(key);
-                    putNullable(b, header.value());
-                }
-            }
+            RecordPayloadCodec.write(b, records);
             b.putInt(26, crc(bytes));
             return bytes;
         } catch (ArithmeticException e) {
@@ -72,38 +45,7 @@ final class BatchCodec {
         long baseOffset = b.getLong(10);
         int count = b.getInt(18);
         b.position(HEADER_BYTES);
-        List<LogRecord> records = new ArrayList<>();
-        try {
-            for (int i = 0; i < count; i++) {
-                if (b.remaining() < 20) throw new CorruptLogException("Incomplete record");
-                long timestamp = b.getLong();
-                byte[] key = readNullable(b);
-                byte[] value = readNullable(b);
-                if (b.remaining() < 4) throw new CorruptLogException("Incomplete header count");
-                int headerCount = b.getInt();
-                if (headerCount < 0 || headerCount > b.remaining() / 8) {
-                    throw new CorruptLogException("Invalid header count");
-                }
-                List<RecordHeader> headers = new ArrayList<>();
-                for (int j = 0; j < headerCount; j++) {
-                    if (b.remaining() < 4)
-                        throw new CorruptLogException("Incomplete header key length");
-                    int keyLength = b.getInt();
-                    if (keyLength < 0 || keyLength > b.remaining()) {
-                        throw new CorruptLogException("Invalid header key length");
-                    }
-                    byte[] keyBytes = new byte[keyLength];
-                    b.get(keyBytes);
-                    String headerKey = decodeUtf8(keyBytes);
-                    headers.add(new RecordHeader(headerKey, readNullable(b)));
-                }
-                records.add(new LogRecord(timestamp, key, value, headers));
-            }
-            if (b.hasRemaining()) throw new CorruptLogException("Trailing batch bytes");
-            return new RecordBatch(baseOffset, records, bytes.length);
-        } catch (IllegalArgumentException e) {
-            throw new CorruptLogException("Invalid batch payload", e);
-        }
+        return new RecordBatch(baseOffset, RecordPayloadCodec.read(b, count), bytes.length);
     }
 
     static void validateHeaderPrefix(byte[] prefix, int maxBatchBytes) throws CorruptLogException {
@@ -140,55 +82,6 @@ final class BatchCodec {
         if (prefix.length >= 26 && b.getInt(22) != 0) {
             throw new CorruptLogException("Unsupported batch attributes");
         }
-    }
-
-    private static int length(byte[] bytes) {
-        return bytes == null ? 0 : bytes.length;
-    }
-
-    private static byte[] utf8(String value) {
-        try {
-            ByteBuffer b =
-                    StandardCharsets.UTF_8
-                            .newEncoder()
-                            .onMalformedInput(CodingErrorAction.REPORT)
-                            .onUnmappableCharacter(CodingErrorAction.REPORT)
-                            .encode(CharBuffer.wrap(value));
-            byte[] result = new byte[b.remaining()];
-            b.get(result);
-            return result;
-        } catch (CharacterCodingException e) {
-            throw new IllegalArgumentException("Invalid UTF-8 header key", e);
-        }
-    }
-
-    private static String decodeUtf8(byte[] bytes) throws CorruptLogException {
-        try {
-            return StandardCharsets.UTF_8
-                    .newDecoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .decode(ByteBuffer.wrap(bytes))
-                    .toString();
-        } catch (CharacterCodingException e) {
-            throw new CorruptLogException("Malformed UTF-8 header key", e);
-        }
-    }
-
-    private static void putNullable(ByteBuffer b, byte[] bytes) {
-        if (bytes == null) b.putInt(-1);
-        else b.putInt(bytes.length).put(bytes);
-    }
-
-    private static byte[] readNullable(ByteBuffer b) throws CorruptLogException {
-        if (b.remaining() < 4) throw new CorruptLogException("Incomplete nullable length");
-        int length = b.getInt();
-        if (length == -1) return null;
-        if (length < 0 || length > b.remaining())
-            throw new CorruptLogException("Invalid nullable length");
-        byte[] bytes = new byte[length];
-        b.get(bytes);
-        return bytes;
     }
 
     // The CRC field at bytes 26..29 is excluded from its own checksum.
