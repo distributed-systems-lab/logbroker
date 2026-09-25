@@ -8,7 +8,23 @@ Tự xây storage, replication, metadata consensus, protocol và Java client. B�
 
 - [Lộ trình 9 phase](docs/superpowers/specs/2026-09-24-broker-roadmap.md)
 - [Thiết kế Phase 1 — Persistent partition log](docs/superpowers/specs/2026-09-24-storage-phase-1-design.md)
+- [Implementation plan — Phase 1](docs/superpowers/plans/2026-09-25-storage-phase-1.md)
+- [Storage format v1 và hợp đồng API](docs/storage-format-v1.md)
 
 ## Trạng thái
 
-Thiết kế Phase 1 đã được duyệt. Bước tiếp theo là lập kế hoạch triển khai. Chưa có mã nguồn hoặc cấu hình build.
+Phase 1 đã có thư viện persistent partition log và bộ kiểm thử cho codec, recovery, durability, truncate, concurrency và process crash.
+
+## Yêu cầu và chạy thử
+
+- Java 21
+- Maven 3.9.x
+
+Chạy từ thư mục gốc repository:
+
+```powershell
+mvn clean verify
+java -cp target/classes vn.huyqt.logbroker.storage.example.StorageExample target/example-log
+```
+
+Ví dụ chỉ chấp nhận thư mục chưa tồn tại hoặc đang rỗng. Dùng tên thư mục mới nếu chạy lại.
