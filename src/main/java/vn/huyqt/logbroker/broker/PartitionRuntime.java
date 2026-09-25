@@ -15,10 +15,14 @@ import vn.huyqt.logbroker.protocol.ErrorCode;
 import vn.huyqt.logbroker.protocol.Protocol.AckMode;
 import vn.huyqt.logbroker.protocol.Protocol.Batch;
 import vn.huyqt.logbroker.protocol.Protocol.Error;
+import vn.huyqt.logbroker.protocol.Protocol.FetchBatch;
+import vn.huyqt.logbroker.protocol.Protocol.FetchEntry;
+import vn.huyqt.logbroker.protocol.Protocol.FetchResult;
 import vn.huyqt.logbroker.protocol.Protocol.ProduceResult;
 import vn.huyqt.logbroker.protocol.Protocol.TopicPartition;
 import vn.huyqt.logbroker.storage.AppendResult;
 import vn.huyqt.logbroker.storage.RecordPayloadCodec;
+import vn.huyqt.logbroker.protocol.WireBatchCodec;
 
 /** Serial partition operations and local durability acknowledgments. */
 public final class PartitionRuntime implements AutoCloseable {
@@ -199,6 +203,58 @@ public final class PartitionRuntime implements AutoCloseable {
 
     public void requestFlush() { scheduleTick(); }
     public long generation() { return generation; }
+
+    public CompletableFuture<FetchResult> read(FetchEntry entry, int remainingWireBudget,
+                                               boolean allowFirstOversize) {
+        if (closed || failed) return CompletableFuture.completedFuture(fetchError(
+                ErrorCode.PARTITION_UNAVAILABLE, "Partition unavailable"));
+        try {
+            return executor.submit(partition,
+                    () -> readOnLane(entry, remainingWireBudget, allowFirstOversize));
+        } catch (RejectedExecutionException rejected) {
+            return CompletableFuture.completedFuture(fetchError(
+                    ErrorCode.OVERLOADED, "Partition queue full"));
+        }
+    }
+
+    private FetchResult readOnLane(FetchEntry entry, int totalBudget,
+                                   boolean allowFirstOversize) {
+        if (closed || failed) return fetchError(
+                ErrorCode.PARTITION_UNAVAILABLE, "Partition unavailable");
+        long start = store.logStartOffset(), end = store.logEndOffset();
+        if (entry.offset() < start || entry.offset() > end)
+            return fetchError(ErrorCode.OFFSET_OUT_OF_RANGE, "Offset outside log");
+        List<FetchBatch> result = new ArrayList<>();
+        int remainingTotal = Math.max(0, totalBudget);
+        int remainingPartition = entry.maxBytes();
+        long cursor = entry.offset();
+        try {
+            while (cursor < end) {
+                if (result.isEmpty() && !allowFirstOversize
+                        && (remainingTotal == 0 || remainingPartition == 0)) break;
+                var batches = store.read(cursor, 1);
+                if (batches.isEmpty()) throw new IOException("Fetch made no progress");
+                var stored = batches.getFirst();
+                var batch = new Batch(stored.records());
+                int wireBytes = WireBatchCodec.fetchSize(batch);
+                boolean fits = wireBytes <= remainingTotal && wireBytes <= remainingPartition;
+                if (!fits && (!result.isEmpty() || !allowFirstOversize)) break;
+                result.add(new FetchBatch(stored.baseOffset(), batch));
+                cursor = stored.nextOffset();
+                remainingTotal = Math.max(0, remainingTotal - wireBytes);
+                remainingPartition = Math.max(0, remainingPartition - wireBytes);
+                if (!fits) break;
+            }
+            return new FetchResult(partition, Error.none(), start, end, result);
+        } catch (IOException | RuntimeException failure) {
+            fail(failure);
+            return fetchError(ErrorCode.STORAGE_ERROR, "Partition read failed");
+        }
+    }
+
+    private FetchResult fetchError(ErrorCode code, String message) {
+        return new FetchResult(partition, new Error(code, message), -1, -1, List.of());
+    }
 
     public synchronized DeadlineScheduler.Ticket onChange(Runnable listener) {
         Objects.requireNonNull(listener);
