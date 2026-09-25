@@ -1,15 +1,18 @@
 package vn.huyqt.logbroker.storage;
 
+import static org.junit.jupiter.api.Assertions.*;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+
 import java.io.IOException;
 import java.nio.file.Path;
-import static org.junit.jupiter.api.Assertions.*;
 
 class PartitionDurabilityTest {
     private static final LogConfig CONFIG = new LogConfig(4096, 1024, 64);
 
-    @Test void failedFlushPoisonsLogButReleasesLockOnClose(@TempDir Path dir) throws Exception {
+    @Test
+    void failedFlushPoisonsLogButReleasesLockOnClose(@TempDir Path dir) throws Exception {
         var io = new ScriptedLogIo();
         var log = PartitionLog.open(dir, CONFIG, io);
         log.append(StorageFixtures.records("a"));
@@ -26,7 +29,8 @@ class PartitionDurabilityTest {
         }
     }
 
-    @Test void appendDoesNotForceAndFlushGroupsWrites(@TempDir Path dir) throws Exception {
+    @Test
+    void appendDoesNotForceAndFlushGroupsWrites(@TempDir Path dir) throws Exception {
         var io = new ScriptedLogIo();
         try (var log = PartitionLog.open(dir, CONFIG, io)) {
             io.forceCalls = 0;
@@ -39,14 +43,15 @@ class PartitionDurabilityTest {
         }
     }
 
-    @Test void partialWriteFailsAndRecoveryDropsTail(@TempDir Path dir) throws Exception {
+    @Test
+    void partialWriteFailsAndRecoveryDropsTail(@TempDir Path dir) throws Exception {
         var io = new ScriptedLogIo();
         var log = PartitionLog.open(dir, CONFIG, io);
         log.append(StorageFixtures.records("a"));
         log.flush();
         io.failAfterBytes = io.writtenBytes + 10;
-        IOException first = assertThrows(IOException.class,
-                () -> log.append(StorageFixtures.records("b")));
+        IOException first =
+                assertThrows(IOException.class, () -> log.append(StorageFixtures.records("b")));
         IllegalStateException later = assertThrows(IllegalStateException.class, log::flush);
         assertSame(first, later.getCause());
         log.close();
@@ -55,7 +60,8 @@ class PartitionDurabilityTest {
         }
     }
 
-    @Test void indexFailureMayLeaveCompleteBatchForRecovery(@TempDir Path dir) throws Exception {
+    @Test
+    void indexFailureMayLeaveCompleteBatchForRecovery(@TempDir Path dir) throws Exception {
         var io = new ScriptedLogIo();
         var log = PartitionLog.open(dir, CONFIG, io);
         io.failAfterBytes = io.writtenBytes + 51;
@@ -67,7 +73,8 @@ class PartitionDurabilityTest {
         }
     }
 
-    @Test void closeForceFailureStillReleasesLock(@TempDir Path dir) throws Exception {
+    @Test
+    void closeForceFailureStillReleasesLock(@TempDir Path dir) throws Exception {
         var io = new ScriptedLogIo();
         var log = PartitionLog.open(dir, CONFIG, io);
         log.append(StorageFixtures.records("a"));
@@ -79,7 +86,8 @@ class PartitionDurabilityTest {
         }
     }
 
-    @Test void openFailureReleasesLockAndValidationDoesNotPoison(@TempDir Path dir) throws Exception {
+    @Test
+    void openFailureReleasesLockAndValidationDoesNotPoison(@TempDir Path dir) throws Exception {
         var io = new ScriptedLogIo();
         io.failForce = true;
         assertThrows(IOException.class, () -> PartitionLog.open(dir, CONFIG, io));

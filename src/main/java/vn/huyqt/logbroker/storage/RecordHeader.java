@@ -3,6 +3,7 @@ package vn.huyqt.logbroker.storage;
 import java.util.Arrays;
 import java.util.Objects;
 
+/** A UTF-8 header key with a nullable, defensively copied value. */
 public final class RecordHeader {
     private final String key;
     private final byte[] value;
@@ -12,14 +13,23 @@ public final class RecordHeader {
         this.value = value == null ? null : value.clone();
     }
 
-    public String key() { return key; }
-    public byte[] value() { return value == null ? null : value.clone(); }
-
-    @Override public boolean equals(Object other) {
-        return other instanceof RecordHeader h && key.equals(h.key) && Arrays.equals(value, h.value);
+    public String key() {
+        return key;
     }
 
-    @Override public int hashCode() {
+    public byte[] value() {
+        return value == null ? null : value.clone();
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        return other instanceof RecordHeader h
+                && key.equals(h.key)
+                && Arrays.equals(value, h.value);
+    }
+
+    @Override
+    public int hashCode() {
         return 31 * key.hashCode() + Arrays.hashCode(value);
     }
 }

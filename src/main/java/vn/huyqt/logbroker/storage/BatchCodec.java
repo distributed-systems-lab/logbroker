@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.zip.CRC32C;
 
+/** Encodes and validates version 1 batches using the bounds in {@link LogConfig}. */
 final class BatchCodec {
     static final int HEADER_BYTES = 30;
     static final int MIN_BATCH_BYTES = 50;
@@ -85,7 +86,8 @@ final class BatchCodec {
                 }
                 List<RecordHeader> headers = new ArrayList<>();
                 for (int j = 0; j < headerCount; j++) {
-                    if (b.remaining() < 4) throw new CorruptLogException("Incomplete header key length");
+                    if (b.remaining() < 4)
+                        throw new CorruptLogException("Incomplete header key length");
                     int keyLength = b.getInt();
                     if (keyLength < 0 || keyLength > b.remaining()) {
                         throw new CorruptLogException("Invalid header key length");
@@ -113,7 +115,8 @@ final class BatchCodec {
             if (prefix[i] != MAGIC[i]) throw new CorruptLogException("Invalid batch magic");
         }
         ByteBuffer b = ByteBuffer.wrap(prefix).order(ByteOrder.BIG_ENDIAN);
-        if (prefix.length >= 6 && b.getShort(4) != 1) throw new CorruptLogException("Unsupported batch version");
+        if (prefix.length >= 6 && b.getShort(4) != 1)
+            throw new CorruptLogException("Unsupported batch version");
         int total = 0;
         if (prefix.length >= 10) {
             total = b.getInt(6);
@@ -121,7 +124,8 @@ final class BatchCodec {
                 throw new CorruptLogException("Invalid batch length");
             }
         }
-        if (prefix.length >= 18 && b.getLong(10) < 0) throw new CorruptLogException("Negative offset");
+        if (prefix.length >= 18 && b.getLong(10) < 0)
+            throw new CorruptLogException("Negative offset");
         if (prefix.length >= 22) {
             int count = b.getInt(18);
             if (count <= 0 || count > (total - HEADER_BYTES) / 20) {
@@ -138,14 +142,18 @@ final class BatchCodec {
         }
     }
 
-    private static int length(byte[] bytes) { return bytes == null ? 0 : bytes.length; }
+    private static int length(byte[] bytes) {
+        return bytes == null ? 0 : bytes.length;
+    }
 
     private static byte[] utf8(String value) {
         try {
-            ByteBuffer b = StandardCharsets.UTF_8.newEncoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .encode(CharBuffer.wrap(value));
+            ByteBuffer b =
+                    StandardCharsets.UTF_8
+                            .newEncoder()
+                            .onMalformedInput(CodingErrorAction.REPORT)
+                            .onUnmappableCharacter(CodingErrorAction.REPORT)
+                            .encode(CharBuffer.wrap(value));
             byte[] result = new byte[b.remaining()];
             b.get(result);
             return result;
@@ -156,10 +164,12 @@ final class BatchCodec {
 
     private static String decodeUtf8(byte[] bytes) throws CorruptLogException {
         try {
-            return StandardCharsets.UTF_8.newDecoder()
+            return StandardCharsets.UTF_8
+                    .newDecoder()
                     .onMalformedInput(CodingErrorAction.REPORT)
                     .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .decode(ByteBuffer.wrap(bytes)).toString();
+                    .decode(ByteBuffer.wrap(bytes))
+                    .toString();
         } catch (CharacterCodingException e) {
             throw new CorruptLogException("Malformed UTF-8 header key", e);
         }
@@ -174,12 +184,14 @@ final class BatchCodec {
         if (b.remaining() < 4) throw new CorruptLogException("Incomplete nullable length");
         int length = b.getInt();
         if (length == -1) return null;
-        if (length < 0 || length > b.remaining()) throw new CorruptLogException("Invalid nullable length");
+        if (length < 0 || length > b.remaining())
+            throw new CorruptLogException("Invalid nullable length");
         byte[] bytes = new byte[length];
         b.get(bytes);
         return bytes;
     }
 
+    // The CRC field at bytes 26..29 is excluded from its own checksum.
     private static int crc(byte[] bytes) {
         CRC32C crc = new CRC32C();
         crc.update(bytes, 0, 26);
@@ -187,4 +199,3 @@ final class BatchCodec {
         return (int) crc.getValue();
     }
 }
-

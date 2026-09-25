@@ -1,14 +1,17 @@
 package vn.huyqt.logbroker.storage;
 
+import static org.junit.jupiter.api.Assertions.*;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import static org.junit.jupiter.api.Assertions.*;
 
 class PartitionLogTest {
-    @Test void appendReadFlushAndReopen(@TempDir Path dir) throws Exception {
+    @Test
+    void appendReadFlushAndReopen(@TempDir Path dir) throws Exception {
         var config = new LogConfig(4096, 1024, 64);
         try (var log = PartitionLog.open(dir, config)) {
             assertEquals(new AppendResult(0, 2), log.append(StorageFixtures.records("a", "b")));
@@ -27,7 +30,8 @@ class PartitionLogTest {
         }
     }
 
-    @Test void rollsAtBatchBoundaryAndReadsWithinBudget(@TempDir Path dir) throws Exception {
+    @Test
+    void rollsAtBatchBoundaryAndReadsWithinBudget(@TempDir Path dir) throws Exception {
         var config = new LogConfig(128, 128, 64);
         try (var log = PartitionLog.open(dir, config)) {
             log.append(StorageFixtures.records("a"));
@@ -43,7 +47,8 @@ class PartitionLogTest {
         }
     }
 
-    @Test void validationDoesNotConsumeOffsetsAndLockIsExclusive(@TempDir Path dir) throws Exception {
+    @Test
+    void validationDoesNotConsumeOffsetsAndLockIsExclusive(@TempDir Path dir) throws Exception {
         var config = new LogConfig(4096, 1024, 64);
         try (var log = PartitionLog.open(dir, config)) {
             assertThrows(IllegalArgumentException.class, () -> log.append(java.util.List.of()));

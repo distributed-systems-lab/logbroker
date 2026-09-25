@@ -1,15 +1,18 @@
 package vn.huyqt.logbroker.storage;
 
+import static org.junit.jupiter.api.Assertions.*;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import static org.junit.jupiter.api.Assertions.*;
 
 class OffsetIndexTest {
-    @Test void indexesFirstBatchAndByteIntervals() {
+    @Test
+    void indexesFirstBatchAndByteIntervals() {
         var index = new OffsetIndex(100);
         index.consider(0, 0);
         index.consider(2, 60);
@@ -23,13 +26,14 @@ class OffsetIndexTest {
         assertThrows(IllegalArgumentException.class, () -> index.consider(5, 120));
     }
 
-    @Test void writesBigEndianAndOverwritesGarbage(@TempDir Path dir) throws Exception {
+    @Test
+    void writesBigEndianAndOverwritesGarbage(@TempDir Path dir) throws Exception {
         var index = new OffsetIndex(10);
         assertNull(index.floor(0));
         index.consider(3, 0);
         index.consider(5, 12);
         Path path = OffsetIndex.indexPath(dir, 3);
-        Files.write(path, new byte[]{1, 2, 3});
+        Files.write(path, new byte[] {1, 2, 3});
         index.write(path, new LogIo());
         byte[] bytes = Files.readAllBytes(path);
         assertEquals(32, bytes.length);

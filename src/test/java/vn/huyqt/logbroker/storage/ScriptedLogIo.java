@@ -14,10 +14,15 @@ class ScriptedLogIo extends LogIo {
     int deleteCalls;
     boolean failTruncate;
 
-    @Override int write(FileChannel channel, ByteBuffer src, long position) throws IOException {
+    @Override
+    int write(FileChannel channel, ByteBuffer src, long position) throws IOException {
         if (writtenBytes >= failAfterBytes) throw new IOException("Injected write failure");
         int limit = src.limit();
-        int allowed = (int) Math.min(src.remaining(), Math.min(maxWriteBytes, failAfterBytes - writtenBytes));
+        int allowed =
+                (int)
+                        Math.min(
+                                src.remaining(),
+                                Math.min(maxWriteBytes, failAfterBytes - writtenBytes));
         src.limit(src.position() + allowed);
         try {
             int n = super.write(channel, src, position);
@@ -28,18 +33,21 @@ class ScriptedLogIo extends LogIo {
         }
     }
 
-
-
-    @Override void truncate(FileChannel channel, long size) throws IOException {
+    @Override
+    void truncate(FileChannel channel, long size) throws IOException {
         if (failTruncate) throw new IOException("Injected truncate failure");
         super.truncate(channel, size);
     }
-    @Override void delete(java.nio.file.Path path) throws IOException {
+
+    @Override
+    void delete(java.nio.file.Path path) throws IOException {
         deleteCalls++;
         if (deleteCalls == failDeleteAt) throw new IOException("Injected delete failure");
         super.delete(path);
     }
-    @Override void force(FileChannel channel) throws IOException {
+
+    @Override
+    void force(FileChannel channel) throws IOException {
         forceCalls++;
         if (failForce) throw new IOException("Injected force failure");
         super.force(channel);

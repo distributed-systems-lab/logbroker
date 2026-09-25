@@ -1,5 +1,8 @@
 package vn.huyqt.logbroker.storage;
 
+import static java.nio.file.StandardOpenOption.READ;
+import static java.nio.file.StandardOpenOption.WRITE;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -10,15 +13,17 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Stream;
-import static java.nio.file.StandardOpenOption.READ;
-import static java.nio.file.StandardOpenOption.WRITE;
 
+/** Validates all data segments before repairing a torn active tail or rebuilding indexes. */
 final class LogRecovery {
     private static final System.Logger LOGGER = System.getLogger(LogRecovery.class.getName());
 
     record SegmentInfo(long baseOffset, long validBytes, long nextOffset, OffsetIndex index) {}
+
     record Result(List<SegmentInfo> segments, long nextOffset) {
-        Result { segments = List.copyOf(segments); }
+        Result {
+            segments = List.copyOf(segments);
+        }
     }
 
     private record Repair(Path path, long validBytes, long originalBytes) {}
@@ -36,7 +41,8 @@ final class LogRecovery {
         for (int s = 0; s < bases.size(); s++) {
             long base = bases.get(s);
             Path path = LogSegment.dataPath(directory, base);
-            if (base != next) throw corrupt(path, 0, "Segment base offset " + base + " != expected " + next);
+            if (base != next)
+                throw corrupt(path, 0, "Segment base offset " + base + " != expected " + next);
             boolean active = s == bases.size() - 1;
             OffsetIndex index = new OffsetIndex(config.indexIntervalBytes());
             try (FileChannel channel = FileChannel.open(path, READ)) {
@@ -54,17 +60,23 @@ final class LogRecovery {
                     if (prefixLength >= 18) {
                         long batchBase = ByteBuffer.wrap(prefix).getLong(10);
                         if (batchBase != next) {
-                            throw corrupt(path, position, "Batch offset " + batchBase + " != expected " + next);
+                            throw corrupt(
+                                    path,
+                                    position,
+                                    "Batch offset " + batchBase + " != expected " + next);
                         }
                     }
+                    // Only the final segment can contain a torn batch from an interrupted append.
                     if (prefixLength < BatchCodec.HEADER_BYTES) {
-                        if (!active) throw corrupt(path, position, "Incomplete header in sealed segment");
+                        if (!active)
+                            throw corrupt(path, position, "Incomplete header in sealed segment");
                         repair = new Repair(path, position, size);
                         break;
                     }
                     int length = ByteBuffer.wrap(prefix).getInt(6);
                     if (length > remaining) {
-                        if (!active) throw corrupt(path, position, "Incomplete batch in sealed segment");
+                        if (!active)
+                            throw corrupt(path, position, "Incomplete batch in sealed segment");
                         repair = new Repair(path, position, size);
                         break;
                     }
@@ -88,21 +100,28 @@ final class LogRecovery {
             }
         }
 
-        // No filesystem mutation occurs before every data segment validates.
+        // Do not mutate files until every data segment has been validated.
         if (repair != null) {
             try (FileChannel channel = FileChannel.open(repair.path(), WRITE)) {
                 io.truncate(channel, repair.validBytes());
             }
-            LOGGER.log(System.Logger.Level.WARNING,
+            LOGGER.log(
+                    System.Logger.Level.WARNING,
                     "Recovered torn tail: {0}, originalBytes={1}, validBytes={2}, bytesRemoved={3}",
-                    repair.path(), repair.originalBytes(), repair.validBytes(),
+                    repair.path(),
+                    repair.originalBytes(),
+                    repair.validBytes(),
                     repair.originalBytes() - repair.validBytes());
         }
         for (SegmentInfo info : infos) {
             info.index().write(OffsetIndex.indexPath(directory, info.baseOffset()), io);
         }
+        // Open data writable so force covers the validated bytes before open publishes them as
+        // durable.
         for (SegmentInfo info : infos) {
-            try (FileChannel channel = FileChannel.open(LogSegment.dataPath(directory, info.baseOffset()), READ, WRITE)) {
+            try (FileChannel channel =
+                    FileChannel.open(
+                            LogSegment.dataPath(directory, info.baseOffset()), READ, WRITE)) {
                 io.force(channel);
             }
         }
@@ -143,7 +162,8 @@ final class LogRecovery {
         return new CorruptLogException(path + " at byte " + position + ": " + reason);
     }
 
-    private static CorruptLogException corrupt(Path path, long position, String reason, Throwable cause) {
+    private static CorruptLogException corrupt(
+            Path path, long position, String reason, Throwable cause) {
         return new CorruptLogException(path + " at byte " + position + ": " + reason, cause);
     }
 }

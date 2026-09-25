@@ -1,5 +1,9 @@
 package vn.huyqt.logbroker.storage;
 
+import static java.nio.file.StandardOpenOption.CREATE;
+import static java.nio.file.StandardOpenOption.READ;
+import static java.nio.file.StandardOpenOption.WRITE;
+
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -7,10 +11,8 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.util.Locale;
 import java.util.Objects;
-import static java.nio.file.StandardOpenOption.CREATE;
-import static java.nio.file.StandardOpenOption.READ;
-import static java.nio.file.StandardOpenOption.WRITE;
 
+/** Positional file I/O for one data segment; appends complete a write loop. */
 final class LogSegment implements AutoCloseable {
     private final Path path;
     private final long baseOffset;
@@ -36,9 +38,17 @@ final class LogSegment implements AutoCloseable {
         return directory.resolve(String.format(Locale.ROOT, "%020d.log", baseOffset));
     }
 
-    Path path() { return path; }
-    long baseOffset() { return baseOffset; }
-    long size() throws IOException { return channel.size(); }
+    Path path() {
+        return path;
+    }
+
+    long baseOffset() {
+        return baseOffset;
+    }
+
+    long size() throws IOException {
+        return channel.size();
+    }
 
     long append(byte[] batch) throws IOException {
         Objects.requireNonNull(batch, "batch");
@@ -77,7 +87,16 @@ final class LogSegment implements AutoCloseable {
         return buffer.array();
     }
 
-    void force() throws IOException { io.force(channel); }
-    void truncate(long bytes) throws IOException { io.truncate(channel, bytes); }
-    @Override public void close() throws IOException { channel.close(); }
+    void force() throws IOException {
+        io.force(channel);
+    }
+
+    void truncate(long bytes) throws IOException {
+        io.truncate(channel, bytes);
+    }
+
+    @Override
+    public void close() throws IOException {
+        channel.close();
+    }
 }

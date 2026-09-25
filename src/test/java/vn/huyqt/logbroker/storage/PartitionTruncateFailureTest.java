@@ -1,13 +1,16 @@
 package vn.huyqt.logbroker.storage;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-import java.io.IOException;
-import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.*;
 
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.io.IOException;
+import java.nio.file.Path;
+
 class PartitionTruncateFailureTest {
-    @Test void truncateFailureAfterSuffixDeleteCanRecoverAndRetry(@TempDir Path dir) throws Exception {
+    @Test
+    void truncateFailureAfterSuffixDeleteCanRecoverAndRetry(@TempDir Path dir) throws Exception {
         var config = new LogConfig(128, 128, 64);
         var io = new ScriptedLogIo();
         var log = PartitionLog.open(dir, config, io);

@@ -15,20 +15,26 @@ public final class CrashWriter {
         String mode = args[1];
         var config = new LogConfig(4096, 1024, 64);
         AtomicBoolean partial = new AtomicBoolean(false);
-        LogIo io = new LogIo() {
-            @Override int write(FileChannel channel, ByteBuffer src, long position) throws IOException {
-                if (partial.compareAndSet(true, false)) {
-                    int limit = src.limit();
-                    src.limit(src.position() + 1);
-                    int n;
-                    try { n = super.write(channel, src, position); }
-                    finally { src.limit(limit); }
-                    readyAndBlock();
-                    return n;
-                }
-                return super.write(channel, src, position);
-            }
-        };
+        LogIo io =
+                new LogIo() {
+                    @Override
+                    int write(FileChannel channel, ByteBuffer src, long position)
+                            throws IOException {
+                        if (partial.compareAndSet(true, false)) {
+                            int limit = src.limit();
+                            src.limit(src.position() + 1);
+                            int n;
+                            try {
+                                n = super.write(channel, src, position);
+                            } finally {
+                                src.limit(limit);
+                            }
+                            readyAndBlock();
+                            return n;
+                        }
+                        return super.write(channel, src, position);
+                    }
+                };
         PartitionLog log = PartitionLog.open(directory, config, io);
         switch (mode) {
             case "flushed" -> {

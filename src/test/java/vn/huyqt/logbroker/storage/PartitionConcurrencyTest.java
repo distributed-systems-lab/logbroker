@@ -1,8 +1,11 @@
 package vn.huyqt.logbroker.storage;
 
+import static org.junit.jupiter.api.Assertions.*;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -17,43 +20,54 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import static org.junit.jupiter.api.Assertions.*;
 
 class PartitionConcurrencyTest {
-    @Test @Timeout(30) void readerWaitsForWholeBatch(@TempDir Path dir) throws Exception {
+    @Test
+    @Timeout(30)
+    void readerWaitsForWholeBatch(@TempDir Path dir) throws Exception {
         CountDownLatch firstByteWritten = new CountDownLatch(1);
         CountDownLatch releaseWrite = new CountDownLatch(1);
         AtomicBoolean armed = new AtomicBoolean(false);
-        LogIo io = new LogIo() {
-            @Override int write(FileChannel ch, ByteBuffer src, long pos) throws IOException {
-                if (armed.compareAndSet(true, false)) {
-                    int limit = src.limit();
-                    src.limit(src.position() + 1);
-                    int n;
-                    try { n = super.write(ch, src, pos); } finally { src.limit(limit); }
-                    firstByteWritten.countDown();
-                    try {
-                        if (!releaseWrite.await(5, TimeUnit.SECONDS)) throw new IOException("Test timed out");
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        throw new IOException(e);
+        LogIo io =
+                new LogIo() {
+                    @Override
+                    int write(FileChannel ch, ByteBuffer src, long pos) throws IOException {
+                        if (armed.compareAndSet(true, false)) {
+                            int limit = src.limit();
+                            src.limit(src.position() + 1);
+                            int n;
+                            try {
+                                n = super.write(ch, src, pos);
+                            } finally {
+                                src.limit(limit);
+                            }
+                            firstByteWritten.countDown();
+                            try {
+                                if (!releaseWrite.await(5, TimeUnit.SECONDS))
+                                    throw new IOException("Test timed out");
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                throw new IOException(e);
+                            }
+                            return n;
+                        }
+                        return super.write(ch, src, pos);
                     }
-                    return n;
-                }
-                return super.write(ch, src, pos);
-            }
-        };
+                };
         try (var log = PartitionLog.open(dir, new LogConfig(4096, 1024, 64), io)) {
             ExecutorService pool = Executors.newFixedThreadPool(2);
             try {
                 armed.set(true);
-                Future<AppendResult> writer = pool.submit(() -> log.append(StorageFixtures.records("a")));
+                Future<AppendResult> writer =
+                        pool.submit(() -> log.append(StorageFixtures.records("a")));
                 assertTrue(firstByteWritten.await(5, TimeUnit.SECONDS));
                 CountDownLatch readerStarted = new CountDownLatch(1);
-                Future<List<RecordBatch>> reader = pool.submit(() -> {
-                    readerStarted.countDown();
-                    return log.read(0, 1024);
-                });
+                Future<List<RecordBatch>> reader =
+                        pool.submit(
+                                () -> {
+                                    readerStarted.countDown();
+                                    return log.read(0, 1024);
+                                });
                 assertTrue(readerStarted.await(5, TimeUnit.SECONDS));
                 assertThrows(TimeoutException.class, () -> reader.get(100, TimeUnit.MILLISECONDS));
                 releaseWrite.countDown();
@@ -70,19 +84,25 @@ class PartitionConcurrencyTest {
         }
     }
 
-    @Test @Timeout(30) void concurrentWritersGetUniqueOffsetsAndReadersDoNotShareCursor(@TempDir Path dir) throws Exception {
+    @Test
+    @Timeout(30)
+    void concurrentWritersGetUniqueOffsetsAndReadersDoNotShareCursor(@TempDir Path dir)
+            throws Exception {
         try (var log = PartitionLog.open(dir, new LogConfig(4096, 1024, 64))) {
             ExecutorService pool = Executors.newFixedThreadPool(4);
             try {
                 CountDownLatch start = new CountDownLatch(1);
                 List<Future<List<AppendResult>>> writers = new ArrayList<>();
                 for (int w = 0; w < 4; w++) {
-                    writers.add(pool.submit(() -> {
-                        start.await();
-                        List<AppendResult> results = new ArrayList<>();
-                        for (int i = 0; i < 25; i++) results.add(log.append(StorageFixtures.records("x")));
-                        return results;
-                    }));
+                    writers.add(
+                            pool.submit(
+                                    () -> {
+                                        start.await();
+                                        List<AppendResult> results = new ArrayList<>();
+                                        for (int i = 0; i < 25; i++)
+                                            results.add(log.append(StorageFixtures.records("x")));
+                                        return results;
+                                    }));
                 }
                 start.countDown();
                 HashSet<Long> offsets = new HashSet<>();
@@ -99,7 +119,8 @@ class PartitionConcurrencyTest {
                 for (Future<List<RecordBatch>> reader : readers) {
                     List<RecordBatch> batches = reader.get(10, TimeUnit.SECONDS);
                     assertEquals(100, batches.size());
-                    for (int i = 0; i < batches.size(); i++) assertEquals(i, batches.get(i).baseOffset());
+                    for (int i = 0; i < batches.size(); i++)
+                        assertEquals(i, batches.get(i).baseOffset());
                 }
             } finally {
                 pool.shutdown();

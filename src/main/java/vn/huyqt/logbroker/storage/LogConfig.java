@@ -1,5 +1,6 @@
 package vn.huyqt.logbroker.storage;
 
+/** Size limits for data segments, encoded batches, and sparse index spacing. */
 public record LogConfig(long segmentBytes, int maxBatchBytes, int indexIntervalBytes) {
     public LogConfig {
         if (maxBatchBytes < 50 || segmentBytes < maxBatchBytes || indexIntervalBytes <= 0) {

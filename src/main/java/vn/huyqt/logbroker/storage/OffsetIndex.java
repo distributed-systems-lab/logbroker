@@ -1,5 +1,9 @@
 package vn.huyqt.logbroker.storage;
 
+import static java.nio.file.StandardOpenOption.CREATE;
+import static java.nio.file.StandardOpenOption.TRUNCATE_EXISTING;
+import static java.nio.file.StandardOpenOption.WRITE;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -9,10 +13,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
-import static java.nio.file.StandardOpenOption.CREATE;
-import static java.nio.file.StandardOpenOption.TRUNCATE_EXISTING;
-import static java.nio.file.StandardOpenOption.WRITE;
 
+/** Sparse offset-to-byte-position index derived entirely from the data segment. */
 final class OffsetIndex {
     record Entry(long offset, long position) {}
 
@@ -30,6 +32,7 @@ final class OffsetIndex {
         if (offset < 0 || position < 0 || offset <= lastOffset || position <= lastPosition) {
             throw new IllegalArgumentException("Index positions must increase");
         }
+        // Always index the first batch; later entries obey the configured byte interval.
         if (entries.isEmpty() || position - entries.getLast().position() >= intervalBytes) {
             entries.add(new Entry(offset, position));
         }
@@ -41,13 +44,17 @@ final class OffsetIndex {
         int lo = 0, hi = entries.size() - 1, found = -1;
         while (lo <= hi) {
             int mid = lo + (hi - lo) / 2;
-            if (entries.get(mid).offset() <= offset) { found = mid; lo = mid + 1; }
-            else hi = mid - 1;
+            if (entries.get(mid).offset() <= offset) {
+                found = mid;
+                lo = mid + 1;
+            } else hi = mid - 1;
         }
         return found < 0 ? null : entries.get(found);
     }
 
-    List<Entry> entries() { return List.copyOf(entries); }
+    List<Entry> entries() {
+        return List.copyOf(entries);
+    }
 
     void write(Path path, LogIo io) throws IOException {
         Objects.requireNonNull(path, "path");
@@ -60,7 +67,8 @@ final class OffsetIndex {
             int noProgress = 0;
             while (bytes.hasRemaining()) {
                 int n = io.write(channel, bytes, position);
-                if (n < 0 || (n == 0 && ++noProgress >= 16)) throw new IOException("Index write made no progress");
+                if (n < 0 || (n == 0 && ++noProgress >= 16))
+                    throw new IOException("Index write made no progress");
                 if (n > 0) noProgress = 0;
                 position += n;
             }

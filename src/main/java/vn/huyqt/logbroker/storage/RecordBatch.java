@@ -3,6 +3,7 @@ package vn.huyqt.logbroker.storage;
 import java.util.List;
 import java.util.Objects;
 
+/** An immutable batch whose records occupy consecutive offsets. */
 public final class RecordBatch {
     private final long baseOffset;
     private final List<LogRecord> records;
@@ -22,17 +23,32 @@ public final class RecordBatch {
         this.encodedSize = encodedSize;
     }
 
-    public long baseOffset() { return baseOffset; }
-    public List<LogRecord> records() { return records; }
-    public int encodedSize() { return encodedSize; }
-    public long nextOffset() { return baseOffset + records.size(); }
-
-    @Override public boolean equals(Object other) {
-        return other instanceof RecordBatch b && baseOffset == b.baseOffset
-                && encodedSize == b.encodedSize && records.equals(b.records);
+    public long baseOffset() {
+        return baseOffset;
     }
 
-    @Override public int hashCode() {
+    public List<LogRecord> records() {
+        return records;
+    }
+
+    public int encodedSize() {
+        return encodedSize;
+    }
+
+    public long nextOffset() {
+        return baseOffset + records.size();
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        return other instanceof RecordBatch b
+                && baseOffset == b.baseOffset
+                && encodedSize == b.encodedSize
+                && records.equals(b.records);
+    }
+
+    @Override
+    public int hashCode() {
         return Objects.hash(baseOffset, records, encodedSize);
     }
 }
