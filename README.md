@@ -12,12 +12,14 @@ Tự xây storage, replication, metadata consensus, protocol và Java client. B�
 - [Thiết kế Phase 2 — Broker đơn và Java client](docs/superpowers/specs/2026-09-25-broker-phase-2-design.md)
 - [Implementation plan — Phase 2](docs/superpowers/plans/2026-09-25-broker-phase-2.md)
 - [Storage format v1 và hợp đồng API](docs/storage-format-v1.md)
+- [Wire protocol v1](docs/protocol-v1.md)
+- [Broker configuration](docs/broker-configuration.md)
 
 ## Trạng thái
 
 Phase 1 đã có thư viện persistent partition log và bộ kiểm thử cho codec, recovery, durability, truncate, concurrency và process crash.
 
-Phase 2 đã được duyệt spec và có implementation plan; chưa bắt đầu triển khai.
+Phase 2 có broker một node, wire protocol version 1, Netty TCP transport, Java client, CreateTopic, Metadata, Produce APPENDED/FLUSHED và Fetch theo offset. Metadata và partition log được khôi phục từ đĩa; các bài kiểm thử bao gồm restart, crash process và mất phản hồi mạng.
 
 ## Yêu cầu và chạy thử
 
@@ -30,5 +32,15 @@ Chạy từ thư mục gốc repository:
 mvn clean verify
 java -cp target/classes vn.huyqt.logbroker.storage.example.StorageExample target/example-log
 ```
+
+Chạy broker và client ví dụ trong hai terminal PowerShell:
+
+```powershell
+mvn clean verify dependency:copy-dependencies
+java -cp "target/classes;target/dependency/*" vn.huyqt.logbroker.broker.BrokerMain --data target/broker-data --port 9092
+java -cp "target/classes;target/dependency/*" vn.huyqt.logbroker.example.ClientExample 127.0.0.1 9092 demo
+```
+
+Broker có thể nhận thêm `--config broker.properties`; xem [bảng cấu hình](docs/broker-configuration.md). Dừng broker bằng Ctrl+C. Ví dụ client in `SUCCESS records=1` sau khi Produce FLUSHED và Fetch lại đúng record.
 
 Ví dụ chỉ chấp nhận thư mục chưa tồn tại hoặc đang rỗng. Dùng tên thư mục mới nếu chạy lại.

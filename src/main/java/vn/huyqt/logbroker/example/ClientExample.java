@@ -1,0 +1,54 @@
+package vn.huyqt.logbroker.example;
+
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+import vn.huyqt.logbroker.broker.DeadlineScheduler;
+import vn.huyqt.logbroker.client.BrokerClient;
+import vn.huyqt.logbroker.client.ClientConfig;
+import vn.huyqt.logbroker.client.Consumer;
+import vn.huyqt.logbroker.client.Producer;
+import vn.huyqt.logbroker.protocol.ErrorCode;
+import vn.huyqt.logbroker.protocol.Protocol;
+import vn.huyqt.logbroker.protocol.ProtocolLimits;
+import vn.huyqt.logbroker.storage.LogRecord;
+import vn.huyqt.logbroker.transport.netty.NettyClientTransport;
+
+/** One durable Produce followed by an explicit-offset Fetch. */
+public final class ClientExample {
+    private ClientExample() {}
+
+    public static void main(String[] args) throws Exception {
+        if (args.length != 3) throw new IllegalArgumentException(
+                "Usage: ClientExample <host> <port> <topic>");
+        int count = run(args[0], Integer.parseInt(args[1]), args[2]);
+        System.out.println("SUCCESS records=" + count);
+    }
+
+    public static int run(String host, int port, String topic) throws Exception {
+        var config = ClientConfig.defaults(new InetSocketAddress(host, port));
+        try (var clock = DeadlineScheduler.system();
+             var client = new BrokerClient(config, new NettyClientTransport(
+                     ProtocolLimits.defaults()), clock);
+             var producer = new Producer(client, config, clock)) {
+            var created = (Protocol.CreateTopicReply) client.request(
+                    new Protocol.CreateTopic(topic, 2)).get(10, TimeUnit.SECONDS);
+            if (created.error().code() != ErrorCode.NONE)
+                throw new IllegalStateException("CreateTopic: " + created.error());
+            var record = new LogRecord(System.currentTimeMillis(),
+                    "sample".getBytes(StandardCharsets.UTF_8),
+                    "hello-log-broker".getBytes(StandardCharsets.UTF_8), List.of());
+            var result = producer.send(topic, 0, record, Protocol.AckMode.FLUSHED)
+                    .get(10, TimeUnit.SECONDS);
+            var consumer = new Consumer(client);
+            var fetched = consumer.fetch(List.of(new Protocol.FetchEntry(result.partition(),
+                    result.offset(), 1024 * 1024)), 1024 * 1024, 0, 0)
+                    .get(10, TimeUnit.SECONDS);
+            int count = fetched.getFirst().records().size();
+            if (count != 1 || !record.equals(fetched.getFirst().records().getFirst().record()))
+                throw new IllegalStateException("Fetched record differs from produced record");
+            return count;
+        }
+    }
+}
