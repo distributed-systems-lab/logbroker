@@ -173,6 +173,68 @@ public final class PartitionLog implements AutoCloseable {
         }
     }
 
+    public void truncateTo(long offset) throws IOException {
+        guard.writeLock().lock();
+        try {
+            ensureOpen();
+            if (offset < 0 || offset > logEndOffset) {
+                throw new IllegalArgumentException("Offset outside log");
+            }
+            if (offset == logEndOffset) return;
+            Map.Entry<Long, LogSegment> targetEntry = segments.floorEntry(offset);
+            if (targetEntry == null) throw new IllegalArgumentException("Offset outside log");
+            LogSegment target = targetEntry.getValue();
+            long targetPosition = 0;
+            if (offset != target.baseOffset()) {
+                long size = target.size();
+                OffsetIndex.Entry floor = indexes.get(target.baseOffset()).floor(offset);
+                long position = floor == null ? 0 : floor.position();
+                boolean found = false;
+                while (position < size) {
+                    RecordBatch batch = readBatch(target, position, size);
+                    if (batch.baseOffset() == offset) {
+                        targetPosition = position;
+                        found = true;
+                        break;
+                    }
+                    if (batch.nextOffset() > offset) break;
+                    position += batch.encodedSize();
+                }
+                if (!found) throw new IllegalArgumentException("Offset is not a batch boundary");
+            }
+
+            try {
+                for (Long base : new ArrayList<>(segments.descendingKeySet())) {
+                    if (base <= target.baseOffset()) break;
+                    LogSegment segment = segments.get(base);
+                    segment.close();
+                    io.delete(segment.path());
+                    Path indexPath = OffsetIndex.indexPath(directory, base);
+                    if (Files.exists(indexPath)) io.delete(indexPath);
+                    segments.remove(base);
+                    indexes.remove(base);
+                }
+                target.truncate(targetPosition);
+                OffsetIndex rebuilt = new OffsetIndex(config.indexIntervalBytes());
+                long position = 0;
+                while (position < targetPosition) {
+                    RecordBatch batch = readBatch(target, position, targetPosition);
+                    rebuilt.consider(batch.baseOffset(), position);
+                    position += batch.encodedSize();
+                }
+                rebuilt.write(OffsetIndex.indexPath(directory, target.baseOffset()), io);
+                indexes.put(target.baseOffset(), rebuilt);
+                for (LogSegment segment : segments.values()) segment.force();
+                logEndOffset = offset;
+                durableEndOffset = offset;
+            } catch (IOException e) {
+                markFailed(e);
+                throw e;
+            }
+        } finally {
+            guard.writeLock().unlock();
+        }
+    }
     public long flush() throws IOException {
         guard.writeLock().lock();
         try {

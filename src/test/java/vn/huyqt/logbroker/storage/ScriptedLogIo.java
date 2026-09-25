@@ -10,6 +10,8 @@ class ScriptedLogIo extends LogIo {
     boolean failForce;
     long failAfterBytes = Long.MAX_VALUE;
     long writtenBytes;
+    int failDeleteAt = -1;
+    int deleteCalls;
 
     @Override int write(FileChannel channel, ByteBuffer src, long position) throws IOException {
         if (writtenBytes >= failAfterBytes) throw new IOException("Injected write failure");
@@ -25,6 +27,12 @@ class ScriptedLogIo extends LogIo {
         }
     }
 
+
+    @Override void delete(java.nio.file.Path path) throws IOException {
+        deleteCalls++;
+        if (deleteCalls == failDeleteAt) throw new IOException("Injected delete failure");
+        super.delete(path);
+    }
     @Override void force(FileChannel channel) throws IOException {
         forceCalls++;
         if (failForce) throw new IOException("Injected force failure");
