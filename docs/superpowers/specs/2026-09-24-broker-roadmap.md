@@ -20,7 +20,7 @@ Trạng thái: Người dùng đã đồng ý lộ trình; từng phase cần th
 
 - Phase 1: storage không biết consumer/group; không ghi ACK, owner hay acquisition lock vào record gốc. Đọc theo offset độc lập, không có con trỏ đọc chung. Offset của record còn giữ lại không thay đổi; replication có thể truncate phần đuôi chưa commit theo thiết kế Phase 5.
 - Phase 2: protocol phân biệt operation và version; bổ sung ShareFetch/ShareAcknowledge sau mà không đổi nghĩa Fetch/CommitOffset.
-- Phase 4: topic có ID phân biệt các lần xóa/tạo lại cùng tên.
+- Phase 2: topic có ID ổn định, đưa lên sớm từ mốc Phase 4 theo thảo luận spec Phase 2; tạo nền tảng phân biệt các lần xóa/tạo lại cùng tên khi bổ sung lifecycle đó.
 - Phase 6: tách membership/assignment khỏi mô hình tiến độ; không buộc mọi group dùng một committed offset cho mỗi partition.
 - Phase 7: retention độc lập với ACK; thiết kế hành vi khi dữ liệu chưa xử lý đã hết retention.
 - Share state tách khỏi data log và metadata quorum KRaft. Không tạo framework mở rộng tổng quát trước khi có nhu cầu thực tế.
@@ -42,6 +42,8 @@ Quyết định đã chốt: recovery nghiêm ngặt. Chỉ tự cắt batch cu�
 ### 2. Broker đơn và Java client
 
 Topic/partition; binary protocol có version, request ID, mã lỗi, giới hạn kích thước; create topic, metadata, produce, fetch; Netty transport; batching và backpressure cơ bản. Consumer tự chọn partition và offset.
+
+Thiết kế chi tiết: [Phase 2 — Broker đơn và Java client](2026-09-25-broker-phase-2-design.md), đang chờ review bản tổng hợp. Các quyết định đã chốt gồm APPENDED/FLUSHED, flush theo thời gian hoặc byte, Fetch đến logEndOffset, long polling, request nhiều partition, local metadata log và topic ID từ Phase 2.
 
 Điều kiện hoàn thành: nhiều client ghi/đọc được; restart phục hồi theo cam kết durability đã chọn.
 
