@@ -1,0 +1,245 @@
+package vn.huyqt.logbroker.storage;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.TreeMap;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import static java.nio.file.StandardOpenOption.CREATE;
+import static java.nio.file.StandardOpenOption.WRITE;
+
+public final class PartitionLog implements AutoCloseable {
+    private enum State { OPEN, FAILED, CLOSED }
+
+    private final Path directory;
+    private final LogConfig config;
+    private final LogIo io;
+    private final FileChannel lockChannel;
+    private final FileLock fileLock;
+    private final TreeMap<Long, LogSegment> segments = new TreeMap<>();
+    private final TreeMap<Long, OffsetIndex> indexes = new TreeMap<>();
+    private final ReentrantReadWriteLock guard = new ReentrantReadWriteLock();
+    private State state = State.OPEN;
+    private IOException firstFailure;
+    private long logEndOffset;
+    private long durableEndOffset;
+
+    private PartitionLog(Path directory, LogConfig config, LogIo io,
+                         FileChannel lockChannel, FileLock fileLock) {
+        this.directory = directory;
+        this.config = config;
+        this.io = io;
+        this.lockChannel = lockChannel;
+        this.fileLock = fileLock;
+    }
+
+    public static PartitionLog open(Path directory, LogConfig config) throws IOException {
+        return open(directory, config, new LogIo());
+    }
+
+    static PartitionLog open(Path directory, LogConfig config, LogIo io) throws IOException {
+        Objects.requireNonNull(directory, "directory");
+        Objects.requireNonNull(config, "config");
+        Objects.requireNonNull(io, "io");
+        Files.createDirectories(directory);
+        FileChannel lockChannel = FileChannel.open(directory.resolve(".lock"), CREATE, WRITE);
+        FileLock fileLock = null;
+        PartitionLog log = null;
+        try {
+            try {
+                fileLock = lockChannel.tryLock();
+            } catch (OverlappingFileLockException e) {
+                throw new IOException("Partition directory is already locked: " + directory, e);
+            }
+            if (fileLock == null) throw new IOException("Partition directory is already locked: " + directory);
+            log = new PartitionLog(directory, config, io, lockChannel, fileLock);
+            LogRecovery.Result recovered = LogRecovery.recover(directory, config, io);
+            for (LogRecovery.SegmentInfo info : recovered.segments()) {
+                LogSegment segment = LogSegment.open(LogSegment.dataPath(directory, info.baseOffset()),
+                        info.baseOffset(), io);
+                log.segments.put(info.baseOffset(), segment);
+                log.indexes.put(info.baseOffset(), info.index());
+            }
+            if (log.segments.isEmpty()) {
+                LogSegment segment = LogSegment.open(LogSegment.dataPath(directory, 0), 0, io);
+                log.segments.put(0L, segment);
+                OffsetIndex index = new OffsetIndex(config.indexIntervalBytes());
+                log.indexes.put(0L, index);
+                index.write(OffsetIndex.indexPath(directory, 0), io);
+                segment.force();
+            }
+            log.logEndOffset = recovered.nextOffset();
+            log.durableEndOffset = recovered.nextOffset();
+            return log;
+        } catch (IOException | RuntimeException error) {
+            if (log != null) {
+                for (LogSegment segment : log.segments.values()) {
+                    try { segment.close(); } catch (IOException e) { error.addSuppressed(e); }
+                }
+            }
+            if (fileLock != null) {
+                try { fileLock.release(); } catch (IOException e) { error.addSuppressed(e); }
+            }
+            try { lockChannel.close(); } catch (IOException e) { error.addSuppressed(e); }
+            throw error;
+        }
+    }
+
+    public AppendResult append(List<LogRecord> records) throws IOException {
+        guard.writeLock().lock();
+        try {
+            ensureOpen();
+            byte[] bytes = BatchCodec.encode(logEndOffset, records, config.maxBatchBytes());
+            long oldEnd = logEndOffset;
+            try {
+                LogSegment active = segments.lastEntry().getValue();
+                if (active.size() + bytes.length > config.segmentBytes()) {
+                    active.force();
+                    durableEndOffset = oldEnd;
+                    active = LogSegment.open(LogSegment.dataPath(directory, oldEnd), oldEnd, io);
+                    segments.put(oldEnd, active);
+                    indexes.put(oldEnd, new OffsetIndex(config.indexIntervalBytes()));
+                }
+                long position = active.append(bytes);
+                OffsetIndex index = indexes.get(active.baseOffset());
+                index.consider(oldEnd, position);
+                index.write(OffsetIndex.indexPath(directory, active.baseOffset()), io);
+                logEndOffset = Math.addExact(oldEnd, records.size());
+                return new AppendResult(oldEnd, logEndOffset);
+            } catch (IOException e) {
+                markFailed(e);
+                throw e;
+            }
+        } finally {
+            guard.writeLock().unlock();
+        }
+    }
+
+    public List<RecordBatch> read(long offset, int maxBytes) throws IOException {
+        guard.readLock().lock();
+        try {
+            ensureOpen();
+            if (offset < 0 || offset > logEndOffset || maxBytes <= 0) {
+                throw new IllegalArgumentException("Invalid read range or budget");
+            }
+            if (offset == logEndOffset) return List.of();
+            List<RecordBatch> result = new ArrayList<>();
+            long accumulated = 0;
+            for (Map.Entry<Long, LogSegment> item : segments.tailMap(segments.floorKey(offset), true).entrySet()) {
+                LogSegment segment = item.getValue();
+                OffsetIndex.Entry floor = indexes.get(item.getKey()).floor(offset);
+                long position = floor == null ? 0 : floor.position();
+                long size = segment.size();
+                while (position < size) {
+                    RecordBatch batch = readBatch(segment, position, size);
+                    position += batch.encodedSize();
+                    if (batch.nextOffset() <= offset) continue;
+                    if (!result.isEmpty() && accumulated + batch.encodedSize() > maxBytes) {
+                        return List.copyOf(result);
+                    }
+                    result.add(batch);
+                    accumulated += batch.encodedSize();
+                    if (accumulated >= maxBytes) return List.copyOf(result);
+                }
+            }
+            return List.copyOf(result);
+        } finally {
+            guard.readLock().unlock();
+        }
+    }
+
+    private RecordBatch readBatch(LogSegment segment, long position, long size) throws IOException {
+        try {
+            if (size - position < BatchCodec.HEADER_BYTES) {
+                throw new CorruptLogException(segment.path() + " at byte " + position + ": incomplete header");
+            }
+            byte[] prefix = segment.readBytes(position, BatchCodec.HEADER_BYTES);
+            BatchCodec.validateHeaderPrefix(prefix, config.maxBatchBytes());
+            int length = ByteBuffer.wrap(prefix).getInt(6);
+            if (length > size - position) {
+                throw new CorruptLogException(segment.path() + " at byte " + position + ": incomplete batch");
+            }
+            return BatchCodec.decode(segment.readBytes(position, length), config.maxBatchBytes());
+        } catch (CorruptLogException e) {
+            throw new CorruptLogException(segment.path() + " at byte " + position + ": " + e.getMessage(), e);
+        }
+    }
+
+    public long flush() throws IOException {
+        guard.writeLock().lock();
+        try {
+            ensureOpen();
+            try { return forceAll(); }
+            catch (IOException e) { markFailed(e); throw e; }
+        } finally {
+            guard.writeLock().unlock();
+        }
+    }
+
+    private long forceAll() throws IOException {
+        for (LogSegment segment : segments.values()) segment.force();
+        durableEndOffset = logEndOffset;
+        return durableEndOffset;
+    }
+
+    public long logStartOffset() {
+        guard.readLock().lock();
+        try { ensureOpen(); return 0; }
+        finally { guard.readLock().unlock(); }
+    }
+
+    public long logEndOffset() {
+        guard.readLock().lock();
+        try { ensureOpen(); return logEndOffset; }
+        finally { guard.readLock().unlock(); }
+    }
+
+    public long durableEndOffset() {
+        guard.readLock().lock();
+        try { ensureOpen(); return durableEndOffset; }
+        finally { guard.readLock().unlock(); }
+    }
+
+    private void markFailed(IOException error) {
+        if (firstFailure == null) firstFailure = error;
+        state = State.FAILED;
+    }
+
+    private void ensureOpen() {
+        if (state != State.OPEN) throw new IllegalStateException("Log is " + state, firstFailure);
+    }
+
+    @Override public void close() throws IOException {
+        guard.writeLock().lock();
+        try {
+            if (state == State.CLOSED) return;
+            IOException failure = null;
+            if (state == State.OPEN) {
+                try { forceAll(); } catch (IOException e) { markFailed(e); failure = e; }
+            }
+            for (LogSegment segment : segments.values()) {
+                try { segment.close(); } catch (IOException e) { failure = combine(failure, e); }
+            }
+            try { fileLock.release(); } catch (IOException e) { failure = combine(failure, e); }
+            try { lockChannel.close(); } catch (IOException e) { failure = combine(failure, e); }
+            state = State.CLOSED;
+            if (failure != null) throw failure;
+        } finally {
+            guard.writeLock().unlock();
+        }
+    }
+
+    private static IOException combine(IOException first, IOException later) {
+        if (first == null) return later;
+        first.addSuppressed(later);
+        return first;
+    }
+}
