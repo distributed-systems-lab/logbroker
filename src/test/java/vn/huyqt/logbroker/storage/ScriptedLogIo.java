@@ -12,6 +12,7 @@ class ScriptedLogIo extends LogIo {
     long writtenBytes;
     int failDeleteAt = -1;
     int deleteCalls;
+    boolean failTruncate;
 
     @Override int write(FileChannel channel, ByteBuffer src, long position) throws IOException {
         if (writtenBytes >= failAfterBytes) throw new IOException("Injected write failure");
@@ -28,6 +29,11 @@ class ScriptedLogIo extends LogIo {
     }
 
 
+
+    @Override void truncate(FileChannel channel, long size) throws IOException {
+        if (failTruncate) throw new IOException("Injected truncate failure");
+        super.truncate(channel, size);
+    }
     @Override void delete(java.nio.file.Path path) throws IOException {
         deleteCalls++;
         if (deleteCalls == failDeleteAt) throw new IOException("Injected delete failure");

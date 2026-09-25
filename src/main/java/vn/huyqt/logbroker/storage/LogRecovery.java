@@ -102,7 +102,7 @@ final class LogRecovery {
             info.index().write(OffsetIndex.indexPath(directory, info.baseOffset()), io);
         }
         for (SegmentInfo info : infos) {
-            try (FileChannel channel = FileChannel.open(LogSegment.dataPath(directory, info.baseOffset()), READ)) {
+            try (FileChannel channel = FileChannel.open(LogSegment.dataPath(directory, info.baseOffset()), READ, WRITE)) {
                 io.force(channel);
             }
         }
