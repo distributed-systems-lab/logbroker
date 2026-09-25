@@ -51,6 +51,14 @@ public record BrokerConfig(Path dataDirectory, String host, int port,
         return copy(port, changedInterval);
     }
 
+    public BrokerConfig withMaxConnections(int changedLimit) {
+        return new BrokerConfig(dataDirectory, host, port, flushInterval, flushBytes,
+                maxFetchBytes, protocolLimits, logConfig, dataWorkers, validationWorkers,
+                changedLimit, maxTasksPerPartition, maxValidationTasks, maxQueuedRequestBytes,
+                maxOutboundPerConnection, maxOutboundTotal, maxRequestContexts,
+                maxFlushedWaiters, maxTopics, maxPartitions, shutdownTimeout);
+    }
+
     private BrokerConfig copy(int changedPort, Duration changedInterval) {
         return new BrokerConfig(dataDirectory, host, changedPort, changedInterval, flushBytes,
                 maxFetchBytes, protocolLimits, logConfig, dataWorkers, validationWorkers,

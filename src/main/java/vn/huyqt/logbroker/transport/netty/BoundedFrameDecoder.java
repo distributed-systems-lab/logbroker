@@ -6,6 +6,8 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.util.ReferenceCountUtil;
 import java.nio.ByteBuffer;
 import java.util.Objects;
+import java.time.Duration;
+import vn.huyqt.logbroker.broker.DeadlineScheduler;
 import vn.huyqt.logbroker.broker.ResourceBudget;
 import vn.huyqt.logbroker.protocol.ProtocolLimits;
 
@@ -13,15 +15,23 @@ import vn.huyqt.logbroker.protocol.ProtocolLimits;
 public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
     private final ProtocolLimits limits;
     private final ResourceBudget budget;
+    private final DeadlineScheduler clock;
     private final byte[] prefix = new byte[4];
     private int prefixCount;
     private byte[] frame;
     private int frameCount;
     private ResourceBudget.Lease lease;
+    private DeadlineScheduler.Ticket frameDeadline;
 
     public BoundedFrameDecoder(ProtocolLimits limits, ResourceBudget budget) {
+        this(limits, budget, null);
+    }
+
+    public BoundedFrameDecoder(ProtocolLimits limits, ResourceBudget budget,
+                               DeadlineScheduler clock) {
         this.limits = Objects.requireNonNull(limits);
         this.budget = Objects.requireNonNull(budget);
+        this.clock = clock;
     }
 
     @Override public void channelRead(ChannelHandlerContext context, Object message) {
@@ -33,6 +43,9 @@ public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
         try {
             while (input.isReadable() && context.channel().isOpen()) {
                 if (frame == null) {
+                    if (prefixCount == 0 && clock != null)
+                        frameDeadline = clock.schedule(clock.nanoTime()
+                                + Duration.ofSeconds(30).toNanos(), context::close);
                     int copy = Math.min(4 - prefixCount, input.readableBytes());
                     input.readBytes(prefix, prefixCount, copy);
                     prefixCount += copy;
@@ -52,6 +65,7 @@ public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
                 input.readBytes(frame, frameCount, copy);
                 frameCount += copy;
                 if (frameCount == frame.length) {
+                    if (frameDeadline != null) { frameDeadline.cancel(); frameDeadline = null; }
                     OwnedFrame complete = new OwnedFrame(frame, lease);
                     frame = null;
                     frameCount = 0;
@@ -76,6 +90,7 @@ public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
     }
 
     private void releasePartial() {
+        if (frameDeadline != null) { frameDeadline.cancel(); frameDeadline = null; }
         if (lease != null) lease.close();
         lease = null;
         frame = null;

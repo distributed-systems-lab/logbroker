@@ -107,6 +107,8 @@ class NettyServerTransportTest {
             } finally {
                 server.closeAsync().get();
                 fetch.close(); runtime.close();
+                assertEquals(0, inputBudget.used());
+                assertEquals(0, waiterBudget.used());
             }
         }
     }

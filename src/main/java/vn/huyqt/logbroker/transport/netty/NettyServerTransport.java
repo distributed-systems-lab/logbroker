@@ -86,7 +86,7 @@ public final class NettyServerTransport implements ServerTransport {
                     .childHandler(new ChannelInitializer<SocketChannel>() {
                         @Override protected void initChannel(SocketChannel channel) {
                             channel.pipeline().addLast(new BoundedFrameDecoder(
-                                    config.protocolLimits(), inputBudget));
+                                    config.protocolLimits(), inputBudget, clock));
                             channel.pipeline().addLast(new ConnectionHandler());
                         }
                     });

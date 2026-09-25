@@ -77,6 +77,8 @@ public final class Broker implements AutoCloseable {
             final PartitionRegistry activeRegistry = registry;
             final PartitionExecutor activeWorkers = workers;
             final DeadlineScheduler activeClock = clock;
+            final ResourceBudget flushedWaiters =
+                    new ResourceBudget(config.maxFlushedWaiters());
             final Map<TopicPartition, PartitionRuntime> activeRuntimes = new ConcurrentHashMap<>();
             java.util.function.Function<TopicPartition, PartitionRuntime> resolve = tp -> {
                 if (activeRegistry.state(tp) != vn.huyqt.logbroker.protocol.ErrorCode.NONE)
@@ -84,7 +86,7 @@ public final class Broker implements AutoCloseable {
                 return activeRuntimes.computeIfAbsent(tp, key -> {
                     try { return new PartitionRuntime(key, activeRegistry.require(key),
                             activeWorkers, activeClock, config,
-                            new ResourceBudget(config.maxFlushedWaiters()),
+                            flushedWaiters,
                             failure -> activeRegistry.markFailed(key, failure)); }
                     catch (IOException failure) { return null; }
                 });
@@ -120,11 +122,13 @@ public final class Broker implements AutoCloseable {
     public InetSocketAddress address() { return address; }
 
     public synchronized CompletableFuture<Void> shutdown(Duration deadline) {
+        if (deadline == null || deadline.isZero() || deadline.isNegative())
+            throw new IllegalArgumentException("Positive shutdown deadline required");
         if (stopping != null) return stopping;
         transport.stopAccepting();
         dispatcher.beginShutdown();
         var completion = new CompletableFuture<Void>();
-        stopping = completion;
+        stopping = completion.orTimeout(deadline.toMillis(), TimeUnit.MILLISECONDS);
         var thread = new Thread(() -> {
             Throwable first = null;
             try {
@@ -137,11 +141,19 @@ public final class Broker implements AutoCloseable {
             try { transport.closeAsync().get(); }
             catch (Throwable error) { if (first == null) first = error; else first.addSuppressed(error); }
             fetch.close();
-            for (var runtime : runtimes.values()) runtime.close();
             try { workers.close(); }
-            catch (Throwable error) { if (first == null) first = error; else first.addSuppressed(error); }
+            catch (Throwable error) {
+                if (first != null) error.addSuppressed(first);
+                completion.completeExceptionally(error);
+                return; // Keep stores and root lock while an I/O worker may still use them.
+            }
+            for (var runtime : runtimes.values()) runtime.close();
             try { metadata.close(); }
-            catch (Throwable error) { if (first == null) first = error; else first.addSuppressed(error); }
+            catch (Throwable error) {
+                if (first != null) error.addSuppressed(first);
+                completion.completeExceptionally(error);
+                return; // Metadata worker may still be writing its log.
+            }
             try { registry.close(); }
             catch (Throwable error) { if (first == null) first = error; else first.addSuppressed(error); }
             clock.close();
