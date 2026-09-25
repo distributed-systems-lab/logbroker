@@ -176,7 +176,8 @@ public final class NettyServerTransport implements ServerTransport {
 
         private void decode(ChannelHandlerContext context, BoundedFrameDecoder.OwnedFrame owned) {
             byte[] bytes = owned.bytes();
-            ResourceBudget.Lease decoded = inputBudget.reserve(2L * bytes.length).orElse(null);
+            ResourceBudget.Lease decoded = inputBudget.reserve(
+                    codec.estimatedDecodedBytes(bytes)).orElse(null);
             if (decoded == null) { context.close(); return; }
             boolean transferred = false;
             try {

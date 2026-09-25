@@ -17,6 +17,8 @@ import vn.huyqt.logbroker.broker.metadata.MetadataService;
 import vn.huyqt.logbroker.protocol.Protocol;
 import vn.huyqt.logbroker.protocol.ProtocolCodec;
 import vn.huyqt.logbroker.protocol.ErrorCode;
+import vn.huyqt.logbroker.storage.LogRecord;
+import vn.huyqt.logbroker.storage.RecordHeader;
 
 class NettyServerTransportTest {
     @TempDir Path directory;
@@ -109,6 +111,39 @@ class NettyServerTransportTest {
                 fetch.close(); runtime.close();
                 assertEquals(0, inputBudget.used());
                 assertEquals(0, waiterBudget.used());
+            }
+        }
+    }
+
+    @Test
+    void amplifiedHeadersAreRejectedBeforeDecodedObjectAllocation() throws Exception {
+        var config = BrokerConfig.defaults(directory).withPort(0);
+        var codec = new ProtocolCodec(config.protocolLimits());
+        var headers = java.util.Collections.nCopies(50, new RecordHeader("", null));
+        var tp = new Protocol.TopicPartition(UUID.randomUUID(), 0);
+        var frame = codec.encodeRequest(new Protocol.RequestFrame((short) 3, (short) 1,
+                94, new Protocol.Produce(Protocol.AckMode.APPENDED, 1000,
+                List.of(new Protocol.ProduceEntry(tp,
+                        new Protocol.Batch(List.of(new LogRecord(0, null, null, headers))))))));
+        var budget = new ResourceBudget(3L * frame.length);
+        try (var clock = DeadlineScheduler.system();
+             var registry = new PartitionRegistry(config, FilePartitionStore::open);
+             var metadata = MetadataService.open(directory, config, registry)) {
+            var fetch = new FetchCoordinator(new FetchPlanner(Map.of(), config),
+                    ignored -> null, clock, new ResourceBudget(8));
+            var dispatcher = new RequestDispatcher(metadata, ignored -> null, fetch, clock);
+            var server = new NettyServerTransport(config, clock, budget);
+            try {
+                var bound = server.start(new InetSocketAddress("127.0.0.1", 0), dispatcher);
+                try (var socket = new Socket(bound.getAddress(), bound.getPort())) {
+                    socket.setSoTimeout(5000);
+                    socket.getOutputStream().write(frame);
+                    assertEquals(-1, socket.getInputStream().read());
+                }
+            } finally {
+                server.closeAsync().get();
+                fetch.close();
+                assertEquals(0, budget.used());
             }
         }
     }

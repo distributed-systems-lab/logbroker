@@ -27,6 +27,62 @@ public final class ProtocolCodec {
         this.limits = Objects.requireNonNull(limits);
     }
 
+    /** Conservative decoded-memory admission before record/header allocation. */
+    public long estimatedDecodedBytes(byte[] frame) {
+        long base = 2L * frame.length;
+        try {
+            ByteBuffer source = header(frame);
+            short operation = source.getShort();
+            source.getShort();
+            source.getLong();
+            if (operation != 3) return base;
+            getByte(source);
+            getInt(source);
+            int partitions = getCount(source, limits.maxPartitionEntries(), 54);
+            long records = 0, headers = 0;
+            for (int partition = 0; partition < partitions; partition++) {
+                if (source.remaining() < 34) return base;
+                source.position(source.position() + 20);
+                int start = source.position();
+                int length = source.getInt(start + 2);
+                int count = source.getInt(start + 6);
+                if (length < 34 || length > source.remaining()
+                        || count < 1 || count > limits.maxRecordsPerBatch()) return base;
+                var payload = source.duplicate();
+                payload.position(start + 14).limit(start + length);
+                for (int record = 0; record < count; record++) {
+                    if (payload.remaining() < 20) return base;
+                    payload.position(payload.position() + 8);
+                    if (!skipNullable(payload) || !skipNullable(payload)) return base;
+                    int headerCount = getInt(payload);
+                    if (headerCount < 0 || headerCount > payload.remaining() / 8) return base;
+                    records++;
+                    headers += headerCount;
+                    for (int header = 0; header < headerCount; header++) {
+                        int keyLength = getInt(payload);
+                        if (keyLength < 0 || keyLength > payload.remaining()) return base;
+                        payload.position(payload.position() + keyLength);
+                        if (!skipNullable(payload)) return base;
+                    }
+                }
+                if (payload.hasRemaining()) return base;
+                source.position(start + length);
+            }
+            return source.hasRemaining() ? base : base + 64L * records + 64L * headers;
+        } catch (ProtocolException | RuntimeException malformed) {
+            // Decoder will produce the protocol error without constructing records.
+            return base;
+        }
+    }
+
+    private static boolean skipNullable(ByteBuffer source) throws ProtocolException {
+        int length = getInt(source);
+        if (length == -1) return true;
+        if (length < 0 || length > source.remaining()) return false;
+        source.position(source.position() + length);
+        return true;
+    }
+
     public byte[] encodeRequest(RequestFrame frame) throws ProtocolException {
         requireHeader(frame.operation(), frame.version(), frame.requestId());
         try {

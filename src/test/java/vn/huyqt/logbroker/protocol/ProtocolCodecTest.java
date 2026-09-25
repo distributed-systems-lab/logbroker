@@ -9,8 +9,22 @@ import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
 import vn.huyqt.logbroker.protocol.Protocol.*;
 import vn.huyqt.logbroker.storage.LogRecord;
+import vn.huyqt.logbroker.storage.RecordHeader;
 
 class ProtocolCodecTest {
+    @Test
+    void preflightAccountsForDecodedRecordAndHeaderObjects() throws Exception {
+        var codec = new ProtocolCodec(ProtocolLimits.defaults());
+        var headers = java.util.Collections.nCopies(50,
+                new RecordHeader("", null));
+        var frame = new RequestFrame((short) 3, (short) 1, 9,
+                new Produce(AckMode.APPENDED, 1000, List.of(new ProduceEntry(
+                        new TopicPartition(new UUID(1, 2), 0),
+                        new Batch(List.of(new LogRecord(0, null, null, headers)))))));
+        byte[] bytes = codec.encodeRequest(frame);
+        assertEquals(2L * bytes.length + 64L * 51,
+                codec.estimatedDecodedBytes(bytes));
+    }
     @Test
     void createTopicFrameHasStableBytes() throws Exception {
         var frame = new Protocol.RequestFrame((short) 1, (short) 1, 7,
