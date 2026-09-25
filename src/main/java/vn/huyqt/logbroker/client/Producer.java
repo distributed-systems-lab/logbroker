@@ -5,7 +5,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import vn.huyqt.logbroker.broker.DeadlineScheduler;
 import vn.huyqt.logbroker.broker.ResourceBudget;
 import vn.huyqt.logbroker.protocol.Protocol;
@@ -22,6 +25,8 @@ public final class Producer implements AutoCloseable {
     private final Map<String, CompletableFuture<Protocol.TopicInfo>> topics = new HashMap<>();
     private final Map<Protocol.TopicPartition, Lane> lanes = new HashMap<>();
     private final Map<String, Integer> nullCursors = new HashMap<>();
+    private final Set<CompletableFuture<RecordMetadata>> outstanding =
+            ConcurrentHashMap.newKeySet();
     private boolean closed;
 
     public Producer(BrokerClient client, ClientConfig config, DeadlineScheduler clock) {
@@ -48,6 +53,11 @@ public final class Producer implements AutoCloseable {
         synchronized (this) {
             if (closed) { lease.close(); return CompletableFuture.failedFuture(
                     ClientException.notSent("Producer closed")); }
+            outstanding.add(result);
+            result.whenComplete((ignored, error) -> {
+                lease.close();
+                outstanding.remove(result);
+            });
             metadata = topics.computeIfAbsent(topic, this::lookup);
         }
         metadata.whenComplete((info, error) -> {
@@ -133,10 +143,29 @@ public final class Producer implements AutoCloseable {
                 });
     }
 
-    @Override public synchronized void close() {
-        if (closed) return;
-        closed = true;
-        for (var entry : lanes.entrySet()) seal(entry.getKey(), entry.getValue(), "");
+    @Override public void close() {
+        CompletableFuture<?>[] accepted;
+        synchronized (this) {
+            if (!closed) {
+                closed = true;
+                for (var entry : lanes.entrySet()) seal(entry.getKey(), entry.getValue(), "");
+            }
+            accepted = outstanding.toArray(CompletableFuture[]::new);
+        }
+        if (accepted.length == 0) return;
+        try {
+            CompletableFuture.allOf(accepted).get(config.requestTimeout().toMillis(),
+                    TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException deadline) {
+            for (var pending : outstanding) pending.completeExceptionally(
+                    ClientException.unknown(deadline));
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            for (var pending : outstanding) pending.completeExceptionally(
+                    ClientException.unknown(interrupted));
+        } catch (java.util.concurrent.ExecutionException completedWithErrors) {
+            // All accepted requests settled; callers retain their individual failures.
+        }
     }
 
     public record RecordMetadata(Protocol.TopicPartition partition, long offset) {}
