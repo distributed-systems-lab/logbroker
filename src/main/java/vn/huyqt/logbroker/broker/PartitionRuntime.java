@@ -202,6 +202,16 @@ public final class PartitionRuntime implements AutoCloseable {
     }
 
     public void requestFlush() { scheduleTick(); }
+    public CompletableFuture<Void> flushNow() {
+        if (closed || failed) return CompletableFuture.completedFuture(null);
+        return executor.submit(partition, () -> {
+            if (!closed && !failed) {
+                try { pruneDurable(store.flush()); scheduleFlush(); }
+                catch (IOException | RuntimeException failure) { fail(failure); throw failure; }
+            }
+            return null;
+        });
+    }
     public long generation() { return generation; }
 
     public CompletableFuture<FetchResult> read(FetchEntry entry, int remainingWireBudget,
