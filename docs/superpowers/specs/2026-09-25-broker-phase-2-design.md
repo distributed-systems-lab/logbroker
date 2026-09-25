@@ -2,7 +2,7 @@
 
 Ngày: 2026-09-25.
 
-Trạng thái: Các quyết định kiến trúc đã được người dùng đồng ý trong thảo luận. Bản spec tổng hợp đang chờ review; các chi tiết bổ sung và giá trị mặc định bên dưới là đề xuất để duyệt cùng tài liệu. Chưa bắt đầu implementation plan hoặc triển khai Phase 2.
+Trạng thái: Người dùng đã duyệt toàn bộ bản spec ngày 2026-09-25, gồm các chi tiết và giá trị mặc định trước đó ghi là đề xuất. Implementation plan: [Phase 2](../plans/2026-09-25-broker-phase-2.md). Chưa triển khai Phase 2.
 
 ## 1. Mục tiêu và phạm vi
 

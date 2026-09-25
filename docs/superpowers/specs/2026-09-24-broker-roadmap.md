@@ -43,7 +43,7 @@ Quyết định đã chốt: recovery nghiêm ngặt. Chỉ tự cắt batch cu�
 
 Topic/partition; binary protocol có version, request ID, mã lỗi, giới hạn kích thước; create topic, metadata, produce, fetch; Netty transport; batching và backpressure cơ bản. Consumer tự chọn partition và offset.
 
-Thiết kế chi tiết: [Phase 2 — Broker đơn và Java client](2026-09-25-broker-phase-2-design.md), đang chờ review bản tổng hợp. Các quyết định đã chốt gồm APPENDED/FLUSHED, flush theo thời gian hoặc byte, Fetch đến logEndOffset, long polling, request nhiều partition, local metadata log và topic ID từ Phase 2.
+Thiết kế chi tiết: [Phase 2 — Broker đơn và Java client](2026-09-25-broker-phase-2-design.md), đã duyệt ngày 2026-09-25; [implementation plan](../plans/2026-09-25-broker-phase-2.md) đã viết. Các quyết định đã chốt gồm APPENDED/FLUSHED, flush theo thời gian hoặc byte, Fetch đến logEndOffset, long polling, request nhiều partition, local metadata log và topic ID từ Phase 2.
 
 Điều kiện hoàn thành: nhiều client ghi/đọc được; restart phục hồi theo cam kết durability đã chọn.
 
