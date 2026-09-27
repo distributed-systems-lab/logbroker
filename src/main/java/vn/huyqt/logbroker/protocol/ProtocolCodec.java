@@ -35,37 +35,46 @@ public final class ProtocolCodec {
             short operation = source.getShort();
             source.getShort();
             source.getLong();
-            if (operation != 3) return base;
+            if (operation != 3)
+                return base;
             getByte(source);
             getInt(source);
             int partitions = getCount(source, limits.maxPartitionEntries(), 54);
             long records = 0, headers = 0;
             for (int partition = 0; partition < partitions; partition++) {
-                if (source.remaining() < 34) return base;
+                if (source.remaining() < 34)
+                    return base;
                 source.position(source.position() + 20);
                 int start = source.position();
                 int length = source.getInt(start + 2);
                 int count = source.getInt(start + 6);
                 if (length < 34 || length > source.remaining()
-                        || count < 1 || count > limits.maxRecordsPerBatch()) return base;
+                        || count < 1 || count > limits.maxRecordsPerBatch())
+                    return base;
                 var payload = source.duplicate();
                 payload.position(start + 14).limit(start + length);
                 for (int record = 0; record < count; record++) {
-                    if (payload.remaining() < 20) return base;
+                    if (payload.remaining() < 20)
+                        return base;
                     payload.position(payload.position() + 8);
-                    if (!skipNullable(payload) || !skipNullable(payload)) return base;
+                    if (!skipNullable(payload) || !skipNullable(payload))
+                        return base;
                     int headerCount = getInt(payload);
-                    if (headerCount < 0 || headerCount > payload.remaining() / 8) return base;
+                    if (headerCount < 0 || headerCount > payload.remaining() / 8)
+                        return base;
                     records++;
                     headers += headerCount;
                     for (int header = 0; header < headerCount; header++) {
                         int keyLength = getInt(payload);
-                        if (keyLength < 0 || keyLength > payload.remaining()) return base;
+                        if (keyLength < 0 || keyLength > payload.remaining())
+                            return base;
                         payload.position(payload.position() + keyLength);
-                        if (!skipNullable(payload)) return base;
+                        if (!skipNullable(payload))
+                            return base;
                     }
                 }
-                if (payload.hasRemaining()) return base;
+                if (payload.hasRemaining())
+                    return base;
                 source.position(start + length);
             }
             return source.hasRemaining() ? base : base + 64L * records + 64L * headers;
@@ -77,8 +86,10 @@ public final class ProtocolCodec {
 
     private static boolean skipNullable(ByteBuffer source) throws ProtocolException {
         int length = getInt(source);
-        if (length == -1) return true;
-        if (length < 0 || length > source.remaining()) return false;
+        if (length == -1)
+            return true;
+        if (length < 0 || length > source.remaining())
+            return false;
         source.position(source.position() + length);
         return true;
     }
@@ -96,7 +107,8 @@ public final class ProtocolCodec {
                     case Metadata request -> {
                         requireOperation(frame.operation(), 2);
                         putArrayCount(out, request.names().size(), 128);
-                        for (String name : request.names()) putString(out, name, MAX_STRING);
+                        for (String name : request.names())
+                            putString(out, name, MAX_STRING);
                     }
                     case Produce request -> {
                         requireOperation(frame.operation(), 3);
@@ -141,23 +153,28 @@ public final class ProtocolCodec {
                 Set<String> unique = new HashSet<>();
                 for (int i = 0; i < count; i++) {
                     String name = getString(source, MAX_STRING);
-                    if (!unique.add(name)) throw invalid("Duplicate topic name");
+                    if (!unique.add(name))
+                        throw invalid("Duplicate topic name");
                     names.add(name);
                 }
                 yield new Metadata(names);
             }
             case 3 -> {
                 int ack = Byte.toUnsignedInt(getByte(source));
-                if (ack > 1) throw invalid("Invalid acknowledgment mode");
+                if (ack > 1)
+                    throw invalid("Invalid acknowledgment mode");
                 int timeout = getInt(source);
-                if (timeout <= 0 || timeout > 30_000) throw invalid("Invalid Produce timeout");
+                if (timeout <= 0 || timeout > 30_000)
+                    throw invalid("Invalid Produce timeout");
                 int count = getCount(source, limits.maxPartitionEntries(), 16 + 4 + 34);
-                if (count == 0) throw invalid("Empty Produce");
+                if (count == 0)
+                    throw invalid("Empty Produce");
                 List<ProduceEntry> entries = new ArrayList<>(count);
                 Set<TopicPartition> unique = new HashSet<>();
                 for (int i = 0; i < count; i++) {
                     TopicPartition tp = getPartition(source);
-                    if (!unique.add(tp)) throw invalid("Duplicate partition");
+                    if (!unique.add(tp))
+                        throw invalid("Duplicate partition");
                     entries.add(new ProduceEntry(tp, WireBatchCodec.decode(getWireBatch(source), limits)));
                 }
                 yield new Produce(ack == 0 ? AckMode.APPENDED : AckMode.FLUSHED, timeout, entries);
@@ -165,17 +182,21 @@ public final class ProtocolCodec {
             case 4 -> {
                 int max = getInt(source), min = getInt(source), wait = getInt(source);
                 if (max <= 0 || max > 4 * 1024 * 1024 || min < 0 || min > max
-                        || wait < 0 || wait > 5_000) throw invalid("Invalid Fetch limits");
+                        || wait < 0 || wait > 5_000)
+                    throw invalid("Invalid Fetch limits");
                 int count = getCount(source, limits.maxPartitionEntries(), 16 + 4 + 8 + 4);
-                if (count == 0) throw invalid("Empty Fetch");
+                if (count == 0)
+                    throw invalid("Empty Fetch");
                 List<FetchEntry> entries = new ArrayList<>(count);
                 Set<TopicPartition> unique = new HashSet<>();
                 for (int i = 0; i < count; i++) {
                     TopicPartition tp = getPartition(source);
-                    if (!unique.add(tp)) throw invalid("Duplicate partition");
+                    if (!unique.add(tp))
+                        throw invalid("Duplicate partition");
                     long offset = getLong(source);
                     int partitionMax = getInt(source);
-                    if (offset < 0 || partitionMax <= 0) throw invalid("Invalid Fetch entry");
+                    if (offset < 0 || partitionMax <= 0)
+                        throw invalid("Invalid Fetch entry");
                     entries.add(new FetchEntry(tp, offset, partitionMax));
                 }
                 yield new Fetch(max, min, wait, entries);
@@ -201,9 +222,13 @@ public final class ProtocolCodec {
                     case Failure failure -> failure.error();
                 };
                 putError(out, requestError);
-                if (requestError.code() != ErrorCode.NONE) return;
+                if (requestError.code() != ErrorCode.NONE)
+                    return;
                 switch (body) {
-                    case CreateTopicReply reply -> { requireOperation(frame.operation(), 1); putUuid(out, reply.topicId()); }
+                    case CreateTopicReply reply -> {
+                        requireOperation(frame.operation(), 1);
+                        putUuid(out, reply.topicId());
+                    }
                     case MetadataReply reply -> {
                         requireOperation(frame.operation(), 2);
                         putString(out, reply.host(), 255);
@@ -257,7 +282,8 @@ public final class ProtocolCodec {
         short operation = source.getShort();
         short version = source.getShort();
         long requestId = source.getLong();
-        if (requestId < 0) throw invalid("Invalid response header");
+        if (requestId < 0)
+            throw invalid("Invalid response header");
         Error error = getError(source);
         if (error.code() != ErrorCode.NONE) {
             requireConsumed(source);
@@ -317,7 +343,8 @@ public final class ProtocolCodec {
 
     private byte[] encode(short operation, short version, long requestId, Writer writer)
             throws IOException {
-        if (requestId < 0) throw invalid("Negative request ID");
+        if (requestId < 0)
+            throw invalid("Negative request ID");
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         DataOutputStream out = new DataOutputStream(bytes);
         out.writeInt(0);
@@ -337,29 +364,35 @@ public final class ProtocolCodec {
         if (frame.length < 16 || frame.length - 4 > limits.maxFrameBytes())
             throw invalid("Frame length out of range");
         ByteBuffer source = ByteBuffer.wrap(frame).order(ByteOrder.BIG_ENDIAN);
-        if (source.getInt() != frame.length - 4) throw invalid("Frame length mismatch");
+        if (source.getInt() != frame.length - 4)
+            throw invalid("Frame length mismatch");
         return source;
     }
 
     private static void requireHeader(short operation, short version, long id)
             throws ProtocolException {
-        if (version != VERSION) throw new ProtocolException(ErrorCode.UNSUPPORTED_VERSION, "Unsupported version");
-        if (id < 0) throw invalid("Negative request ID");
+        if (version != VERSION)
+            throw new ProtocolException(ErrorCode.UNSUPPORTED_VERSION, "Unsupported version");
+        if (id < 0)
+            throw invalid("Negative request ID");
         if (operation < 1 || operation > 4)
             throw new ProtocolException(ErrorCode.UNSUPPORTED_OPERATION, "Unknown operation");
     }
 
     private static void requireOperation(short actual, int expected) throws ProtocolException {
-        if (actual != expected) throw invalid("Operation/body mismatch");
+        if (actual != expected)
+            throw invalid("Operation/body mismatch");
     }
 
     private static void requireConsumed(ByteBuffer source) throws ProtocolException {
-        if (source.hasRemaining()) throw invalid("Trailing frame bytes");
+        if (source.hasRemaining())
+            throw invalid("Trailing frame bytes");
     }
 
     private static void putArrayCount(DataOutputStream out, int count, int max)
             throws IOException {
-        if (count < 0 || count > max) throw invalid("Array count exceeds limit");
+        if (count < 0 || count > max)
+            throw invalid("Array count exceeds limit");
         out.writeInt(count);
     }
 
@@ -367,7 +400,8 @@ public final class ProtocolCodec {
             throws IOException {
         Objects.requireNonNull(value);
         byte[] encoded = strictUtf8(value);
-        if (encoded.length > max) throw invalid("String exceeds limit");
+        if (encoded.length > max)
+            throw invalid("String exceeds limit");
         out.writeInt(encoded.length);
         out.write(encoded);
     }
@@ -388,7 +422,8 @@ public final class ProtocolCodec {
 
     private static String getString(ByteBuffer source, int max) throws ProtocolException {
         int size = getInt(source);
-        if (size < 0 || size > max || size > source.remaining()) throw invalid("Invalid string length");
+        if (size < 0 || size > max || size > source.remaining())
+            throw invalid("Invalid string length");
         ByteBuffer slice = source.slice();
         slice.limit(size);
         try {
@@ -420,7 +455,8 @@ public final class ProtocolCodec {
     private static TopicPartition getPartition(ByteBuffer source) throws ProtocolException {
         UUID id = getUuid(source);
         int partition = getInt(source);
-        if (partition < 0) throw invalid("Negative partition");
+        if (partition < 0)
+            throw invalid("Negative partition");
         return new TopicPartition(id, partition);
     }
 
@@ -434,9 +470,11 @@ public final class ProtocolCodec {
     }
 
     private byte[] getWireBatch(ByteBuffer source) throws ProtocolException {
-        if (source.remaining() < 14) throw invalid("Incomplete wire batch header");
+        if (source.remaining() < 14)
+            throw invalid("Incomplete wire batch header");
         int length = source.getInt(source.position() + 2);
-        if (length < 34 || length > source.remaining()) throw invalid("Invalid wire batch length");
+        if (length < 34 || length > source.remaining())
+            throw invalid("Invalid wire batch length");
         if ((long) length + 8 > limits.maxWireBatchBytes()
                 || (long) length + 16 > limits.maxStorageBatchBytes())
             throw new ProtocolException(ErrorCode.BATCH_TOO_LARGE, "Wire batch exceeds limit");
@@ -453,22 +491,26 @@ public final class ProtocolCodec {
     }
 
     private static byte getByte(ByteBuffer source) throws ProtocolException {
-        if (source.remaining() < 1) throw invalid("Incomplete byte");
+        if (source.remaining() < 1)
+            throw invalid("Incomplete byte");
         return source.get();
     }
 
     private static short getShort(ByteBuffer source) throws ProtocolException {
-        if (source.remaining() < 2) throw invalid("Incomplete short");
+        if (source.remaining() < 2)
+            throw invalid("Incomplete short");
         return source.getShort();
     }
 
     private static int getInt(ByteBuffer source) throws ProtocolException {
-        if (source.remaining() < 4) throw invalid("Incomplete integer");
+        if (source.remaining() < 4)
+            throw invalid("Incomplete integer");
         return source.getInt();
     }
 
     private static long getLong(ByteBuffer source) throws ProtocolException {
-        if (source.remaining() < 8) throw invalid("Incomplete long");
+        if (source.remaining() < 8)
+            throw invalid("Incomplete long");
         return source.getLong();
     }
 
@@ -478,9 +520,12 @@ public final class ProtocolCodec {
 
     private static ProtocolException asProtocol(IOException error) {
         return error instanceof ProtocolException known
-                ? known : new ProtocolException(ErrorCode.INVALID_REQUEST, "Codec I/O error", error);
+                ? known
+                : new ProtocolException(ErrorCode.INVALID_REQUEST, "Codec I/O error", error);
     }
 
     @FunctionalInterface
-    private interface Writer { void write(DataOutputStream output) throws IOException; }
+    private interface Writer {
+        void write(DataOutputStream output) throws IOException;
+    }
 }

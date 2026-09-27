@@ -14,9 +14,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 
-/** Sparse offset-to-byte-position index derived entirely from the data segment. */
+/**
+ * Sparse offset-to-byte-position index derived entirely from the data segment.
+ */
 final class OffsetIndex {
-    record Entry(long offset, long position) {}
+    record Entry(long offset, long position) {
+    }
 
     private final int intervalBytes;
     private final List<Entry> entries = new ArrayList<>();
@@ -24,7 +27,8 @@ final class OffsetIndex {
     private long lastPosition = -1;
 
     OffsetIndex(int intervalBytes) {
-        if (intervalBytes <= 0) throw new IllegalArgumentException("Invalid index interval");
+        if (intervalBytes <= 0)
+            throw new IllegalArgumentException("Invalid index interval");
         this.intervalBytes = intervalBytes;
     }
 
@@ -32,7 +36,8 @@ final class OffsetIndex {
         if (offset < 0 || position < 0 || offset <= lastOffset || position <= lastPosition) {
             throw new IllegalArgumentException("Index positions must increase");
         }
-        // Always index the first batch; later entries obey the configured byte interval.
+        // Always index the first batch; later entries obey the configured byte
+        // interval.
         if (entries.isEmpty() || position - entries.getLast().position() >= intervalBytes) {
             entries.add(new Entry(offset, position));
         }
@@ -47,7 +52,8 @@ final class OffsetIndex {
             if (entries.get(mid).offset() <= offset) {
                 found = mid;
                 lo = mid + 1;
-            } else hi = mid - 1;
+            } else
+                hi = mid - 1;
         }
         return found < 0 ? null : entries.get(found);
     }
@@ -61,7 +67,8 @@ final class OffsetIndex {
         Objects.requireNonNull(io, "io");
         try (FileChannel channel = FileChannel.open(path, CREATE, WRITE, TRUNCATE_EXISTING)) {
             ByteBuffer bytes = ByteBuffer.allocate(entries.size() * 16).order(ByteOrder.BIG_ENDIAN);
-            for (Entry entry : entries) bytes.putLong(entry.offset()).putLong(entry.position());
+            for (Entry entry : entries)
+                bytes.putLong(entry.offset()).putLong(entry.position());
             bytes.flip();
             long position = 0;
             int noProgress = 0;
@@ -69,14 +76,16 @@ final class OffsetIndex {
                 int n = io.write(channel, bytes, position);
                 if (n < 0 || (n == 0 && ++noProgress >= 16))
                     throw new IOException("Index write made no progress");
-                if (n > 0) noProgress = 0;
+                if (n > 0)
+                    noProgress = 0;
                 position += n;
             }
         }
     }
 
     static Path indexPath(Path directory, long baseOffset) {
-        if (baseOffset < 0) throw new IllegalArgumentException("Negative base offset");
+        if (baseOffset < 0)
+            throw new IllegalArgumentException("Negative base offset");
         return directory.resolve(String.format(Locale.ROOT, "%020d.index", baseOffset));
     }
 }

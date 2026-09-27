@@ -11,12 +11,19 @@ import vn.huyqt.logbroker.storage.RecordBatch;
 /** The narrow disk boundary used by broker partition logic and fault tests. */
 public interface PartitionStore extends AutoCloseable {
     AppendResult append(List<LogRecord> records) throws IOException;
+
     List<RecordBatch> read(long offset, int maxBytes) throws IOException;
+
     long flush() throws IOException;
+
     long logStartOffset();
+
     long logEndOffset();
+
     long durableEndOffset();
-    @Override void close() throws IOException;
+
+    @Override
+    void close() throws IOException;
 
     @FunctionalInterface
     interface Factory {

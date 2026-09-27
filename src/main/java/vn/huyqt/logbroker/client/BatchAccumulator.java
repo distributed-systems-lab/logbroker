@@ -24,7 +24,7 @@ final class BatchAccumulator {
     }
 
     void add(LogRecord record, CompletableFuture<Producer.RecordMetadata> result,
-             ResourceBudget.Lease lease, long deadline, int encodedBytes) {
+            ResourceBudget.Lease lease, long deadline, int encodedBytes) {
         records.add(new Item(record, result, lease, deadline));
         bytes += encodedBytes;
     }
@@ -32,11 +32,17 @@ final class BatchAccumulator {
     List<LogRecord> liveRecords(long now) {
         var live = new ArrayList<LogRecord>();
         for (var item : records) {
-            if (item.result.isDone()) { item.lease.close(); continue; }
+            if (item.result.isDone()) {
+                item.lease.close();
+                continue;
+            }
             if (now >= item.deadline) {
                 item.result.completeExceptionally(ClientException.notSent("Record expired before send"));
                 item.lease.close();
-            } else { live.add(item.record); sent.add(item); }
+            } else {
+                live.add(item.record);
+                sent.add(item);
+            }
         }
         return live;
     }
@@ -45,16 +51,22 @@ final class BatchAccumulator {
         long offset = reply == null ? -1 : reply.firstOffset();
         for (var item : sent) {
             item.lease.close();
-            if (item.result.isDone()) { offset++; continue; }
-            if (error != null) item.result.completeExceptionally(error);
+            if (item.result.isDone()) {
+                offset++;
+                continue;
+            }
+            if (error != null)
+                item.result.completeExceptionally(error);
             else if (reply.error().code() != vn.huyqt.logbroker.protocol.ErrorCode.NONE)
                 item.result.completeExceptionally(new ClientException(
                         ClientException.Outcome.UNKNOWN, reply.error().code(),
                         reply.error().message(), null));
-            else item.result.complete(new Producer.RecordMetadata(partition, offset++));
+            else
+                item.result.complete(new Producer.RecordMetadata(partition, offset++));
         }
     }
 
     record Item(LogRecord record, CompletableFuture<Producer.RecordMetadata> result,
-                ResourceBudget.Lease lease, long deadline) {}
+            ResourceBudget.Lease lease, long deadline) {
+    }
 }

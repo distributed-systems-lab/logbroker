@@ -21,22 +21,39 @@ public final class RequestContext {
         this.deadlineNanos = deadlineNanos;
     }
 
-    public long connectionId() { return connectionId; }
-    public long requestId() { return requestId; }
-    public long deadlineNanos() { return deadlineNanos; }
-    public boolean isCancelled() { return cancelled.get(); }
+    public long connectionId() {
+        return connectionId;
+    }
+
+    public long requestId() {
+        return requestId;
+    }
+
+    public long deadlineNanos() {
+        return deadlineNanos;
+    }
+
+    public boolean isCancelled() {
+        return cancelled.get();
+    }
 
     public synchronized DeadlineScheduler.Ticket onCancel(Runnable action) {
         Objects.requireNonNull(action);
-        if (cancelled.get()) { action.run(); return () -> false; }
+        if (cancelled.get()) {
+            action.run();
+            return () -> false;
+        }
         cancellation.add(action);
-        return () -> { synchronized (RequestContext.this) {
-            return cancellation.remove(action);
-        }};
+        return () -> {
+            synchronized (RequestContext.this) {
+                return cancellation.remove(action);
+            }
+        };
     }
 
     public void cancel() {
-        if (!cancelled.compareAndSet(false, true)) return;
+        if (!cancelled.compareAndSet(false, true))
+            return;
         List<Runnable> actions;
         synchronized (this) {
             actions = List.copyOf(cancellation);

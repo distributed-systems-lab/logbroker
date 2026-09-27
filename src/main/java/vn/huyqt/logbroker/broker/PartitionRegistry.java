@@ -24,7 +24,8 @@ public final class PartitionRegistry implements AutoCloseable {
     public synchronized void initialize(TopicInfo topic) {
         for (var partition : topic.partitions()) {
             var tp = new TopicPartition(topic.id(), partition.partition());
-            if (stores.containsKey(tp) || failures.containsKey(tp)) continue;
+            if (stores.containsKey(tp) || failures.containsKey(tp))
+                continue;
             Path directory = config.dataDirectory().resolve("topics")
                     .resolve(topic.id().toString()).resolve(Integer.toString(tp.partition()));
             try {
@@ -37,14 +38,17 @@ public final class PartitionRegistry implements AutoCloseable {
 
     public synchronized PartitionStore require(TopicPartition partition) throws IOException {
         PartitionStore store = stores.get(partition);
-        if (store != null) return store;
+        if (store != null)
+            return store;
         IOException failure = failures.get(partition);
-        if (failure != null) throw new IOException("Partition unavailable: " + partition, failure);
+        if (failure != null)
+            throw new IOException("Partition unavailable: " + partition, failure);
         throw new IOException("Unknown partition: " + partition);
     }
 
     public synchronized ErrorCode state(TopicPartition partition) {
-        if (stores.containsKey(partition)) return ErrorCode.NONE;
+        if (stores.containsKey(partition))
+            return ErrorCode.NONE;
         return failures.containsKey(partition) ? ErrorCode.PARTITION_UNAVAILABLE
                 : ErrorCode.UNKNOWN_PARTITION;
     }
@@ -54,19 +58,30 @@ public final class PartitionRegistry implements AutoCloseable {
         failures.put(partition, cause instanceof IOException io ? io
                 : new IOException("Partition failed", cause));
         if (store != null) {
-            try { store.close(); } catch (IOException error) { failures.get(partition).addSuppressed(error); }
+            try {
+                store.close();
+            } catch (IOException error) {
+                failures.get(partition).addSuppressed(error);
+            }
         }
     }
 
-    @Override public synchronized void close() throws IOException {
+    @Override
+    public synchronized void close() throws IOException {
         IOException failure = null;
         for (PartitionStore store : stores.values()) {
-            try { store.close(); } catch (IOException error) {
-                if (failure == null) failure = error; else failure.addSuppressed(error);
+            try {
+                store.close();
+            } catch (IOException error) {
+                if (failure == null)
+                    failure = error;
+                else
+                    failure.addSuppressed(error);
             }
         }
         stores.clear();
         failures.clear();
-        if (failure != null) throw failure;
+        if (failure != null)
+            throw failure;
     }
 }

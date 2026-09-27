@@ -17,7 +17,10 @@ import java.util.Objects;
 import java.util.TreeMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-/** A single-writer partition log backed by ordered data segments and rebuildable indexes. */
+/**
+ * A single-writer partition log backed by ordered data segments and rebuildable
+ * indexes.
+ */
 public final class PartitionLog implements AutoCloseable {
     private enum State {
         OPEN,
@@ -51,7 +54,9 @@ public final class PartitionLog implements AutoCloseable {
         this.fileLock = fileLock;
     }
 
-    /** Opens and recovers a partition while holding its directory lock until close. */
+    /**
+     * Opens and recovers a partition while holding its directory lock until close.
+     */
     public static PartitionLog open(Path directory, LogConfig config) throws IOException {
         return open(directory, config, new LogIo());
     }
@@ -75,11 +80,10 @@ public final class PartitionLog implements AutoCloseable {
             log = new PartitionLog(directory, config, io, lockChannel, fileLock);
             LogRecovery.Result recovered = LogRecovery.recover(directory, config, io);
             for (LogRecovery.SegmentInfo info : recovered.segments()) {
-                LogSegment segment =
-                        LogSegment.open(
-                                LogSegment.dataPath(directory, info.baseOffset()),
-                                info.baseOffset(),
-                                io);
+                LogSegment segment = LogSegment.open(
+                        LogSegment.dataPath(directory, info.baseOffset()),
+                        info.baseOffset(),
+                        io);
                 log.segments.put(info.baseOffset(), segment);
                 log.indexes.put(info.baseOffset(), info.index());
             }
@@ -120,7 +124,10 @@ public final class PartitionLog implements AutoCloseable {
         }
     }
 
-    /** Appends one batch; call {@link #flush()} to make the returned offsets durable. */
+    /**
+     * Appends one batch; call {@link #flush()} to make the returned offsets
+     * durable.
+     */
     public AppendResult append(List<LogRecord> records) throws IOException {
         guard.writeLock().lock();
         try {
@@ -152,7 +159,10 @@ public final class PartitionLog implements AutoCloseable {
         }
     }
 
-    /** Reads whole batches from an offset; the first batch may exceed the byte budget. */
+    /**
+     * Reads whole batches from an offset; the first batch may exceed the byte
+     * budget.
+     */
     public List<RecordBatch> read(long offset, int maxBytes) throws IOException {
         guard.readLock().lock();
         try {
@@ -160,11 +170,11 @@ public final class PartitionLog implements AutoCloseable {
             if (offset < 0 || offset > logEndOffset || maxBytes <= 0) {
                 throw new IllegalArgumentException("Invalid read range or budget");
             }
-            if (offset == logEndOffset) return List.of();
+            if (offset == logEndOffset)
+                return List.of();
             List<RecordBatch> result = new ArrayList<>();
             long accumulated = 0;
-            for (Map.Entry<Long, LogSegment> item :
-                    segments.tailMap(segments.floorKey(offset), true).entrySet()) {
+            for (Map.Entry<Long, LogSegment> item : segments.tailMap(segments.floorKey(offset), true).entrySet()) {
                 LogSegment segment = item.getValue();
                 OffsetIndex.Entry floor = indexes.get(item.getKey()).floor(offset);
                 long position = floor == null ? 0 : floor.position();
@@ -172,13 +182,15 @@ public final class PartitionLog implements AutoCloseable {
                 while (position < size) {
                     RecordBatch batch = readBatch(segment, position, size);
                     position += batch.encodedSize();
-                    if (batch.nextOffset() <= offset) continue;
+                    if (batch.nextOffset() <= offset)
+                        continue;
                     if (!result.isEmpty() && accumulated + batch.encodedSize() > maxBytes) {
                         return List.copyOf(result);
                     }
                     result.add(batch);
                     accumulated += batch.encodedSize();
-                    if (accumulated >= maxBytes) return List.copyOf(result);
+                    if (accumulated >= maxBytes)
+                        return List.copyOf(result);
                 }
             }
             return List.copyOf(result);
@@ -215,9 +227,11 @@ public final class PartitionLog implements AutoCloseable {
             if (offset < 0 || offset > logEndOffset) {
                 throw new IllegalArgumentException("Offset outside log");
             }
-            if (offset == logEndOffset) return;
+            if (offset == logEndOffset)
+                return;
             Map.Entry<Long, LogSegment> targetEntry = segments.floorEntry(offset);
-            if (targetEntry == null) throw new IllegalArgumentException("Offset outside log");
+            if (targetEntry == null)
+                throw new IllegalArgumentException("Offset outside log");
             LogSegment target = targetEntry.getValue();
             long targetPosition = 0;
             if (offset != target.baseOffset()) {
@@ -232,22 +246,26 @@ public final class PartitionLog implements AutoCloseable {
                         found = true;
                         break;
                     }
-                    if (batch.nextOffset() > offset) break;
+                    if (batch.nextOffset() > offset)
+                        break;
                     position += batch.encodedSize();
                 }
-                if (!found) throw new IllegalArgumentException("Offset is not a batch boundary");
+                if (!found)
+                    throw new IllegalArgumentException("Offset is not a batch boundary");
             }
 
             try {
                 // Remove later segments from the end so a failed operation leaves a recoverable
                 // prefix.
                 for (Long base : new ArrayList<>(segments.descendingKeySet())) {
-                    if (base <= target.baseOffset()) break;
+                    if (base <= target.baseOffset())
+                        break;
                     LogSegment segment = segments.get(base);
                     segment.close();
                     io.delete(segment.path());
                     Path indexPath = OffsetIndex.indexPath(directory, base);
-                    if (Files.exists(indexPath)) io.delete(indexPath);
+                    if (Files.exists(indexPath))
+                        io.delete(indexPath);
                     segments.remove(base);
                     indexes.remove(base);
                 }
@@ -261,7 +279,8 @@ public final class PartitionLog implements AutoCloseable {
                 }
                 rebuilt.write(OffsetIndex.indexPath(directory, target.baseOffset()), io);
                 indexes.put(target.baseOffset(), rebuilt);
-                for (LogSegment segment : segments.values()) segment.force();
+                for (LogSegment segment : segments.values())
+                    segment.force();
                 logEndOffset = offset;
                 durableEndOffset = offset;
             } catch (IOException e) {
@@ -290,7 +309,8 @@ public final class PartitionLog implements AutoCloseable {
     }
 
     private long forceAll() throws IOException {
-        for (LogSegment segment : segments.values()) segment.force();
+        for (LogSegment segment : segments.values())
+            segment.force();
         durableEndOffset = logEndOffset;
         return durableEndOffset;
     }
@@ -317,7 +337,10 @@ public final class PartitionLog implements AutoCloseable {
         }
     }
 
-    /** Returns the exclusive end offset established by recovery or a successful force. */
+    /**
+     * Returns the exclusive end offset established by recovery or a successful
+     * force.
+     */
     public long durableEndOffset() {
         guard.readLock().lock();
         try {
@@ -328,14 +351,17 @@ public final class PartitionLog implements AutoCloseable {
         }
     }
 
-    // After a mutating I/O failure, callers must reopen to recover the on-disk state.
+    // After a mutating I/O failure, callers must reopen to recover the on-disk
+    // state.
     private void markFailed(IOException error) {
-        if (firstFailure == null) firstFailure = error;
+        if (firstFailure == null)
+            firstFailure = error;
         state = State.FAILED;
     }
 
     private void ensureOpen() {
-        if (state != State.OPEN) throw new IllegalStateException("Log is " + state, firstFailure);
+        if (state != State.OPEN)
+            throw new IllegalStateException("Log is " + state, firstFailure);
     }
 
     /** Flushes an open log, then releases its segments and directory lock. */
@@ -343,7 +369,8 @@ public final class PartitionLog implements AutoCloseable {
     public void close() throws IOException {
         guard.writeLock().lock();
         try {
-            if (state == State.CLOSED) return;
+            if (state == State.CLOSED)
+                return;
             IOException failure = null;
             if (state == State.OPEN) {
                 try {
@@ -371,14 +398,16 @@ public final class PartitionLog implements AutoCloseable {
                 failure = combine(failure, e);
             }
             state = State.CLOSED;
-            if (failure != null) throw failure;
+            if (failure != null)
+                throw failure;
         } finally {
             guard.writeLock().unlock();
         }
     }
 
     private static IOException combine(IOException first, IOException later) {
-        if (first == null) return later;
+        if (first == null)
+            return later;
         first.addSuppressed(later);
         return first;
     }

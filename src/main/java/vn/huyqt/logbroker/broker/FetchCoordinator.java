@@ -16,7 +16,9 @@ import vn.huyqt.logbroker.protocol.Protocol.FetchReply;
 import vn.huyqt.logbroker.protocol.Protocol.TopicPartition;
 import vn.huyqt.logbroker.protocol.WireBatchCodec;
 
-/** Event-driven long polling without occupying a partition worker while waiting. */
+/**
+ * Event-driven long polling without occupying a partition worker while waiting.
+ */
 public final class FetchCoordinator implements AutoCloseable {
     private final FetchPlanner planner;
     private final Function<TopicPartition, PartitionRuntime> lookup;
@@ -26,8 +28,8 @@ public final class FetchCoordinator implements AutoCloseable {
     private volatile boolean closed;
 
     public FetchCoordinator(FetchPlanner planner,
-                            Function<TopicPartition, PartitionRuntime> lookup,
-                            DeadlineScheduler clock, ResourceBudget waiterBudget) {
+            Function<TopicPartition, PartitionRuntime> lookup,
+            DeadlineScheduler clock, ResourceBudget waiterBudget) {
         this.planner = Objects.requireNonNull(planner);
         this.lookup = Objects.requireNonNull(lookup);
         this.clock = Objects.requireNonNull(clock);
@@ -35,21 +37,26 @@ public final class FetchCoordinator implements AutoCloseable {
     }
 
     public CompletableFuture<FetchReply> fetch(RequestContext context, Fetch request) {
-        if (closed) return CompletableFuture.completedFuture(new FetchReply(
-                new Error(ErrorCode.BROKER_SHUTTING_DOWN, "Broker closing"), List.of()));
-        if (request.maxWaitMs() == 0 || request.minBytes() == 0) return planner.read(request);
+        if (closed)
+            return CompletableFuture.completedFuture(new FetchReply(
+                    new Error(ErrorCode.BROKER_SHUTTING_DOWN, "Broker closing"), List.of()));
+        if (request.maxWaitMs() == 0 || request.minBytes() == 0)
+            return planner.read(request);
         ResourceBudget.Lease lease = waiterBudget.reserve(1).orElse(null);
-        if (lease == null) return CompletableFuture.completedFuture(new FetchReply(
-                new Error(ErrorCode.OVERLOADED, "Too many Fetch waiters"), List.of()));
+        if (lease == null)
+            return CompletableFuture.completedFuture(new FetchReply(
+                    new Error(ErrorCode.OVERLOADED, "Too many Fetch waiters"), List.of()));
         Waiter waiter = new Waiter(context, request, lease);
         waiters.add(waiter);
         waiter.start();
         return waiter.result;
     }
 
-    @Override public void close() {
+    @Override
+    public void close() {
         closed = true;
-        for (Waiter waiter : List.copyOf(waiters)) waiter.expire();
+        for (Waiter waiter : List.copyOf(waiters))
+            waiter.expire();
     }
 
     private final class Waiter {
@@ -66,16 +73,21 @@ public final class FetchCoordinator implements AutoCloseable {
         volatile boolean expired;
 
         Waiter(RequestContext context, Fetch request, ResourceBudget.Lease lease) {
-            this.context = context; this.request = request; this.lease = lease;
+            this.context = context;
+            this.request = request;
+            this.lease = lease;
         }
 
         synchronized void start() {
             cancelHook = context.onCancel(this::cancel);
-            if (finished.get()) return;
-            // Subscribe first. Any append before or during initial read schedules another evaluation.
+            if (finished.get())
+                return;
+            // Subscribe first. Any append before or during initial read schedules another
+            // evaluation.
             for (var entry : request.entries()) {
                 PartitionRuntime runtime = lookup.apply(entry.partition());
-                if (runtime != null) subscriptions.add(runtime.onChange(this::evaluate));
+                if (runtime != null)
+                    subscriptions.add(runtime.onChange(this::evaluate));
             }
             long due = Math.addExact(clock.nanoTime(),
                     java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(request.maxWaitMs()));
@@ -83,11 +95,18 @@ public final class FetchCoordinator implements AutoCloseable {
             evaluate();
         }
 
-        void expire() { expired = true; evaluate(); }
+        void expire() {
+            expired = true;
+            evaluate();
+        }
 
         void evaluate() {
-            if (finished.get()) return;
-            if (!evaluating.compareAndSet(false, true)) { rerun.set(true); return; }
+            if (finished.get())
+                return;
+            if (!evaluating.compareAndSet(false, true)) {
+                rerun.set(true);
+                return;
+            }
             planner.read(request).whenComplete((reply, failure) -> {
                 if (failure != null) {
                     finish(null, failure);
@@ -95,34 +114,44 @@ public final class FetchCoordinator implements AutoCloseable {
                     finish(reply, null);
                 }
                 evaluating.set(false);
-                if (!finished.get() && rerun.getAndSet(false)) evaluate();
+                if (!finished.get() && rerun.getAndSet(false))
+                    evaluate();
             });
         }
 
         boolean enough(FetchReply reply) {
             long bytes = 0;
             for (var partition : reply.results())
-                for (var batch : partition.batches()) bytes += WireBatchCodec.fetchSize(batch.batch());
+                for (var batch : partition.batches())
+                    bytes += WireBatchCodec.fetchSize(batch.batch());
             return bytes >= request.minBytes();
         }
 
         boolean hasError(FetchReply reply) {
-            if (reply.error().code() != ErrorCode.NONE) return true;
+            if (reply.error().code() != ErrorCode.NONE)
+                return true;
             return reply.results().stream().anyMatch(
                     partition -> partition.error().code() != ErrorCode.NONE);
         }
 
-        void cancel() { finish(null, new CancellationException("Client disconnected")); }
+        void cancel() {
+            finish(null, new CancellationException("Client disconnected"));
+        }
 
         synchronized void finish(FetchReply reply, Throwable failure) {
-            if (!finished.compareAndSet(false, true)) return;
-            if (timer != null) timer.cancel();
-            if (cancelHook != null) cancelHook.cancel();
+            if (!finished.compareAndSet(false, true))
+                return;
+            if (timer != null)
+                timer.cancel();
+            if (cancelHook != null)
+                cancelHook.cancel();
             subscriptions.forEach(DeadlineScheduler.Ticket::cancel);
             lease.close();
             waiters.remove(this);
-            if (failure == null) result.complete(reply);
-            else result.completeExceptionally(failure);
+            if (failure == null)
+                result.complete(reply);
+            else
+                result.completeExceptionally(failure);
         }
     }
 }

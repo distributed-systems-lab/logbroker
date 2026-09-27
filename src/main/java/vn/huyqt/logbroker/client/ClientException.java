@@ -2,9 +2,14 @@ package vn.huyqt.logbroker.client;
 
 import vn.huyqt.logbroker.protocol.ErrorCode;
 
-/** A failed request distinguishes local rejection from an uncertain broker outcome. */
+/**
+ * A failed request distinguishes local rejection from an uncertain broker
+ * outcome.
+ */
 public final class ClientException extends RuntimeException {
-    public enum Outcome { NOT_SENT, UNKNOWN }
+    public enum Outcome {
+        NOT_SENT, UNKNOWN
+    }
 
     private final Outcome outcome;
     private final ErrorCode code;
@@ -15,8 +20,13 @@ public final class ClientException extends RuntimeException {
         this.code = code;
     }
 
-    public Outcome outcome() { return outcome; }
-    public ErrorCode code() { return code; }
+    public Outcome outcome() {
+        return outcome;
+    }
+
+    public ErrorCode code() {
+        return code;
+    }
 
     public static ClientException notSent(String message) {
         return new ClientException(Outcome.NOT_SENT, null, message, null);

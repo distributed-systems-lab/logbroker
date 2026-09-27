@@ -38,14 +38,18 @@ public final class PartitionExecutor implements AutoCloseable {
     }
 
     public synchronized <V> CompletableFuture<V> submit(TopicPartition key, Callable<V> action) {
-        Objects.requireNonNull(key); Objects.requireNonNull(action);
+        Objects.requireNonNull(key);
+        Objects.requireNonNull(action);
         Lane lane = lane(key);
         if (lane.userTasks.size() >= queuedTaskLimit)
             throw new RejectedExecutionException("Partition queue full");
         CompletableFuture<V> result = new CompletableFuture<>();
         lane.userTasks.addLast(() -> {
-            try { result.complete(action.call()); }
-            catch (Throwable error) { result.completeExceptionally(error); }
+            try {
+                result.complete(action.call());
+            } catch (Throwable error) {
+                result.completeExceptionally(error);
+            }
         });
         outstanding++;
         schedule(key, lane);
@@ -53,7 +57,8 @@ public final class PartitionExecutor implements AutoCloseable {
     }
 
     public synchronized void control(TopicPartition key, Runnable action) {
-        Objects.requireNonNull(key); Objects.requireNonNull(action);
+        Objects.requireNonNull(key);
+        Objects.requireNonNull(action);
         Lane lane = lane(key);
         if (lane.control == null) {
             lane.control = action;
@@ -63,16 +68,19 @@ public final class PartitionExecutor implements AutoCloseable {
     }
 
     public synchronized CompletableFuture<Void> drain() {
-        if (outstanding == 0) return CompletableFuture.completedFuture(null);
+        if (outstanding == 0)
+            return CompletableFuture.completedFuture(null);
         var result = new CompletableFuture<Void>();
         drainWaiters.add(result);
         return result;
     }
 
     private Lane lane(TopicPartition key) {
-        if (closed) throw new RejectedExecutionException("Partition executor closed");
+        if (closed)
+            throw new RejectedExecutionException("Partition executor closed");
         Lane existing = lanes.get(key);
-        if (existing != null) return existing;
+        if (existing != null)
+            return existing;
         if (lanes.size() >= partitionLimit)
             throw new RejectedExecutionException("Partition capacity reached");
         Lane created = new Lane();
@@ -81,7 +89,8 @@ public final class PartitionExecutor implements AutoCloseable {
     }
 
     private void schedule(TopicPartition key, Lane lane) {
-        if (lane.scheduled) return;
+        if (lane.scheduled)
+            return;
         lane.scheduled = true;
         workers.execute(() -> runOne(key, lane));
     }
@@ -96,8 +105,9 @@ public final class PartitionExecutor implements AutoCloseable {
                 task = lane.userTasks.removeFirst();
             }
         }
-        try { task.run(); }
-        finally {
+        try {
+            task.run();
+        } finally {
             synchronized (this) {
                 outstanding--;
                 if (lane.control != null || !lane.userTasks.isEmpty()) {
@@ -113,8 +123,11 @@ public final class PartitionExecutor implements AutoCloseable {
         }
     }
 
-    @Override public void close() {
-        synchronized (this) { closed = true; }
+    @Override
+    public void close() {
+        synchronized (this) {
+            closed = true;
+        }
         try {
             drain().get(30, TimeUnit.SECONDS);
             workers.shutdown();

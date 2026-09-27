@@ -64,6 +64,9 @@ public final class FetchPlanner {
         int remaining;
         boolean anyData;
         final List<FetchResult> results = new ArrayList<>();
-        State(int remaining) { this.remaining = remaining; }
+
+        State(int remaining) {
+            this.remaining = remaining;
+        }
     }
 }

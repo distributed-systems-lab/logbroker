@@ -10,12 +10,18 @@ public enum ErrorCode {
 
     private final short number;
 
-    ErrorCode(int number) { this.number = (short) number; }
+    ErrorCode(int number) {
+        this.number = (short) number;
+    }
 
-    public short number() { return number; }
+    public short number() {
+        return number;
+    }
 
     public static ErrorCode fromNumber(short number) throws ProtocolException {
-        for (ErrorCode code : values()) if (code.number == number) return code;
+        for (ErrorCode code : values())
+            if (code.number == number)
+                return code;
         throw new ProtocolException(INVALID_REQUEST, "Unknown error code: " + number);
     }
 }

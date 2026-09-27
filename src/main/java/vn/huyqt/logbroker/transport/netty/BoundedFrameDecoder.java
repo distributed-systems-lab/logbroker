@@ -34,7 +34,8 @@ public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
         this.clock = clock;
     }
 
-    @Override public void channelRead(ChannelHandlerContext context, Object message) {
+    @Override
+    public void channelRead(ChannelHandlerContext context, Object message) {
         if (!(message instanceof ByteBuf input)) {
             ReferenceCountUtil.release(message);
             context.close();
@@ -49,14 +50,18 @@ public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
                     int copy = Math.min(4 - prefixCount, input.readableBytes());
                     input.readBytes(prefix, prefixCount, copy);
                     prefixCount += copy;
-                    if (prefixCount < 4) return;
+                    if (prefixCount < 4)
+                        return;
                     int length = ByteBuffer.wrap(prefix).getInt();
                     if (length < 12 || length > limits.maxFrameBytes()) {
                         context.close();
                         return;
                     }
                     lease = budget.reserve((long) length + 4).orElse(null);
-                    if (lease == null) { context.close(); return; }
+                    if (lease == null) {
+                        context.close();
+                        return;
+                    }
                     frame = new byte[length + 4];
                     System.arraycopy(prefix, 0, frame, 0, 4);
                     frameCount = 4;
@@ -65,7 +70,10 @@ public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
                 input.readBytes(frame, frameCount, copy);
                 frameCount += copy;
                 if (frameCount == frame.length) {
-                    if (frameDeadline != null) { frameDeadline.cancel(); frameDeadline = null; }
+                    if (frameDeadline != null) {
+                        frameDeadline.cancel();
+                        frameDeadline = null;
+                    }
                     OwnedFrame complete = new OwnedFrame(frame, lease);
                     frame = null;
                     frameCount = 0;
@@ -79,19 +87,25 @@ public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
         }
     }
 
-    @Override public void channelInactive(ChannelHandlerContext context) throws Exception {
+    @Override
+    public void channelInactive(ChannelHandlerContext context) throws Exception {
         releasePartial();
         super.channelInactive(context);
     }
 
-    @Override public void handlerRemoved(ChannelHandlerContext context) throws Exception {
+    @Override
+    public void handlerRemoved(ChannelHandlerContext context) throws Exception {
         releasePartial();
         super.handlerRemoved(context);
     }
 
     private void releasePartial() {
-        if (frameDeadline != null) { frameDeadline.cancel(); frameDeadline = null; }
-        if (lease != null) lease.close();
+        if (frameDeadline != null) {
+            frameDeadline.cancel();
+            frameDeadline = null;
+        }
+        if (lease != null)
+            lease.close();
         lease = null;
         frame = null;
     }
@@ -101,10 +115,17 @@ public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
         private final ResourceBudget.Lease lease;
 
         private OwnedFrame(byte[] bytes, ResourceBudget.Lease lease) {
-            this.bytes = bytes; this.lease = lease;
+            this.bytes = bytes;
+            this.lease = lease;
         }
 
-        public byte[] bytes() { return bytes; }
-        @Override public void close() { lease.close(); }
+        public byte[] bytes() {
+            return bytes;
+        }
+
+        @Override
+        public void close() {
+            lease.close();
+        }
     }
 }

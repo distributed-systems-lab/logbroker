@@ -14,11 +14,15 @@ import java.util.List;
 import java.util.Objects;
 import java.util.stream.Stream;
 
-/** Validates all data segments before repairing a torn active tail or rebuilding indexes. */
+/**
+ * Validates all data segments before repairing a torn active tail or rebuilding
+ * indexes.
+ */
 final class LogRecovery {
     private static final System.Logger LOGGER = System.getLogger(LogRecovery.class.getName());
 
-    record SegmentInfo(long baseOffset, long validBytes, long nextOffset, OffsetIndex index) {}
+    record SegmentInfo(long baseOffset, long validBytes, long nextOffset, OffsetIndex index) {
+    }
 
     record Result(List<SegmentInfo> segments, long nextOffset) {
         Result {
@@ -26,9 +30,11 @@ final class LogRecovery {
         }
     }
 
-    private record Repair(Path path, long validBytes, long originalBytes) {}
+    private record Repair(Path path, long validBytes, long originalBytes) {
+    }
 
-    private LogRecovery() {}
+    private LogRecovery() {
+    }
 
     static Result recover(Path directory, LogConfig config, LogIo io) throws IOException {
         Objects.requireNonNull(directory, "directory");
@@ -95,7 +101,8 @@ final class LogRecovery {
                         throw corrupt(path, position, "File position overflow", e);
                     }
                 }
-                if (!active && position == 0) throw corrupt(path, 0, "Empty sealed segment");
+                if (!active && position == 0)
+                    throw corrupt(path, 0, "Empty sealed segment");
                 infos.add(new SegmentInfo(base, position, next, index));
             }
         }
@@ -116,12 +123,12 @@ final class LogRecovery {
         for (SegmentInfo info : infos) {
             info.index().write(OffsetIndex.indexPath(directory, info.baseOffset()), io);
         }
-        // Open data writable so force covers the validated bytes before open publishes them as
+        // Open data writable so force covers the validated bytes before open publishes
+        // them as
         // durable.
         for (SegmentInfo info : infos) {
-            try (FileChannel channel =
-                    FileChannel.open(
-                            LogSegment.dataPath(directory, info.baseOffset()), READ, WRITE)) {
+            try (FileChannel channel = FileChannel.open(
+                    LogSegment.dataPath(directory, info.baseOffset()), READ, WRITE)) {
                 io.force(channel);
             }
         }
@@ -133,7 +140,8 @@ final class LogRecovery {
         try (Stream<Path> files = Files.list(directory)) {
             for (Path path : files.toList()) {
                 String name = path.getFileName().toString();
-                if (!name.endsWith(".log")) continue;
+                if (!name.endsWith(".log"))
+                    continue;
                 if (!name.matches("[0-9]{20}\\.log")) {
                     throw corrupt(path, 0, "Invalid data file name");
                 }
@@ -152,7 +160,8 @@ final class LogRecovery {
         ByteBuffer buffer = ByteBuffer.allocate(length);
         while (buffer.hasRemaining()) {
             int n = channel.read(buffer, position);
-            if (n <= 0) throw new IOException("Unexpected EOF while scanning log");
+            if (n <= 0)
+                throw new IOException("Unexpected EOF while scanning log");
             position += n;
         }
         return buffer.array();

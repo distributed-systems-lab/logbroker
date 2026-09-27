@@ -11,7 +11,8 @@ import java.util.Objects;
 
 /** Version 1 record payload shared by disk and network batches. */
 public final class RecordPayloadCodec {
-    private RecordPayloadCodec() {}
+    private RecordPayloadCodec() {
+    }
 
     public static int encodedSize(List<LogRecord> records) {
         Objects.requireNonNull(records, "records");
@@ -59,7 +60,8 @@ public final class RecordPayloadCodec {
         List<LogRecord> records = new ArrayList<>(count);
         try {
             for (int i = 0; i < count; i++) {
-                if (payload.remaining() < 20) throw new CorruptLogException("Incomplete record");
+                if (payload.remaining() < 20)
+                    throw new CorruptLogException("Incomplete record");
                 long timestamp = payload.getLong();
                 byte[] key = readNullable(payload);
                 byte[] value = readNullable(payload);
@@ -81,7 +83,8 @@ public final class RecordPayloadCodec {
                 }
                 records.add(new LogRecord(timestamp, key, value, headers));
             }
-            if (payload.hasRemaining()) throw new CorruptLogException("Trailing batch bytes");
+            if (payload.hasRemaining())
+                throw new CorruptLogException("Trailing batch bytes");
             return List.copyOf(records);
         } catch (IllegalArgumentException e) {
             throw new CorruptLogException("Invalid batch payload", e);
@@ -118,14 +121,18 @@ public final class RecordPayloadCodec {
     }
 
     private static void putNullable(ByteBuffer target, byte[] bytes) {
-        if (bytes == null) target.putInt(-1);
-        else target.putInt(bytes.length).put(bytes);
+        if (bytes == null)
+            target.putInt(-1);
+        else
+            target.putInt(bytes.length).put(bytes);
     }
 
     private static byte[] readNullable(ByteBuffer source) throws CorruptLogException {
-        if (source.remaining() < 4) throw new CorruptLogException("Incomplete nullable length");
+        if (source.remaining() < 4)
+            throw new CorruptLogException("Incomplete nullable length");
         int length = source.getInt();
-        if (length == -1) return null;
+        if (length == -1)
+            return null;
         if (length < 0 || length > source.remaining())
             throw new CorruptLogException("Invalid nullable length");
         byte[] bytes = new byte[length];

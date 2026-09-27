@@ -35,7 +35,9 @@ import vn.huyqt.logbroker.protocol.ProtocolCodec;
 import vn.huyqt.logbroker.protocol.ProtocolException;
 import vn.huyqt.logbroker.transport.ServerTransport;
 
-/** Bounded Netty TCP adapter. All storage work is delegated outside event loops. */
+/**
+ * Bounded Netty TCP adapter. All storage work is delegated outside event loops.
+ */
 public final class NettyServerTransport implements ServerTransport {
     private final BrokerConfig config;
     private final DeadlineScheduler clock;
@@ -58,7 +60,7 @@ public final class NettyServerTransport implements ServerTransport {
     }
 
     public NettyServerTransport(BrokerConfig config, DeadlineScheduler clock,
-                                ResourceBudget inputBudget) {
+            ResourceBudget inputBudget) {
         this.config = config;
         this.clock = clock;
         codec = new ProtocolCodec(config.protocolLimits());
@@ -68,15 +70,20 @@ public final class NettyServerTransport implements ServerTransport {
         contextBudget = new ResourceBudget(config.maxRequestContexts());
         validation = new ThreadPoolExecutor(config.validationWorkers(), config.validationWorkers(),
                 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(config.maxValidationTasks()),
-                task -> { var thread = new Thread(task, "broker-validation");
-                    thread.setDaemon(true); return thread; },
+                task -> {
+                    var thread = new Thread(task, "broker-validation");
+                    thread.setDaemon(true);
+                    return thread;
+                },
                 new ThreadPoolExecutor.AbortPolicy());
     }
 
-    @Override public synchronized InetSocketAddress start(InetSocketAddress bind,
-                                                            RequestDispatcher dispatcher)
+    @Override
+    public synchronized InetSocketAddress start(InetSocketAddress bind,
+            RequestDispatcher dispatcher)
             throws IOException {
-        if (listener != null) throw new IllegalStateException("Transport already started");
+        if (listener != null)
+            throw new IllegalStateException("Transport already started");
         this.dispatcher = dispatcher;
         boss = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
         loops = new MultiThreadIoEventLoopGroup(2, NioIoHandler.newFactory());
@@ -84,39 +91,50 @@ public final class NettyServerTransport implements ServerTransport {
             var bootstrap = new ServerBootstrap().group(boss, loops)
                     .channel(NioServerSocketChannel.class)
                     .childHandler(new ChannelInitializer<SocketChannel>() {
-                        @Override protected void initChannel(SocketChannel channel) {
+                        @Override
+                        protected void initChannel(SocketChannel channel) {
                             channel.pipeline().addLast(new BoundedFrameDecoder(
                                     config.protocolLimits(), inputBudget, clock));
                             channel.pipeline().addLast(new ConnectionHandler());
                         }
                     });
             ChannelFuture bound = bootstrap.bind(bind).syncUninterruptibly();
-            if (!bound.isSuccess()) throw new IOException("Cannot bind broker", bound.cause());
+            if (!bound.isSuccess())
+                throw new IOException("Cannot bind broker", bound.cause());
             listener = bound.channel();
             return (InetSocketAddress) listener.localAddress();
         } catch (RuntimeException | IOException error) {
             boss.shutdownGracefully(0, 5, TimeUnit.SECONDS);
             loops.shutdownGracefully(0, 5, TimeUnit.SECONDS);
-            if (error instanceof IOException io) throw io;
+            if (error instanceof IOException io)
+                throw io;
             throw new IOException("Broker listener failed", error);
         }
     }
 
-    @Override public synchronized void stopAccepting() {
-        if (listener != null) listener.close();
+    @Override
+    public synchronized void stopAccepting() {
+        if (listener != null)
+            listener.close();
     }
 
-    @Override public synchronized CompletableFuture<Void> closeAsync() {
-        if (closing != null) return closing;
+    @Override
+    public synchronized CompletableFuture<Void> closeAsync() {
+        if (closing != null)
+            return closing;
         closing = CompletableFuture.runAsync(() -> {
             stopAccepting();
-            for (Channel channel : Set.copyOf(connections)) channel.close();
+            for (Channel channel : Set.copyOf(connections))
+                channel.close();
             validation.shutdown();
             try {
                 if (!validation.awaitTermination(config.shutdownTimeout().toMillis(),
-                        TimeUnit.MILLISECONDS)) validation.shutdownNow();
-                if (loops != null) loops.shutdownGracefully(0, 5, TimeUnit.SECONDS).sync();
-                if (boss != null) boss.shutdownGracefully(0, 5, TimeUnit.SECONDS).sync();
+                        TimeUnit.MILLISECONDS))
+                    validation.shutdownNow();
+                if (loops != null)
+                    loops.shutdownGracefully(0, 5, TimeUnit.SECONDS).sync();
+                if (boss != null)
+                    boss.shutdownGracefully(0, 5, TimeUnit.SECONDS).sync();
             } catch (InterruptedException error) {
                 Thread.currentThread().interrupt();
                 throw new IllegalStateException("Interrupted closing Netty transport", error);
@@ -129,37 +147,46 @@ public final class NettyServerTransport implements ServerTransport {
         private final long id = connectionIds.incrementAndGet();
         private final ArrayDeque<BoundedFrameDecoder.OwnedFrame> received = new ArrayDeque<>();
         private final Set<Long> activeIds = ConcurrentHashMap.newKeySet();
-        private final ResourceBudget perConnectionOutbound =
-                new ResourceBudget(config.maxOutboundPerConnection());
+        private final ResourceBudget perConnectionOutbound = new ResourceBudget(config.maxOutboundPerConnection());
         private ResourceBudget.Lease connectionLease;
         private boolean decoding;
 
-        @Override public void channelActive(ChannelHandlerContext context) {
+        @Override
+        public void channelActive(ChannelHandlerContext context) {
             connectionLease = connectionBudget.reserve(1).orElse(null);
-            if (connectionLease == null) { context.close(); return; }
+            if (connectionLease == null) {
+                context.close();
+                return;
+            }
             connections.add(context.channel());
             context.fireChannelActive();
         }
 
-        @Override public synchronized void channelRead(ChannelHandlerContext context, Object message) {
+        @Override
+        public synchronized void channelRead(ChannelHandlerContext context, Object message) {
             if (!(message instanceof BoundedFrameDecoder.OwnedFrame frame)) {
-                context.close(); return;
+                context.close();
+                return;
             }
             if (received.size() >= config.maxValidationTasks()) {
-                frame.close(); context.close(); return;
+                frame.close();
+                context.close();
+                return;
             }
             received.addLast(frame);
             scheduleDecode(context);
         }
 
         private synchronized void scheduleDecode(ChannelHandlerContext context) {
-            if (decoding || received.isEmpty()) return;
+            if (decoding || received.isEmpty())
+                return;
             decoding = true;
             var frame = received.removeFirst();
             try {
                 validation.execute(() -> {
-                    try { decode(context, frame); }
-                    finally {
+                    try {
+                        decode(context, frame);
+                    } finally {
                         frame.close();
                         synchronized (ConnectionHandler.this) {
                             decoding = false;
@@ -178,7 +205,10 @@ public final class NettyServerTransport implements ServerTransport {
             byte[] bytes = owned.bytes();
             ResourceBudget.Lease decoded = inputBudget.reserve(
                     codec.estimatedDecodedBytes(bytes)).orElse(null);
-            if (decoded == null) { context.close(); return; }
+            if (decoded == null) {
+                context.close();
+                return;
+            }
             boolean transferred = false;
             try {
                 Protocol.RequestFrame request;
@@ -188,24 +218,33 @@ public final class NettyServerTransport implements ServerTransport {
                     short operation = ByteBuffer.wrap(bytes).getShort(4);
                     short version = ByteBuffer.wrap(bytes).getShort(6);
                     long requestId = ByteBuffer.wrap(bytes).getLong(8);
-                    if (requestId < 0) { context.close(); return; }
+                    if (requestId < 0) {
+                        context.close();
+                        return;
+                    }
                     respond(context, new Protocol.ResponseFrame(operation, version, requestId,
                             new Protocol.Failure(new Protocol.Error(malformed.code(),
                                     malformed.getMessage()))));
                     return;
                 }
                 if (activeIds.size() >= 32 || !activeIds.add(request.requestId())) {
-                    context.close(); return;
+                    context.close();
+                    return;
                 }
                 ResourceBudget.Lease contextLease = contextBudget.reserve(1).orElse(null);
-                if (contextLease == null) { activeIds.remove(request.requestId()); context.close(); return; }
+                if (contextLease == null) {
+                    activeIds.remove(request.requestId());
+                    context.close();
+                    return;
+                }
                 long deadline = clock.nanoTime() + Duration.ofSeconds(30).toNanos();
                 var requestContext = new RequestContext(id, request.requestId(), deadline);
                 dispatcher.handle(requestContext, request.body()).whenComplete((reply, error) -> {
                     activeIds.remove(request.requestId());
                     contextLease.close();
                     decoded.close();
-                    if (!context.channel().isActive()) return;
+                    if (!context.channel().isActive())
+                        return;
                     Protocol.Response response = error == null ? reply
                             : new Protocol.Failure(new Protocol.Error(ErrorCode.STORAGE_ERROR,
                                     "Broker request failed"));
@@ -213,40 +252,57 @@ public final class NettyServerTransport implements ServerTransport {
                             request.version(), request.requestId(), response));
                 });
                 transferred = true;
-            } finally { if (!transferred) decoded.close(); }
+            } finally {
+                if (!transferred)
+                    decoded.close();
+            }
         }
 
         private void respond(ChannelHandlerContext context, Protocol.ResponseFrame reply) {
             try {
                 validation.execute(() -> {
-                    if (!context.channel().isActive()) return;
+                    if (!context.channel().isActive())
+                        return;
                     try {
                         byte[] bytes = codec.encodeResponse(reply);
                         ResourceBudget.Lease global = outboundBudget.reserve(bytes.length).orElse(null);
                         ResourceBudget.Lease local = perConnectionOutbound.reserve(bytes.length).orElse(null);
                         if (global == null || local == null) {
-                            if (global != null) global.close();
-                            if (local != null) local.close();
-                            context.close(); return;
+                            if (global != null)
+                                global.close();
+                            if (local != null)
+                                local.close();
+                            context.close();
+                            return;
                         }
                         context.writeAndFlush(Unpooled.wrappedBuffer(bytes)).addListener(done -> {
-                            local.close(); global.close();
-                            if (!done.isSuccess()) context.close();
+                            local.close();
+                            global.close();
+                            if (!done.isSuccess())
+                                context.close();
                         });
-                    } catch (ProtocolException failure) { context.close(); }
+                    } catch (ProtocolException failure) {
+                        context.close();
+                    }
                 });
-            } catch (RejectedExecutionException overloaded) { context.close(); }
+            } catch (RejectedExecutionException overloaded) {
+                context.close();
+            }
         }
 
-        @Override public synchronized void channelInactive(ChannelHandlerContext context) {
+        @Override
+        public synchronized void channelInactive(ChannelHandlerContext context) {
             dispatcher.disconnect(id);
             connections.remove(context.channel());
-            if (connectionLease != null) connectionLease.close();
-            while (!received.isEmpty()) received.removeFirst().close();
+            if (connectionLease != null)
+                connectionLease.close();
+            while (!received.isEmpty())
+                received.removeFirst().close();
             context.fireChannelInactive();
         }
 
-        @Override public void exceptionCaught(ChannelHandlerContext context, Throwable cause) {
+        @Override
+        public void exceptionCaught(ChannelHandlerContext context, Throwable cause) {
             context.close();
         }
     }

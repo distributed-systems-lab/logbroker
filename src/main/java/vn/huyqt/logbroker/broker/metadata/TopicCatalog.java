@@ -15,7 +15,8 @@ import vn.huyqt.logbroker.protocol.Protocol.TopicInfo;
 public final class TopicCatalog {
     public record TopicCreated(UUID id, String name, int partitions) {
         public TopicCreated {
-            Objects.requireNonNull(id); Objects.requireNonNull(name);
+            Objects.requireNonNull(id);
+            Objects.requireNonNull(name);
             if (id.equals(new UUID(0, 0)) || !name.matches("[A-Za-z0-9._-]{1,249}")
                     || name.equals(".") || name.equals("..") || partitions <= 0)
                 throw new IllegalArgumentException("Invalid topic event");
@@ -28,15 +29,22 @@ public final class TopicCatalog {
     public synchronized void apply(TopicCreated event) throws IOException {
         TopicCreated nameMatch = byName.get(event.name());
         TopicCreated idMatch = byId.get(event.id());
-        if (event.equals(nameMatch) && event.equals(idMatch)) return;
+        if (event.equals(nameMatch) && event.equals(idMatch))
+            return;
         if (nameMatch != null || idMatch != null)
             throw new IOException("Conflicting metadata event: " + event.name());
         byName.put(event.name(), event);
         byId.put(event.id(), event);
     }
 
-    public synchronized TopicCreated find(String name) { return byName.get(name); }
-    public synchronized int topicCount() { return byName.size(); }
+    public synchronized TopicCreated find(String name) {
+        return byName.get(name);
+    }
+
+    public synchronized int topicCount() {
+        return byName.size();
+    }
+
     public synchronized int partitionCount() {
         return byName.values().stream().mapToInt(TopicCreated::partitions).sum();
     }

@@ -4,7 +4,9 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
-/** A record with caller-supplied timestamp and defensively copied payload bytes. */
+/**
+ * A record with caller-supplied timestamp and defensively copied payload bytes.
+ */
 public final class LogRecord {
     private final long timestamp;
     private final byte[] key;

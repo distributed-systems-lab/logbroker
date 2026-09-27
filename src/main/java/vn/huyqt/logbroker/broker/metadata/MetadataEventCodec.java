@@ -10,7 +10,8 @@ import java.util.UUID;
 
 /** Versioned payload in the local metadata partition log. */
 public final class MetadataEventCodec {
-    private MetadataEventCodec() {}
+    private MetadataEventCodec() {
+    }
 
     public static byte[] encode(TopicCatalog.TopicCreated event) {
         byte[] name = event.name().getBytes(StandardCharsets.US_ASCII);
@@ -23,9 +24,11 @@ public final class MetadataEventCodec {
     }
 
     public static TopicCatalog.TopicCreated decode(byte[] bytes) throws IOException {
-        if (bytes == null || bytes.length < 27) throw new IOException("Incomplete metadata event");
+        if (bytes == null || bytes.length < 27)
+            throw new IOException("Incomplete metadata event");
         ByteBuffer source = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
-        if (source.getShort() != 1) throw new IOException("Unsupported metadata event version");
+        if (source.getShort() != 1)
+            throw new IOException("Unsupported metadata event version");
         UUID id = new UUID(source.getLong(), source.getLong());
         int length = source.getInt();
         if (length < 1 || length > 249 || length > source.remaining() - 4)
@@ -38,7 +41,8 @@ public final class MetadataEventCodec {
                     .onUnmappableCharacter(CodingErrorAction.REPORT)
                     .decode(ByteBuffer.wrap(name)).toString();
             int partitions = source.getInt();
-            if (source.hasRemaining()) throw new IOException("Trailing metadata bytes");
+            if (source.hasRemaining())
+                throw new IOException("Trailing metadata bytes");
             return new TopicCatalog.TopicCreated(id, decoded, partitions);
         } catch (CharacterCodingException | IllegalArgumentException error) {
             throw new IOException("Invalid metadata event", error);

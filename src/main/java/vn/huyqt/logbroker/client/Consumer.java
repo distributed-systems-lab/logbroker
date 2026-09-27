@@ -14,17 +14,21 @@ public final class Consumer {
     private final BrokerClient client;
     private int rotation;
 
-    public Consumer(BrokerClient client) { this.client = Objects.requireNonNull(client); }
+    public Consumer(BrokerClient client) {
+        this.client = Objects.requireNonNull(client);
+    }
 
     public synchronized CompletableFuture<List<PartitionRecords>> fetch(
             List<Protocol.FetchEntry> entries, int maxBytes, int minBytes, int maxWaitMs) {
-        if (entries.isEmpty()) return CompletableFuture.completedFuture(List.of());
+        if (entries.isEmpty())
+            return CompletableFuture.completedFuture(List.of());
         int start = rotation++ % entries.size();
         var ordered = new ArrayList<Protocol.FetchEntry>(entries.size());
         ordered.addAll(entries.subList(start, entries.size()));
         ordered.addAll(entries.subList(0, start));
         Map<Protocol.TopicPartition, Long> offsets = new HashMap<>();
-        for (var entry : entries) offsets.put(entry.partition(), entry.offset());
+        for (var entry : entries)
+            offsets.put(entry.partition(), entry.offset());
         return client.request(new Protocol.Fetch(maxBytes, minBytes, maxWaitMs, ordered))
                 .thenApply(response -> {
                     if (!(response instanceof Protocol.FetchReply reply))
@@ -36,7 +40,8 @@ public final class Consumer {
                         for (var batch : partition.batches()) {
                             long offset = batch.baseOffset();
                             for (var record : batch.batch().records()) {
-                                if (offset >= requested) records.add(new FetchedRecord(offset, record));
+                                if (offset >= requested)
+                                    records.add(new FetchedRecord(offset, record));
                                 offset++;
                             }
                         }
@@ -47,9 +52,13 @@ public final class Consumer {
                 });
     }
 
-    public record FetchedRecord(long offset, LogRecord record) {}
+    public record FetchedRecord(long offset, LogRecord record) {
+    }
+
     public record PartitionRecords(Protocol.TopicPartition partition, Protocol.Error error,
-                                   long start, long end, List<FetchedRecord> records) {
-        public PartitionRecords { records = List.copyOf(records); }
+            long start, long end, List<FetchedRecord> records) {
+        public PartitionRecords {
+            records = List.copyOf(records);
+        }
     }
 }

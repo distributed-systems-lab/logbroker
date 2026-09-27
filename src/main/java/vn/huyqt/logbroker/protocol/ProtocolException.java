@@ -15,5 +15,7 @@ public final class ProtocolException extends IOException {
         this.code = code;
     }
 
-    public ErrorCode code() { return code; }
+    public ErrorCode code() {
+        return code;
+    }
 }

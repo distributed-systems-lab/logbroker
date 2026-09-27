@@ -44,16 +44,17 @@ public final class PartitionRuntime implements AutoCloseable {
     private DeadlineScheduler.Ticket flushTimer;
 
     public PartitionRuntime(TopicPartition partition, PartitionStore store,
-                            PartitionExecutor executor, DeadlineScheduler clock,
-                            BrokerConfig config) {
+            PartitionExecutor executor, DeadlineScheduler clock,
+            BrokerConfig config) {
         this(partition, store, executor, clock, config,
-                new ResourceBudget(config.maxFlushedWaiters()), error -> {});
+                new ResourceBudget(config.maxFlushedWaiters()), error -> {
+                });
     }
 
     public PartitionRuntime(TopicPartition partition, PartitionStore store,
-                            PartitionExecutor executor, DeadlineScheduler clock,
-                            BrokerConfig config, ResourceBudget waiterBudget,
-                            Consumer<Throwable> failureHandler) {
+            PartitionExecutor executor, DeadlineScheduler clock,
+            BrokerConfig config, ResourceBudget waiterBudget,
+            Consumer<Throwable> failureHandler) {
         this.partition = Objects.requireNonNull(partition);
         this.store = Objects.requireNonNull(store);
         this.executor = Objects.requireNonNull(executor);
@@ -64,7 +65,8 @@ public final class PartitionRuntime implements AutoCloseable {
     }
 
     public CompletableFuture<ProduceResult> produce(Batch batch, AckMode mode, long deadlineNanos) {
-        Objects.requireNonNull(batch); Objects.requireNonNull(mode);
+        Objects.requireNonNull(batch);
+        Objects.requireNonNull(mode);
         var result = new CompletableFuture<ProduceResult>();
         if (closed || failed) {
             result.complete(error(ErrorCode.PARTITION_UNAVAILABLE, "Partition unavailable"));
@@ -100,22 +102,25 @@ public final class PartitionRuntime implements AutoCloseable {
                 return null;
             });
         } catch (RejectedExecutionException rejected) {
-            if (reserved != null) reserved.close();
+            if (reserved != null)
+                reserved.close();
             result.complete(error(ErrorCode.OVERLOADED, "Partition queue full"));
         }
         return result;
     }
 
     private void appendOnLane(Batch batch, AckMode mode, long deadlineNanos,
-                              int encodedBytes, ResourceBudget.Lease lease,
-                              CompletableFuture<ProduceResult> result) {
+            int encodedBytes, ResourceBudget.Lease lease,
+            CompletableFuture<ProduceResult> result) {
         if (closed || failed) {
-            if (lease != null) lease.close();
+            if (lease != null)
+                lease.close();
             result.complete(error(ErrorCode.PARTITION_UNAVAILABLE, "Partition unavailable"));
             return;
         }
         if (clock.nanoTime() >= deadlineNanos) {
-            if (lease != null) lease.close();
+            if (lease != null)
+                lease.close();
             result.complete(error(ErrorCode.REQUEST_TIMED_OUT, "Produce deadline passed"));
             return;
         }
@@ -139,7 +144,8 @@ public final class PartitionRuntime implements AutoCloseable {
             }
             scheduleFlush();
         } catch (IOException | RuntimeException failure) {
-            if (lease != null) lease.close();
+            if (lease != null)
+                lease.close();
             fail(failure);
             result.complete(error(ErrorCode.STORAGE_ERROR, "Partition append failed"));
         }
@@ -160,7 +166,10 @@ public final class PartitionRuntime implements AutoCloseable {
 
     private void scheduleFlush() {
         if (dirty.isEmpty() || failed || closed) {
-            if (flushTimer != null) { flushTimer.cancel(); flushTimer = null; }
+            if (flushTimer != null) {
+                flushTimer.cancel();
+                flushTimer = null;
+            }
             return;
         }
         if (dirtyBytes >= config.flushBytes()
@@ -174,12 +183,17 @@ public final class PartitionRuntime implements AutoCloseable {
     }
 
     private void scheduleTick() {
-        if (!closed && !failed) executor.control(partition, this::tick);
+        if (!closed && !failed)
+            executor.control(partition, this::tick);
     }
 
     private void tick() {
-        if (flushTimer != null) { flushTimer.cancel(); flushTimer = null; }
-        if (closed || failed) return;
+        if (flushTimer != null) {
+            flushTimer.cancel();
+            flushTimer = null;
+        }
+        if (closed || failed)
+            return;
         if (!dirty.isEmpty() && (dirtyBytes >= config.flushBytes()
                 || clock.nanoTime() - dirty.peekFirst().atNanos >= config.flushInterval().toNanos())) {
             try {
@@ -201,23 +215,36 @@ public final class PartitionRuntime implements AutoCloseable {
         scheduleFlush();
     }
 
-    public void requestFlush() { scheduleTick(); }
+    public void requestFlush() {
+        scheduleTick();
+    }
+
     public CompletableFuture<Void> flushNow() {
-        if (closed || failed) return CompletableFuture.completedFuture(null);
+        if (closed || failed)
+            return CompletableFuture.completedFuture(null);
         return executor.submit(partition, () -> {
             if (!closed && !failed) {
-                try { pruneDurable(store.flush()); scheduleFlush(); }
-                catch (IOException | RuntimeException failure) { fail(failure); throw failure; }
+                try {
+                    pruneDurable(store.flush());
+                    scheduleFlush();
+                } catch (IOException | RuntimeException failure) {
+                    fail(failure);
+                    throw failure;
+                }
             }
             return null;
         });
     }
-    public long generation() { return generation; }
+
+    public long generation() {
+        return generation;
+    }
 
     public CompletableFuture<FetchResult> read(FetchEntry entry, int remainingWireBudget,
-                                               boolean allowFirstOversize) {
-        if (closed || failed) return CompletableFuture.completedFuture(fetchError(
-                ErrorCode.PARTITION_UNAVAILABLE, "Partition unavailable"));
+            boolean allowFirstOversize) {
+        if (closed || failed)
+            return CompletableFuture.completedFuture(fetchError(
+                    ErrorCode.PARTITION_UNAVAILABLE, "Partition unavailable"));
         try {
             return executor.submit(partition,
                     () -> readOnLane(entry, remainingWireBudget, allowFirstOversize));
@@ -228,9 +255,10 @@ public final class PartitionRuntime implements AutoCloseable {
     }
 
     private FetchResult readOnLane(FetchEntry entry, int totalBudget,
-                                   boolean allowFirstOversize) {
-        if (closed || failed) return fetchError(
-                ErrorCode.PARTITION_UNAVAILABLE, "Partition unavailable");
+            boolean allowFirstOversize) {
+        if (closed || failed)
+            return fetchError(
+                    ErrorCode.PARTITION_UNAVAILABLE, "Partition unavailable");
         long start = store.logStartOffset(), end = store.logEndOffset();
         if (entry.offset() < start || entry.offset() > end)
             return fetchError(ErrorCode.OFFSET_OUT_OF_RANGE, "Offset outside log");
@@ -241,19 +269,23 @@ public final class PartitionRuntime implements AutoCloseable {
         try {
             while (cursor < end) {
                 if (result.isEmpty() && !allowFirstOversize
-                        && (remainingTotal == 0 || remainingPartition == 0)) break;
+                        && (remainingTotal == 0 || remainingPartition == 0))
+                    break;
                 var batches = store.read(cursor, 1);
-                if (batches.isEmpty()) throw new IOException("Fetch made no progress");
+                if (batches.isEmpty())
+                    throw new IOException("Fetch made no progress");
                 var stored = batches.getFirst();
                 var batch = new Batch(stored.records());
                 int wireBytes = WireBatchCodec.fetchSize(batch);
                 boolean fits = wireBytes <= remainingTotal && wireBytes <= remainingPartition;
-                if (!fits && (!result.isEmpty() || !allowFirstOversize)) break;
+                if (!fits && (!result.isEmpty() || !allowFirstOversize))
+                    break;
                 result.add(new FetchBatch(stored.baseOffset(), batch));
                 cursor = stored.nextOffset();
                 remainingTotal = Math.max(0, remainingTotal - wireBytes);
                 remainingPartition = Math.max(0, remainingPartition - wireBytes);
-                if (!fits) break;
+                if (!fits)
+                    break;
             }
             return new FetchResult(partition, Error.none(), start, end, result);
         } catch (IOException | RuntimeException failure) {
@@ -270,22 +302,31 @@ public final class PartitionRuntime implements AutoCloseable {
         Objects.requireNonNull(listener);
         long id = ++listenerId;
         listeners.put(id, listener);
-        return () -> { synchronized (PartitionRuntime.this) {
-            return listeners.remove(id) != null;
-        }};
+        return () -> {
+            synchronized (PartitionRuntime.this) {
+                return listeners.remove(id) != null;
+            }
+        };
     }
 
     private void notifyListeners() {
         List<Runnable> copy;
-        synchronized (this) { copy = List.copyOf(listeners.values()); }
-        for (Runnable listener : copy) listener.run();
+        synchronized (this) {
+            copy = List.copyOf(listeners.values());
+        }
+        for (Runnable listener : copy)
+            listener.run();
     }
 
     private void fail(Throwable failure) {
-        if (failed) return;
+        if (failed)
+            return;
         failed = true;
         generation++;
-        if (flushTimer != null) { flushTimer.cancel(); flushTimer = null; }
+        if (flushTimer != null) {
+            flushTimer.cancel();
+            flushTimer = null;
+        }
         for (Waiter waiter : waiters)
             waiter.finish(error(ErrorCode.STORAGE_ERROR, "Partition I/O failed"));
         waiters.clear();
@@ -301,16 +342,21 @@ public final class PartitionRuntime implements AutoCloseable {
         return new ProduceResult(partition, new Error(code, message), -1, -1);
     }
 
-    @Override public void close() {
+    @Override
+    public void close() {
         closed = true;
-        if (flushTimer != null) flushTimer.cancel();
+        if (flushTimer != null)
+            flushTimer.cancel();
         for (Waiter waiter : waiters)
             waiter.finish(error(ErrorCode.BROKER_SHUTTING_DOWN, "Partition closing"));
         waiters.clear();
-        synchronized (this) { listeners.clear(); }
+        synchronized (this) {
+            listeners.clear();
+        }
     }
 
-    private record Dirty(long nextOffset, int bytes, long atNanos) {}
+    private record Dirty(long nextOffset, int bytes, long atNanos) {
+    }
 
     private static final class Waiter {
         final AppendResult appended;
@@ -320,7 +366,7 @@ public final class PartitionRuntime implements AutoCloseable {
         DeadlineScheduler.Ticket timer;
 
         Waiter(AppendResult appended, long deadlineNanos, ResourceBudget.Lease lease,
-               CompletableFuture<ProduceResult> result) {
+                CompletableFuture<ProduceResult> result) {
             this.appended = appended;
             this.deadlineNanos = deadlineNanos;
             this.lease = lease;
@@ -328,7 +374,8 @@ public final class PartitionRuntime implements AutoCloseable {
         }
 
         void finish(ProduceResult outcome) {
-            if (timer != null) timer.cancel();
+            if (timer != null)
+                timer.cancel();
             lease.close();
             result.complete(outcome);
         }

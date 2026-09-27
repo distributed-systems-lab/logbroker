@@ -33,7 +33,8 @@ public final class BrokerClient implements AutoCloseable {
 
     public synchronized CompletableFuture<Protocol.Response> request(Protocol.Request body) {
         Objects.requireNonNull(body);
-        if (closed) return CompletableFuture.failedFuture(ClientException.notSent("Client closed"));
+        if (closed)
+            return CompletableFuture.failedFuture(ClientException.notSent("Client closed"));
         if (pending.size() >= config.maxInFlight())
             return CompletableFuture.failedFuture(ClientException.notSent("In-flight request limit"));
         if (nextId == Long.MAX_VALUE) {
@@ -43,25 +44,33 @@ public final class BrokerClient implements AutoCloseable {
         long id = nextId++;
         var frame = new Protocol.RequestFrame(operation(body), (short) 1, id, body);
         final int bytes;
-        try { bytes = codec.encodeRequest(frame).length; }
-        catch (Exception invalid) { return CompletableFuture.failedFuture(invalid); }
+        try {
+            bytes = codec.encodeRequest(frame).length;
+        } catch (Exception invalid) {
+            return CompletableFuture.failedFuture(invalid);
+        }
         var lease = queued.reserve(bytes).orElse(null);
-        if (lease == null) return CompletableFuture.failedFuture(
-                ClientException.notSent("Client request buffer full"));
+        if (lease == null)
+            return CompletableFuture.failedFuture(
+                    ClientException.notSent("Client request buffer full"));
         var item = new Pending(frame, lease, generation);
         pending.put(id, item);
         item.timer = clock.schedule(clock.nanoTime() + config.requestTimeout().toNanos(),
                 () -> timeout(id, item));
         item.result.whenComplete((ignored, error) -> {
-            if (item.result.isCancelled()) cancel(id, item);
+            if (item.result.isCancelled())
+                cancel(id, item);
         });
-        if (connecting == null) connect();
+        if (connecting == null)
+            connect();
         var connection = connecting;
         long assignedGeneration = generation;
         item.generation = assignedGeneration;
         connection.whenComplete((ignored, error) -> {
-            if (error != null) failConnection(assignedGeneration, error);
-            else send(id, item);
+            if (error != null)
+                failConnection(assignedGeneration, error);
+            else
+                send(id, item);
         });
         return item.result;
     }
@@ -77,11 +86,13 @@ public final class BrokerClient implements AutoCloseable {
     }
 
     private synchronized void send(long id, Pending item) {
-        if (pending.get(id) != item || closed || item.generation != generation) return;
+        if (pending.get(id) != item || closed || item.generation != generation)
+            return;
         item.mayHaveSent = true;
         try {
             transport.send(item.frame).whenComplete((ignored, error) -> {
-                if (error != null) failOne(id, item, ClientException.unknown(error));
+                if (error != null)
+                    failOne(id, item, ClientException.unknown(error));
             });
         } catch (Throwable error) {
             failOne(id, item, ClientException.unknown(error));
@@ -89,9 +100,11 @@ public final class BrokerClient implements AutoCloseable {
     }
 
     private synchronized void receive(long selected, Protocol.ResponseFrame reply) {
-        if (selected != generation || closed) return;
+        if (selected != generation || closed)
+            return;
         var item = pending.get(reply.requestId());
-        if (item == null) return; // Late reply for a timed-out or cancelled request.
+        if (item == null)
+            return; // Late reply for a timed-out or cancelled request.
         if (reply.operation() != item.frame.operation() || reply.version() != item.frame.version()) {
             failConnection(selected, new IllegalStateException("Mismatched response envelope"));
             transport.close();
@@ -107,14 +120,18 @@ public final class BrokerClient implements AutoCloseable {
                 : ClientException.notSent("Request timed out before send"));
     }
 
-    private synchronized void cancel(long id, Pending item) { release(id, item); }
+    private synchronized void cancel(long id, Pending item) {
+        release(id, item);
+    }
 
     private synchronized void failOne(long id, Pending item, Throwable error) {
-        if (release(id, item)) item.result.completeExceptionally(error);
+        if (release(id, item))
+            item.result.completeExceptionally(error);
     }
 
     private boolean release(long id, Pending item) {
-        if (pending.get(id) != item) return false;
+        if (pending.get(id) != item)
+            return false;
         pending.remove(id);
         item.timer.cancel();
         item.lease.close();
@@ -122,7 +139,8 @@ public final class BrokerClient implements AutoCloseable {
     }
 
     private synchronized void failConnection(long selected, Throwable error) {
-        if (selected != generation) return;
+        if (selected != generation)
+            return;
         connecting = null;
         for (var entry : Map.copyOf(pending).entrySet()) {
             var item = entry.getValue();
@@ -133,8 +151,10 @@ public final class BrokerClient implements AutoCloseable {
         }
     }
 
-    @Override public synchronized void close() {
-        if (closed) return;
+    @Override
+    public synchronized void close() {
+        if (closed)
+            return;
         closed = true;
         failConnection(generation, new IllegalStateException("Client closed"));
         transport.close();

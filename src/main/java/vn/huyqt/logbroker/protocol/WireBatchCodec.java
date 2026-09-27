@@ -13,14 +13,16 @@ import vn.huyqt.logbroker.storage.RecordPayloadCodec;
 public final class WireBatchCodec {
     private static final int HEADER_BYTES = 14;
 
-    private WireBatchCodec() {}
+    private WireBatchCodec() {
+    }
 
     public static int fetchSize(Batch batch) {
         return Math.addExact(8 + HEADER_BYTES, RecordPayloadCodec.encodedSize(batch.records()));
     }
 
     public static byte[] encode(Batch batch, ProtocolLimits limits) throws ProtocolException {
-        Objects.requireNonNull(batch); Objects.requireNonNull(limits);
+        Objects.requireNonNull(batch);
+        Objects.requireNonNull(limits);
         List<vn.huyqt.logbroker.storage.LogRecord> records = batch.records();
         if (records.isEmpty() || records.size() > limits.maxRecordsPerBatch())
             throw new ProtocolException(ErrorCode.INVALID_REQUEST, "Invalid record count");
@@ -43,7 +45,8 @@ public final class WireBatchCodec {
     }
 
     public static Batch decode(byte[] bytes, ProtocolLimits limits) throws ProtocolException {
-        Objects.requireNonNull(bytes); Objects.requireNonNull(limits);
+        Objects.requireNonNull(bytes);
+        Objects.requireNonNull(limits);
         if (bytes.length < 34 || (long) bytes.length + 8 > limits.maxWireBatchBytes()
                 || (long) bytes.length + 16 > limits.maxStorageBatchBytes())
             throw new ProtocolException(ErrorCode.BATCH_TOO_LARGE, "Invalid batch length");
