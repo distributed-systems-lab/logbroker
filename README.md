@@ -11,6 +11,7 @@ Tự xây storage, replication, metadata consensus, protocol và Java client. B�
 - [Implementation plan — Phase 1](docs/superpowers/plans/2026-09-25-storage-phase-1.md)
 - [Thiết kế Phase 2 — Broker đơn và Java client](docs/superpowers/specs/2026-09-25-broker-phase-2-design.md)
 - [Implementation plan — Phase 2](docs/superpowers/plans/2026-09-25-broker-phase-2.md)
+- [Thiết kế Phase 3 — Metadata quorum (chờ review)](docs/superpowers/specs/2026-09-28-metadata-quorum-phase-3-design.md)
 - [Storage format v1 và hợp đồng API](docs/storage-format-v1.md)
 - [Wire protocol v1](docs/protocol-v1.md)
 - [Broker configuration](docs/broker-configuration.md)
