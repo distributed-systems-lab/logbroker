@@ -31,6 +31,7 @@ public final class PartitionLog implements AutoCloseable {
     private final Path directory;
     private final LogConfig config;
     private final LogIo io;
+    private final LogOpenOptions options;
     private final FileChannel lockChannel;
     private final FileLock fileLock;
     private final TreeMap<Long, LogSegment> segments = new TreeMap<>();
@@ -45,11 +46,13 @@ public final class PartitionLog implements AutoCloseable {
             Path directory,
             LogConfig config,
             LogIo io,
+            LogOpenOptions options,
             FileChannel lockChannel,
             FileLock fileLock) {
         this.directory = directory;
         this.config = config;
         this.io = io;
+        this.options = options;
         this.lockChannel = lockChannel;
         this.fileLock = fileLock;
     }
@@ -62,9 +65,25 @@ public final class PartitionLog implements AutoCloseable {
     }
 
     static PartitionLog open(Path directory, LogConfig config, LogIo io) throws IOException {
+        return open(directory, config, io, LogOpenOptions.standalone());
+    }
+
+    public static PartitionLog open(Path directory, LogConfig config, LogOpenOptions options) throws IOException {
+        return open(directory, config, new LogIo(), options);
+    }
+
+    static PartitionLog open(Path directory, LogConfig config, LogIo io, LogOpenOptions options) throws IOException {
         Objects.requireNonNull(directory, "directory");
         Objects.requireNonNull(config, "config");
         Objects.requireNonNull(io, "io");
+        Objects.requireNonNull(options, "options");
+        if (!options.createIfMissing()) {
+            if (!Files.isDirectory(directory)) throw new IOException("Published log directory is missing");
+            try (var paths = Files.list(directory)) {
+                if (paths.noneMatch(path -> path.getFileName().toString().endsWith(".log")))
+                    throw new IOException("Published log has no data segments");
+            }
+        }
         Files.createDirectories(directory);
         FileChannel lockChannel = FileChannel.open(directory.resolve(".lock"), CREATE, WRITE);
         FileLock fileLock = null;
@@ -77,8 +96,8 @@ public final class PartitionLog implements AutoCloseable {
             }
             if (fileLock == null)
                 throw new IOException("Partition directory is already locked: " + directory);
-            log = new PartitionLog(directory, config, io, lockChannel, fileLock);
-            LogRecovery.Result recovered = LogRecovery.recover(directory, config, io);
+            log = new PartitionLog(directory, config, io, options, lockChannel, fileLock);
+            LogRecovery.Result recovered = LogRecovery.recover(directory, config, io, options);
             for (LogRecovery.SegmentInfo info : recovered.segments()) {
                 LogSegment segment = LogSegment.open(
                         LogSegment.dataPath(directory, info.baseOffset()),
@@ -88,13 +107,15 @@ public final class PartitionLog implements AutoCloseable {
                 log.indexes.put(info.baseOffset(), info.index());
             }
             if (log.segments.isEmpty()) {
-                LogSegment segment = LogSegment.open(LogSegment.dataPath(directory, 0), 0, io);
-                log.segments.put(0L, segment);
+                long base = options.startOffset();
+                LogSegment segment = LogSegment.open(LogSegment.dataPath(directory, base), base, io);
+                log.segments.put(base, segment);
                 OffsetIndex index = new OffsetIndex(config.indexIntervalBytes());
-                log.indexes.put(0L, index);
-                index.write(OffsetIndex.indexPath(directory, 0), io);
+                log.indexes.put(base, index);
+                index.write(OffsetIndex.indexPath(directory, base), io);
                 segment.force();
             }
+            options.directories().sync(directory);
             log.logEndOffset = recovered.nextOffset();
             log.durableEndOffset = recovered.nextOffset();
             return log;
@@ -139,6 +160,7 @@ public final class PartitionLog implements AutoCloseable {
                 if (active.size() + bytes.length > config.segmentBytes()) {
                     // The sealed segment must be durable before a new active segment is published.
                     active.force();
+                    options.directories().sync(directory);
                     durableEndOffset = oldEnd;
                     active = LogSegment.open(LogSegment.dataPath(directory, oldEnd), oldEnd, io);
                     segments.put(oldEnd, active);
@@ -167,7 +189,7 @@ public final class PartitionLog implements AutoCloseable {
         guard.readLock().lock();
         try {
             ensureOpen();
-            if (offset < 0 || offset > logEndOffset || maxBytes <= 0) {
+            if (offset < segments.firstKey() || offset > logEndOffset || maxBytes <= 0) {
                 throw new IllegalArgumentException("Invalid read range or budget");
             }
             if (offset == logEndOffset)
@@ -224,7 +246,7 @@ public final class PartitionLog implements AutoCloseable {
         guard.writeLock().lock();
         try {
             ensureOpen();
-            if (offset < 0 || offset > logEndOffset) {
+            if (offset < segments.firstKey() || offset > logEndOffset) {
                 throw new IllegalArgumentException("Offset outside log");
             }
             if (offset == logEndOffset)
@@ -281,6 +303,7 @@ public final class PartitionLog implements AutoCloseable {
                 indexes.put(target.baseOffset(), rebuilt);
                 for (LogSegment segment : segments.values())
                     segment.force();
+                options.directories().sync(directory);
                 logEndOffset = offset;
                 durableEndOffset = offset;
             } catch (IOException e) {
@@ -311,16 +334,17 @@ public final class PartitionLog implements AutoCloseable {
     private long forceAll() throws IOException {
         for (LogSegment segment : segments.values())
             segment.force();
+        options.directories().sync(directory);
         durableEndOffset = logEndOffset;
         return durableEndOffset;
     }
 
-    /** Returns the first offset in this partition (always zero in phase 1). */
+    /** Returns the first offset covered by retained segments. */
     public long logStartOffset() {
         guard.readLock().lock();
         try {
             ensureOpen();
-            return 0;
+            return segments.firstKey();
         } finally {
             guard.readLock().unlock();
         }
@@ -349,6 +373,43 @@ public final class PartitionLog implements AutoCloseable {
         } finally {
             guard.readLock().unlock();
         }
+    }
+
+    // After a mutating I/O failure, callers must reopen to recover the on-disk
+    /** Computes the first retained segment without mutating storage. */
+    public long prefixStartAfter(long boundary) {
+        guard.readLock().lock();
+        try {
+            ensureOpen();
+            if (boundary < 0) throw new IllegalArgumentException("Negative boundary");
+            long retained = segments.firstKey();
+            for (Long base : segments.keySet()) {
+                Long next = segments.higherKey(base);
+                if (next == null || next > boundary) break;
+                retained = next;
+            }
+            return retained;
+        } finally { guard.readLock().unlock(); }
+    }
+
+    /** Caller owns durable crash-recovery intent; active segment is never deleted. */
+    public long deleteSegmentsBefore(long boundary) throws IOException {
+        guard.writeLock().lock();
+        try {
+            ensureOpen();
+            long retained = prefixStartAfter(boundary);
+            try {
+                for (Long base : new ArrayList<>(segments.headMap(retained, false).keySet())) {
+                    var segment = segments.get(base);
+                    segment.close(); io.delete(segment.path());
+                    Path index = OffsetIndex.indexPath(directory, base);
+                    if (Files.exists(index)) io.delete(index);
+                    segments.remove(base); indexes.remove(base);
+                }
+                options.directories().sync(directory);
+                return segments.firstKey();
+            } catch (IOException e) { markFailed(e); throw e; }
+        } finally { guard.writeLock().unlock(); }
     }
 
     // After a mutating I/O failure, callers must reopen to recover the on-disk

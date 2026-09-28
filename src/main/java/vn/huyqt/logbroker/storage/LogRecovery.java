@@ -37,12 +37,16 @@ final class LogRecovery {
     }
 
     static Result recover(Path directory, LogConfig config, LogIo io) throws IOException {
+        return recover(directory, config, io, LogOpenOptions.standalone());
+    }
+
+    static Result recover(Path directory, LogConfig config, LogIo io, LogOpenOptions options) throws IOException {
         Objects.requireNonNull(directory, "directory");
         Objects.requireNonNull(config, "config");
         Objects.requireNonNull(io, "io");
         List<Long> bases = discover(directory);
         List<SegmentInfo> infos = new ArrayList<>();
-        long next = 0;
+        long next = options.startOffset();
         Repair repair = null;
         for (int s = 0; s < bases.size(); s++) {
             long base = bases.get(s);
@@ -108,6 +112,10 @@ final class LogRecovery {
         }
 
         // Do not mutate files until every data segment has been validated.
+        if (next < options.minimumEndOffset())
+            throw new CorruptLogException("Recovery would remove committed prefix");
+        if (bases.isEmpty() && !options.createIfMissing())
+            throw new CorruptLogException("Published log has no segments");
         if (repair != null) {
             try (FileChannel channel = FileChannel.open(repair.path(), WRITE)) {
                 io.truncate(channel, repair.validBytes());
