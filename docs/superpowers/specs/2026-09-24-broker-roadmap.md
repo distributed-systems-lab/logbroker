@@ -52,7 +52,7 @@ Thiết kế chi tiết: [Phase 2 — Broker đơn và Java client](2026-09-25-b
 
 Ba controller với membership cố định; bầu leader; epoch; replicate/commit metadata log; recovery và snapshot. Có thể tái sử dụng storage nhưng tách riêng logic consensus.
 
-Thiết kế chi tiết: [Phase 3 — Metadata quorum](2026-09-28-metadata-quorum-phase-3-design.md), bản tổng hợp chờ review. Quorum độc lập với broker Phase 2; tái sử dụng storage qua QuorumLog, commit dựa trên đa số đã flush và quy tắc epoch, đọc linearizable qua log barrier, snapshot/catch-up và format tường minh.
+Thiết kế chi tiết: [Phase 3 — Metadata quorum](2026-09-28-metadata-quorum-phase-3-design.md), đã duyệt ngày 2026-09-28; đã có [implementation plan](../plans/2026-09-28-metadata-quorum-phase-3.md). Quorum độc lập với broker Phase 2; tái sử dụng storage qua QuorumLog, commit dựa trên đa số đã flush và quy tắc epoch, đọc linearizable qua log barrier, snapshot/catch-up và format tường minh. Chưa triển khai Phase 3.
 
 Điều kiện hoàn thành: metadata đã commit thống nhất; phía thiểu số không commit được thay đổi; kiểm thử mất leader, mất quorum và network partition.
 
