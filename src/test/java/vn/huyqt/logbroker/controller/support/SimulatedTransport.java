@@ -18,6 +18,8 @@ public final class SimulatedTransport {
         pending.addLast(new Envelope(source,target,effect.frame(),effect.route()));
     }
     public Envelope next(){return pending.pollFirst();}
+    public void dropNext(){pending.pollFirst();}
+    public void reorder(){if(pending.size()>1)pending.addLast(pending.removeFirst());}
     public int pending(){return pending.size();}
     public void isolate(int node){isolated.add(node);pending.removeIf(e->e.source()==node||e.target()==node);}
     public void heal(){isolated.clear();}

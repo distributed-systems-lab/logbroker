@@ -18,6 +18,30 @@ public final class QuorumHarness {
     private final int adminCapacity;
     private final Map<Long,Map<Long,QuorumEntryEvidence>> committedEvidence=new HashMap<>();
     private record QuorumEntryEvidence(Object entry){}
+    private final List<HistoryEvent> history=new ArrayList<>();private long invocationIds;
+    private final Map<String,vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated> acknowledged=new HashMap<>();
+    private final Map<String,Integer> voteEvidence=new HashMap<>();
+    public List<HistoryEvent> history(){return List.copyOf(history);}
+    public void recordAcknowledgedForTest(String name,UUID id,int partitions){acknowledged.put(name,new vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated(id,name,partitions));}
+    public java.util.concurrent.CompletableFuture<UUID> trackedCreate(int node,String name,int partitions){long id=++invocationIds;history.add(new HistoryEvent.Invocation(id,new HistoryEvent.Create(name,partitions),now));var result=services[node].createTopic(name,partitions,now+Duration.ofSeconds(2).toNanos());result.whenComplete((uuid,error)->{if(error==null){recordAcknowledgedForTest(name,uuid,partitions);history.add(new HistoryEvent.Completion(id,new HistoryEvent.Created(uuid),now));}else recordFailure(id,error);});return result;}
+    private void trackedRead(int node){long id=++invocationIds;history.add(new HistoryEvent.Invocation(id,new HistoryEvent.Read(),now));services[node].readMetadata(now+Duration.ofSeconds(2).toNanos()).whenComplete((view,error)->{if(error==null)history.add(new HistoryEvent.Completion(id,new HistoryEvent.Topics(view.topics()),now));else recordFailure(id,error);});}
+    private void recordFailure(long id,Throwable error){Throwable cause=error instanceof java.util.concurrent.CompletionException?error.getCause():error;var code=cause instanceof ControllerService.ServiceException e?e.meta().error():vn.huyqt.logbroker.controller.protocol.QuorumError.NODE_UNAVAILABLE;history.add(new HistoryEvent.Completion(id,(code==vn.huyqt.logbroker.controller.protocol.QuorumError.REQUEST_TIMED_OUT||code==vn.huyqt.logbroker.controller.protocol.QuorumError.NODE_UNAVAILABLE||code==vn.huyqt.logbroker.controller.protocol.QuorumError.NOT_LEADER)?new HistoryEvent.Unknown():new HistoryEvent.Rejected(code),now));}
+    public void runSchedule(long scheduleSeed,int steps){var random=new Random(scheduleSeed);var trace=new ArrayDeque<String>();try{elect(0);for(int step=0;step<steps;step++){int target=random.nextInt(3),action=random.nextInt(12);trace.addLast(step+":"+action+":"+target);if(trace.size()>80)trace.removeFirst();switch(action){
+        case 0->{tick(Duration.ofMillis(20+random.nextInt(80)));}
+        case 1->{transport.dropNext();}
+        case 2->{transport.reorder();deliverOne();}
+        case 3->{if(nodes[target]!=null&&!paused[target]&&disks[target].pending()>0)completeOneDisk(target);}
+        case 4->{isolate(target);}
+        case 5->{heal();}
+        case 6->{if(nodes[target]!=null){if(random.nextBoolean())powerLoss(target);else crash(target);}else{paused[target]=false;restart(target);}}
+        case 7->{paused[target]=!paused[target];}
+        case 8->{int leader=leader();if(leader>=0&&node(leader).status().ready()&&invocationIds<8){if(invocationIds%3==2)trackedRead(leader);else trackedCreate(leader,"topic-"+(invocationIds%4),1);}}
+        case 9->{if(nodes[target]!=null&&disks[target].pending()==0&&metadata[target].image().appliedOffset()>disks[target].index().start())compact(target);}
+        default->{deliverOne();}
+    }while(!reentries.isEmpty())reentries.removeFirst().run();while(!responses.isEmpty())responses.removeFirst().run();assertSafety();}runHealthySuffix();}catch(Throwable failure){throw new AssertionError("seed="+scheduleSeed+" trace="+trace,failure);}}
+    private void deliverOne(){var envelope=transport.next();if(envelope!=null){history.add(new HistoryEvent.Delivery(envelope.source(),envelope.target(),envelope.frame().requestId()));deliver(envelope.target(),envelope.frame().response()?new QuorumEvent.PeerResponse(envelope.frame()):new QuorumEvent.PeerRequest(envelope.frame(),envelope.route()));}}
+    public void runHealthySuffix(){heal();for(int i=0;i<3;i++){paused[i]=false;if(nodes[i]==null)restart(i);}for(int i=0;i<800;i++){tick(Duration.ofMillis(20));settle();}if(leader()<0||!nodes[leader()].status().ready())throw new AssertionError("No ready leader after healthy suffix");}
+    public void assertAcknowledgedTopicsSurvive(){runHealthySuffix();for(int i=0;i<3;i++){var actual=new HashMap<String,vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated>();for(var topic:metadata[i].image().topics())actual.put(topic.name(),topic);for(var topic:acknowledged.values())if(!topic.equals(actual.get(topic.name())))throw new AssertionError("Acknowledged topic lost on node "+i+": "+topic);}}
     private QuorumHarness(long seed,int adminCapacity){this.seed=seed;this.adminCapacity=adminCapacity;for(int i=0;i<3;i++){disks[i]=new FakeDisk(new UUID(0,i+10));restart(i);}}
     public static QuorumHarness threeNodes(long seed){return new QuorumHarness(seed,1024);}
     public static QuorumHarness threeNodes(long seed,int adminCapacity){return new QuorumHarness(seed,adminCapacity);}
@@ -55,7 +79,7 @@ public final class QuorumHarness {
     public void heal(){transport.heal();}
     public void pauseDisk(int node){paused[node]=true;}
     public void resumeDisk(int node){paused[node]=false;}
-    public void crash(int node){nodes[node]=null;disks[node].processCrash();}
+    public void crash(int node){history.add(new HistoryEvent.Crash(node));services[node].close();nodes[node]=null;disks[node].processCrash();}
     public void powerLoss(int node){crash(node);disks[node].powerLoss();}
     public void restart(int node){
         disks[node].recover();metadata[node]=new MetadataStateMachine();
@@ -67,6 +91,7 @@ public final class QuorumHarness {
     }
     public void compact(int node){try{var id=disks[node].compact(metadata[node].image());deliver(node,new QuorumEvent.SnapshotAvailable(id));deliver(node,new QuorumEvent.LogRetained(disks[node].index(),id));}catch(Exception e){throw new AssertionError(e);}}
     public void assertSafety(){
+        for(int i=0;i<3;i++)if(disks[i]!=null&&disks[i].votedFor()>=0){String key=i+":"+disks[i].epoch();Integer old=voteEvidence.putIfAbsent(key,disks[i].votedFor());if(old!=null&&old!=disks[i].votedFor())throw new AssertionError("Vote changed after restart: "+key);}
         var leaders=new HashMap<Long,Integer>();
         for(int i=0;i<3;i++)if(nodes[i]!=null){var s=nodes[i].status();
             if(s.snapshotEnd()>s.applied()||s.applied()>s.commit()||s.commit()>s.durableEnd()||s.durableEnd()>s.logEnd())throw new AssertionError("Invalid offset progress: "+s);
@@ -79,3 +104,4 @@ public final class QuorumHarness {
         }
     }
 }
+

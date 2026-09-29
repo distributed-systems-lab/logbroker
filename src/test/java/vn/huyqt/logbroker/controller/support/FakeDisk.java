@@ -27,6 +27,9 @@ public final class FakeDisk {
     public void failNextForce(){failForce=true;}
     public long epoch(){return epoch;}
     public int votedFor(){return vote;}
+    /** Deliberately broken fixtures used only to prove the independent oracle detects vote loss. */
+    public void forgetVoteForTest(){vote=-1;}
+    public void overwriteVoteForTest(long epoch,int voter){this.epoch=epoch;vote=voter;}
     public long committed(){return committed;}
     public EpochIndex index(){return new EpochIndex(start,lastEpoch,batches);}
     public long durable(){return forced.isEmpty()?start:forced.getLast().nextOffset();}
