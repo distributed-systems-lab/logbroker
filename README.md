@@ -46,3 +46,6 @@ java -cp "target/classes;target/dependency/*" vn.huyqt.logbroker.example.ClientE
 Broker có thể nhận thêm `--config broker.properties`; xem [bảng cấu hình](docs/broker-configuration.md). Dừng broker bằng Ctrl+C. Ví dụ client in `SUCCESS records=1` sau khi Produce FLUSHED và Fetch lại đúng record.
 
 Ví dụ chỉ chấp nhận thư mục chưa tồn tại hoặc đang rỗng. Dùng tên thư mục mới nếu chạy lại.
+
+Phase 3 implements a fixed three-voter KRaft-style metadata quorum with durable elections, replication, snapshots, a separate admin client and CLI. Strict controllers run on Linux/WSL. See [configuration and three-node commands](docs/controller-configuration.md) and [operation contract](docs/controller-operation.md). Broker/partition provisioning remains a later phase.
+

@@ -35,6 +35,12 @@ class ControllerNodeClusterTest {
                 var id=client.createTopic("client-orders",2).get(10,TimeUnit.SECONDS);assertEquals(id,client.createTopic("client-orders",2).get(10,TimeUnit.SECONDS));
                 assertEquals(2,client.metadata().get(10,TimeUnit.SECONDS).topics().size());assertEquals(vn.huyqt.logbroker.controller.protocol.QuorumProtocol.Consistency.LOCAL,client.localMetadata(2).get(10,TimeUnit.SECONDS).consistency());assertEquals(1,client.describe(1).get(10,TimeUnit.SECONDS).nodeId());
             }
+            String voterText=voters.stream().map(v->v.id()+"@"+v.host()+":"+v.port()).collect(java.util.stream.Collectors.joining(","));
+            var output=new java.io.ByteArrayOutputStream();var errors=new java.io.ByteArrayOutputStream();
+            assertEquals(0,vn.huyqt.logbroker.controller.client.ControllerCli.run(new String[]{"create-topic","--cluster",new UUID(0,123).toString(),"--voters",voterText,"--name","cli-orders","--partitions","1"},new java.io.PrintStream(output),new java.io.PrintStream(errors)),errors::toString);assertTrue(output.toString().contains("CREATED topicId="));assertNotNull(UUID.fromString(output.toString().trim().substring("CREATED topicId=".length())));
+            output.reset();assertEquals(0,vn.huyqt.logbroker.controller.client.ControllerCli.run(new String[]{"local-metadata","--cluster",new UUID(0,123).toString(),"--voters",voterText,"--node","1"},new java.io.PrintStream(output),new java.io.PrintStream(errors)));assertTrue(output.toString().contains("consistency=LOCAL node=1"));
+            nodes.get(2).close();var identity=new ClusterIdentity(new UUID(0,123),2,voters);var restarted=ControllerNode.open(root.resolve("node-2"),ControllerConfig.builder(identity).fetchIdleWait(Duration.ofMillis(20)).rpcTimeout(Duration.ofMillis(100)).electionMin(Duration.ofMillis(200)).electionMax(Duration.ofMillis(500)).snapshotTriggerBytes(1).build(),new FaultFiles());nodes.set(2,restarted);restarted.start();
+            limit=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);while(restarted.service().readLocalMetadata().get(1,TimeUnit.SECONDS).topics().size()<3&&System.nanoTime()<limit)Thread.sleep(20);assertEquals(3,restarted.service().readLocalMetadata().get(1,TimeUnit.SECONDS).topics().size());
         } finally {release.countDown();for(var node:nodes)node.close();}
     }
 }
