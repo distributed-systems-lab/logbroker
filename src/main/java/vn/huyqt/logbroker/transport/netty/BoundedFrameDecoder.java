@@ -13,7 +13,7 @@ import vn.huyqt.logbroker.protocol.ProtocolLimits;
 
 /** Incremental length framing with a reservation before body allocation. */
 public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
-    private final ProtocolLimits limits;
+    private final int minFrameBytes,maxFrameBytes;
     private final ResourceBudget budget;
     private final DeadlineScheduler clock;
     private final byte[] prefix = new byte[4];
@@ -29,7 +29,11 @@ public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
 
     public BoundedFrameDecoder(ProtocolLimits limits, ResourceBudget budget,
                                DeadlineScheduler clock) {
-        this.limits = Objects.requireNonNull(limits);
+        this(12,Objects.requireNonNull(limits).maxFrameBytes(),budget,clock);
+    }
+    public BoundedFrameDecoder(int minFrameBytes,int maxFrameBytes,ResourceBudget budget,DeadlineScheduler clock) {
+        if(minFrameBytes<1||maxFrameBytes<minFrameBytes||maxFrameBytes>Integer.MAX_VALUE-4)throw new IllegalArgumentException("Invalid frame lengths");
+        this.minFrameBytes=minFrameBytes;this.maxFrameBytes=maxFrameBytes;
         this.budget = Objects.requireNonNull(budget);
         this.clock = clock;
     }
@@ -53,7 +57,7 @@ public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
                     if (prefixCount < 4)
                         return;
                     int length = ByteBuffer.wrap(prefix).getInt();
-                    if (length < 12 || length > limits.maxFrameBytes()) {
+                    if (length < minFrameBytes || length > maxFrameBytes) {
                         context.close();
                         return;
                     }

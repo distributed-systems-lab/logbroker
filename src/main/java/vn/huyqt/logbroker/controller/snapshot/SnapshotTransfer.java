@@ -11,7 +11,11 @@ public final class SnapshotTransfer {
     private final Function<Request,Frame> request;private final Supplier<DiskToken> tokens;private final Consumer<QuorumEffect> emit;
     private final Map<DiskToken,Consumer<DiskResult>> pending=new HashMap<>();
     private SnapshotId id;private long epoch,position,total=-1,now,flightDeadline;private Frame flight;
-    private int source;private boolean writing;private FetchSnapshotReply lastChunk;
+    private record AcceptedChunk(SnapshotId id,long position,long total,int length,byte[] hash) {
+        static AcceptedChunk of(FetchSnapshotReply reply){byte[] bytes=reply.chunk();try{return new AcceptedChunk(reply.id(),reply.position(),reply.totalLength(),bytes.length,java.security.MessageDigest.getInstance("SHA-256").digest(bytes));}catch(java.security.NoSuchAlgorithmException impossible){throw new IllegalStateException(impossible);}}
+        boolean matches(AcceptedChunk other){return id.equals(other.id)&&position==other.position&&total==other.total&&length==other.length&&Arrays.equals(hash,other.hash);}
+    }
+    private int source;private boolean writing;private AcceptedChunk lastChunk;
     private volatile DiskToken installToken;
     private long rpcNanos=1_000_000_000L;
     public SnapshotTransfer(int chunkBytes,int maxBytes,IntSupplier leader,Function<Request,Frame> request,Supplier<DiskToken> tokens,Consumer<QuorumEffect> emit) {
@@ -32,12 +36,11 @@ public final class SnapshotTransfer {
     }
     public void accept(FetchSnapshotReply reply) {
         if(id==null)return;
-        if(lastChunk!=null&&lastChunk.id().equals(reply.id())&&lastChunk.position()==reply.position()
-            &&lastChunk.totalLength()==reply.totalLength()&&Arrays.equals(lastChunk.chunk(),reply.chunk()))return;
+        var received=AcceptedChunk.of(reply);if(lastChunk!=null&&lastChunk.matches(received))return;
         if(writing||!id.equals(reply.id())||reply.meta().epoch()!=epoch||reply.meta().error()!=QuorumError.NONE||reply.position()!=position
             ||reply.totalLength()<114||reply.totalLength()>Math.min(maxBytes,512+128*281)||total!=-1&&total!=reply.totalLength()
             ||reply.chunk().length==0||reply.chunk().length>chunkBytes||position>reply.totalLength()-reply.chunk().length){cancel();return;}
-        total=reply.totalLength();lastChunk=reply;flight=null;writing=true;var token=tokens.get();
+        total=reply.totalLength();lastChunk=received;flight=null;writing=true;var token=tokens.get();
         pending.put(token,result->{
             writing=false;position=((DiskResult.ChunkWritten)result).end();
             if(position==total)finish();else send();

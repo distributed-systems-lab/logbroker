@@ -1,5 +1,9 @@
 # Controller protocol v1
 
+The Netty adapter stages the fixed 69-byte envelope before allocating the body, validates cluster/voter identity, and reserves raw and decoded bytes separately. Default inbound and outbound capacities each contain 8 MiB reserved for small peer control frames plus 56 MiB shared. Snapshot frames use the shared pool. Validation uses two workers with a total 256-task admission cap, of which 64 slots are unavailable to admin/snapshot work. A connection fixes its peer/admin identity at its first request, admits at most 32 in-flight messages, and expires partial frames after 30 seconds. The node has at most 64 live connections.
+
+`ReplyRoute` includes the connection incarnation and request ID. Closing a connection invalidates its routes; reusing a request ID on a new socket does not revive an old route. An inbound DTO has explicit reference ownership: the receiver closes its reference, and disk work retains a reference through completion. Request routing retains a reference until reply/disconnect; outbound byte reservations are released by the Netty write future.
+
 Big-endian integers; strings/blobs use an i32 byte length and strict UTF-8 for strings. Negative counts, unsupported tags/versions, overflow and trailing bytes are rejected. Arrays must fit their count, configured cap and minimum element size before allocation. Controller operations are distinct from broker data operations.
 
 Frame: length i32 excluding prefix; operation i16; version i16=1; direction u8 (request=0,response=1); cluster UUID; sender i32 (-1 for admin); requestId i64; canonical voter SHA-256 (32 bytes); body; CRC32C i32. CRC covers everything after length through body. Minimum frame length excluding prefix: 69 bytes. Request IDs correlate within a connection incarnation. Peer identity/voter hash is validated before changing consensus state.
