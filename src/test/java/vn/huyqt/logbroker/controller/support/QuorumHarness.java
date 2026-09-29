@@ -20,6 +20,9 @@ public final class QuorumHarness {
     public FakeDisk disk(int node){return disks[node];}
     public SimulatedTransport transport(){return transport;}
     public long now(){return now;}
+    public void request(int node,Frame frame){deliver(node,new QuorumEvent.PeerRequest(frame,new ReplyRoute(frame.senderId(),frame.requestId())));}
+    public int leader(){for(int i=0;i<3;i++)if(nodes[i]!=null&&nodes[i].status().role()==QuorumStatus.Role.LEADER)return i;return -1;}
+    public void elect(int node){for(int attempts=0;attempts<20;attempts++){now+=Duration.ofSeconds(4).toNanos();deliver(node,new QuorumEvent.Tick(now));settle();if(leader()==node)return;}throw new AssertionError("Target node did not win election");}
     public void tick(Duration duration){now+=duration.toNanos();for(int i=0;i<3;i++)if(nodes[i]!=null)deliver(i,new QuorumEvent.Tick(now));}
     private void deliver(int node,QuorumEvent event){
         if(nodes[node]==null)return;
