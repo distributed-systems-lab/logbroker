@@ -31,7 +31,7 @@ public final class SnapshotCoordinator implements AutoCloseable {
         var ids=retained.get();if(ids.size()==2)submit.accept(new QuorumEffect.RetainSnapshotPrefix(token(),ids.get(1).endOffset()));
         if(latest!=null)onApplied(latest,latestEpoch,latestBytes);
     }
-    public boolean onCompletion(DiskDone done){if(creation!=null&&creation.equals(done.token())&&done.result() instanceof DiskResult.SnapshotCreated result){onCreated(result.id());return true;}return false;}
+    public boolean onCompletion(DiskDone done){if(creation!=null&&creation.equals(done.token())){if(done.result() instanceof DiskResult.SnapshotCreated result)onCreated(result.id());else if(done.result() instanceof DiskResult.Overloaded){creation=null;retainedBytes=0;}return true;}return false;}
     private DiskToken token(){return new DiskToken(Long.MAX_VALUE-++sequence,epoch.getAsLong(),generation);}
     public long retainedBytes(){return retainedBytes;}
     @Override public void close(){closed=true;latest=null;retainedBytes=0;creation=null;}

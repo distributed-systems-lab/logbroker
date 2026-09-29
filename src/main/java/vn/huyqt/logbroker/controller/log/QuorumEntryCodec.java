@@ -7,6 +7,7 @@ import vn.huyqt.logbroker.broker.metadata.MetadataEventCodec;
 
 public final class QuorumEntryCodec {
     private QuorumEntryCodec() {}
+    public static int encodedSize(QuorumEntry entry){return switch(entry){case QuorumEntry.LeaderChange ignored->15;case QuorumEntry.ReadBarrier ignored->11;case QuorumEntry.Topic topic->37+topic.event().name().length();};}
     public static byte[] encode(QuorumEntry entry) {
         byte[] payload; byte kind;
         switch (entry) {

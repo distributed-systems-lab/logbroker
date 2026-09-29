@@ -42,6 +42,7 @@ public final class QuorumProtocol {
     public record QuorumFetchReply(ReplyMeta meta,long challenge,long commit,FetchPayload payload) implements Reply {}
     public record FetchSnapshotReply(ReplyMeta meta,SnapshotId id,long position,long totalLength,byte[] chunk) implements Reply {
         public FetchSnapshotReply{chunk=chunk.clone();}
+        public int chunkLength(){return chunk.length;}
         @Override public byte[] chunk(){return chunk.clone();}
     }
     public record DescribeQuorumReply(ReplyMeta meta,QuorumStatus status) implements Reply {}

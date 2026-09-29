@@ -21,4 +21,3 @@ public final class ControllerCli {
     }
     private static int usage(PrintStream err){err.println("Commands: generate-cluster-id, format, create-topic, metadata, local-metadata, describe-quorum. Supply --cluster UUID --voters id@host:port,...; format also requires --data DIR --node ID.");return 2;}
 }
-

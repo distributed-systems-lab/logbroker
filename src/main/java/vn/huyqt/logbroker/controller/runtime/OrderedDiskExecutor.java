@@ -14,8 +14,10 @@ public final class OrderedDiskExecutor implements AutoCloseable {
     private int active,normalTurns;private boolean stopping;
     public OrderedDiskExecutor(int capacity,ControllerLoop loop){if(capacity<1)throw new IllegalArgumentException("Invalid disk capacity");this.capacity=capacity;this.loop=loop;worker=new Thread(this::run,"controller-disk");worker.start();}
     public boolean submit(DiskToken token,Callable<DiskResult> work){return admit(token,work,false);}
+    public synchronized boolean submitOrdinary(DiskToken token,Callable<DiskResult> work){if(loop.reservedCompletions()>=capacity-Math.min(16,capacity/2))return false;return admit(token,work,false);}
     public boolean submitLowPriority(DiskToken token,Callable<DiskResult> work){return admit(token,work,true);}
     private synchronized boolean admit(DiskToken token,Callable<DiskResult> work,boolean lowPriority){
+        if(lowPriority&&loop.reservedCompletions()>=capacity-Math.min(16,capacity/2))return false;
         if(stopping||normal.size()+low.size()>=capacity)return false;
         var ticket=loop.reserveCompletion();if(ticket==null)return false;
         (lowPriority?low:normal).addLast(new Work(token,work,ticket));active++;notifyAll();return true;

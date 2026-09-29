@@ -68,7 +68,10 @@ public final class QuorumStateMachine {
         effects=new ArrayList<>();
         if(event instanceof DiskDone done) {
             var callback=diskCallbacks.remove(done.token());logWork.remove(done.token());voteWork.remove(done.token());
-            if(done.result() instanceof DiskResult.Installed installed&&done.token().generation().equals(status.generation())) {
+            if(done.result() instanceof DiskResult.Overloaded) {
+                if(transfer.onCompletion(done))replicaBusy=false;
+                if(callback!=null&&active()){completeAll(QuorumError.OVERLOADED);stepDown(status.epoch(),-1);replicaBusy=false;applyBusy=false;}
+            } else if(done.result() instanceof DiskResult.Installed installed&&done.token().generation().equals(status.generation())) {
                 boolean current=done.token().epoch()==status.epoch()&&transfer.installAllowed(done.token());
                 installPhysical(installed);transfer.onCompletion(done);if(current&&active())fetch();
             } else if(done.token().generation().equals(status.generation())&&active()) {
@@ -106,8 +109,12 @@ public final class QuorumStateMachine {
                 if(applied.end()<status.applied()||applied.end()>status.commit())fail("Invalid applied boundary");
                 else {
                     progress(status.logEnd(),status.durableEnd(),status.commit(),applied.end());image=applied.image();applyBusy=false;
-                    if(status.role()==QuorumStatus.Role.LEADER&&leaderMarkerEnd>0&&status.applied()>=leaderMarkerEnd)
+                    if(status.role()==QuorumStatus.Role.LEADER&&!status.ready()&&leaderMarkerEnd>0&&status.applied()>=leaderMarkerEnd) {
+                        // The new marker resolves all inherited proposals against the committed image.
+                        // No new admin proposal can enter until this first readiness transition.
+                        pendingTopics.clear();
                         transition(status.role(),status.epoch(),status.leaderId(),true,"");
+                    }
                     completeApplied();
                     applyCommitted();
                 }
@@ -224,10 +231,7 @@ public final class QuorumStateMachine {
                     if(batch.baseOffset()!=end||batch.entries().getFirst().epoch()<last||batch.entries().getFirst().epoch()>status.epoch()){fail("Invalid replication sequence");return;}
                     end=batch.nextOffset();last=batch.entries().getFirst().epoch();
                 }
-                replicaBusy=true;long epoch=status.epoch();
-                for(var batch:data.batches()) {var token=token();logWork.add(token);diskCallbacks.put(token,ignored->{});effects.add(new QuorumEffect.AppendReplica(token,batch));}
-                var flush=token();logWork.add(flush);diskCallbacks.put(flush,result->{replicaBusy=false;if(status.epoch()==epoch&&status.role()==QuorumStatus.Role.FOLLOWER){advanceFollowerCommit();fetch();}});
-                effects.add(new QuorumEffect.Flush(flush));
+                replicaBusy=true;replicate(data.batches(),0,status.epoch());
             } else if(fetch.payload() instanceof Divergence divergence) {
                 reconcile(divergence);
             } else if(fetch.payload() instanceof SnapshotRequired required) {
@@ -242,6 +246,11 @@ public final class QuorumStateMachine {
         index=installed.index();image=installed.image();replicaBusy=false;applyBusy=false;electionPending=false;fetchFlight=null;
         long end=installed.id().endOffset();status=new QuorumStatus(status.nodeId(),status.role(),status.epoch(),status.leaderId(),installed.generation(),end,end,end,end,end,false,Map.of(),status.failure());
         effects.add(new QuorumEffect.Restore(installed.image()));
+    }
+    private void replicate(List<QuorumBatch> batches,int position,long epoch) {
+        var token=token();logWork.add(token);
+        if(position==batches.size()){diskCallbacks.put(token,result->{replicaBusy=false;if(status.epoch()==epoch&&status.role()==QuorumStatus.Role.FOLLOWER){advanceFollowerCommit();fetch();}});effects.add(new QuorumEffect.Flush(token));}
+        else {diskCallbacks.put(token,result->{if(status.epoch()==epoch&&status.role()==QuorumStatus.Role.FOLLOWER)replicate(batches,position+1,epoch);else replicaBusy=false;});effects.add(new QuorumEffect.AppendReplica(token,batches.get(position)));}
     }
     public boolean installAllowed(DiskToken token){var current=status;return active()&&token.epoch()==current.epoch()&&token.generation().equals(current.generation())&&transfer.installAllowed(token);}
     private void becomeLeader() {
@@ -270,7 +279,8 @@ public final class QuorumStateMachine {
         if(status.role()!=QuorumStatus.Role.LEADER){complete(admin.invocationId(),new Failure(meta(QuorumError.NOT_LEADER)));return;}
         if(!status.ready()){complete(admin.invocationId(),new Failure(meta(QuorumError.NODE_UNAVAILABLE)));return;}
         if(admin.deadlineNanos()<=now){complete(admin.invocationId(),new Failure(meta(QuorumError.REQUEST_TIMED_OUT)));return;}
-        if(adminWaiters.size()>=config.maxPendingRequests()){complete(admin.invocationId(),new Failure(meta(QuorumError.OVERLOADED)));return;}
+        int diskAdmission=Math.max(1,(config.diskQueueCapacity()-16)/4);
+        if(adminWaiters.size()>=Math.min(config.maxPendingRequests(),diskAdmission)||logWork.size()>=diskAdmission){complete(admin.invocationId(),new Failure(meta(QuorumError.OVERLOADED)));return;}
         if(admin.request() instanceof CreateTopic create) {
             TopicCreated existing=image.topics().stream().filter(t->t.name().equals(create.name())).findFirst().orElse(null);
             PendingTopic pending=pendingTopics.get(create.name());
@@ -300,9 +310,12 @@ public final class QuorumStateMachine {
         var entries=new ArrayList<QuorumEntry>();for(var pending:topics){pending.appended=true;entries.add(new QuorumEntry.Topic(status.epoch(),pending.topic));}
         if(!reads.isEmpty())entries.add(new QuorumEntry.ReadBarrier(status.epoch()));
         if(entries.isEmpty())return;
-        append(entries,false,batch->{
-            for(var pending:topics){pending.end=batch.nextOffset();for(long id:pending.waiters)setWaiterEnd(id,batch.nextOffset());}
-            for(long id:reads)setWaiterEnd(id,batch.nextOffset());
+        var groups=new ArrayList<List<QuorumEntry>>();var group=new ArrayList<QuorumEntry>();long storage=30,wire=16;
+        for(var entry:entries){int bytes=QuorumEntryCodec.encode(entry).length;if(!group.isEmpty()&&(storage+20+bytes>config.logConfig().maxBatchBytes()||wire+4+bytes>config.logConfig().maxBatchBytes())){groups.add(List.copyOf(group));group.clear();storage=30;wire=16;}group.add(entry);storage+=20+bytes;wire+=4+bytes;}
+        if(!group.isEmpty())groups.add(List.copyOf(group));
+        for(var chunk:groups)append(chunk,false,batch->{
+            for(var entry:chunk)if(entry instanceof QuorumEntry.Topic topic){var pending=pendingTopics.get(topic.event().name());if(pending!=null&&pending.topic.equals(topic.event())){pending.end=batch.nextOffset();for(long id:pending.waiters)setWaiterEnd(id,batch.nextOffset());}}
+            if(chunk.stream().anyMatch(QuorumEntry.ReadBarrier.class::isInstance))for(long id:reads)setWaiterEnd(id,batch.nextOffset());
         });
     }
     private void setWaiterEnd(long id,long end){var waiter=adminWaiters.get(id);if(waiter!=null)adminWaiters.put(id,new Waiter(waiter.invocation(),end));}

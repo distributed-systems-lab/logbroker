@@ -16,6 +16,7 @@ public final class QuorumHarness {
     private final ArrayDeque<Runnable> reentries=new ArrayDeque<>();
     private final SimulatedTransport transport=new SimulatedTransport();private final long seed;private long now;
     private final int adminCapacity;
+    private final vn.huyqt.logbroker.storage.LogConfig logConfig;
     private final Map<Long,Map<Long,QuorumEntryEvidence>> committedEvidence=new HashMap<>();
     private record QuorumEntryEvidence(Object entry){}
     private final List<HistoryEvent> history=new ArrayList<>();private long invocationIds;
@@ -42,7 +43,9 @@ public final class QuorumHarness {
     private void deliverOne(){var envelope=transport.next();if(envelope!=null){history.add(new HistoryEvent.Delivery(envelope.source(),envelope.target(),envelope.frame().requestId()));deliver(envelope.target(),envelope.frame().response()?new QuorumEvent.PeerResponse(envelope.frame()):new QuorumEvent.PeerRequest(envelope.frame(),envelope.route()));}}
     public void runHealthySuffix(){heal();for(int i=0;i<3;i++){paused[i]=false;if(nodes[i]==null)restart(i);}for(int i=0;i<800;i++){tick(Duration.ofMillis(20));settle();}if(leader()<0||!nodes[leader()].status().ready())throw new AssertionError("No ready leader after healthy suffix");}
     public void assertAcknowledgedTopicsSurvive(){runHealthySuffix();for(int i=0;i<3;i++){var actual=new HashMap<String,vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated>();for(var topic:metadata[i].image().topics())actual.put(topic.name(),topic);for(var topic:acknowledged.values())if(!topic.equals(actual.get(topic.name())))throw new AssertionError("Acknowledged topic lost on node "+i+": "+topic);}}
-    private QuorumHarness(long seed,int adminCapacity){this.seed=seed;this.adminCapacity=adminCapacity;for(int i=0;i<3;i++){disks[i]=new FakeDisk(new UUID(0,i+10));restart(i);}}
+    private QuorumHarness(long seed,int adminCapacity){this(seed,adminCapacity,vn.huyqt.logbroker.storage.LogConfig.defaults());}
+    private QuorumHarness(long seed,int adminCapacity,vn.huyqt.logbroker.storage.LogConfig logConfig){this.seed=seed;this.adminCapacity=adminCapacity;this.logConfig=logConfig;for(int i=0;i<3;i++){disks[i]=new FakeDisk(new UUID(0,i+10));restart(i);}}
+    public static QuorumHarness threeNodes(long seed,int capacity,vn.huyqt.logbroker.storage.LogConfig log){return new QuorumHarness(seed,capacity,log);}
     public static QuorumHarness threeNodes(long seed){return new QuorumHarness(seed,1024);}
     public static QuorumHarness threeNodes(long seed,int adminCapacity){return new QuorumHarness(seed,adminCapacity);}
     public QuorumStateMachine node(int node){return nodes[node];}
@@ -86,7 +89,7 @@ public final class QuorumHarness {
         try{metadata[node].restore(disks[node].installedImage());}catch(Exception e){throw new AssertionError(e);}
         try{for(var batch:disks[node].batches())if(batch.nextOffset()<=disks[node].committed())metadata[node].apply(batch);}catch(Exception e){throw new AssertionError(e);}
         var index=disks[node].index();var status=new QuorumStatus(node,QuorumStatus.Role.UNATTACHED,disks[node].epoch(),-1,disks[node].generation(),index.end(),disks[node].durable(),disks[node].committed(),metadata[node].image().appliedOffset(),index.start(),false,Map.of(),"");
-        nodes[node]=new QuorumStateMachine(ControllerConfig.builder(ControllerTestSupport.identity(node)).maxPendingRequests(adminCapacity).build(),status,index,disks[node].votedFor(),new Random(seed+node),now,()->this.now,metadata[node].image());
+        nodes[node]=new QuorumStateMachine(ControllerConfig.builder(ControllerTestSupport.identity(node)).logConfig(logConfig).maxPendingRequests(adminCapacity).build(),status,index,disks[node].votedFor(),new Random(seed+node),now,()->this.now,metadata[node].image());
         services[node]=new ControllerService(adminCapacity,event->{deliver(node,event);return true;},responses::addLast,()->this.now);
     }
     public void compact(int node){try{var id=disks[node].compact(metadata[node].image());deliver(node,new QuorumEvent.SnapshotAvailable(id));deliver(node,new QuorumEvent.LogRetained(disks[node].index(),id));}catch(Exception e){throw new AssertionError(e);}}
@@ -104,4 +107,3 @@ public final class QuorumHarness {
         }
     }
 }
-

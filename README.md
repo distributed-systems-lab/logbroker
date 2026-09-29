@@ -50,5 +50,4 @@ Ví dụ chỉ chấp nhận thư mục chưa tồn tại hoặc đang rỗng. D
 Phase 3 implements a fixed three-voter KRaft-style metadata quorum with durable elections, replication, snapshots, a separate admin client and CLI. Strict controllers run on Linux/WSL. See [configuration and three-node commands](docs/controller-configuration.md) and [operation contract](docs/controller-operation.md). Broker/partition provisioning remains a later phase.
 
 
-Phase 3 acceptance passed on WSL/ext4: 252 tests with no failures or skips, real three-process crash/restart/snapshot catch-up, and production CLI smoke. See [verification evidence and limitations](docs/controller-verification.md).
-
+Phase 3 acceptance passed on WSL/ext4: 262 tests with no failures, errors or skips, real three-process crash/restart/snapshot catch-up, and production CLI smoke. See [verification evidence and limitations](docs/controller-verification.md).

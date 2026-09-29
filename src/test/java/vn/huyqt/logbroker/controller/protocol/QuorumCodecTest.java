@@ -41,6 +41,7 @@ class QuorumCodecTest {
             frame((short)108,false,new ReadMetadata(1000)),frame((short)108,true,new MetadataReply(meta,view)),
             frame((short)109,false,new ReadLocalMetadata()),frame((short)109,true,new MetadataReply(meta,view)));
         for(var expected:frames) {
+            assertEquals(QuorumCodec.encode(expected).length,QuorumCodec.encodedSize(expected));
             var decoded=QuorumCodec.decode(QuorumCodec.encode(expected),config);
             assertEquals(expected.operation(),decoded.operation());assertEquals(expected.requestId(),decoded.requestId());
             assertArrayEquals(QuorumCodec.encode(expected),QuorumCodec.encode(decoded));

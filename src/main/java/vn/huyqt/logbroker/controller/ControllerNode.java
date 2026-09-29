@@ -26,6 +26,7 @@ public final class ControllerNode implements AutoCloseable {
     private final ControllerLoop loop;private final OrderedDiskExecutor disk;private final EffectRunner runner;
     private final ControllerService service;private final NettyQuorumTransport transport;
     private final Map<DiskToken,QuorumTransport.Inbound> diskSources=new HashMap<>();
+    private final Map<DiskToken,vn.huyqt.logbroker.broker.ResourceBudget.Lease> readMemory=new HashMap<>();
     private final Map<ReplyRoute,QuorumTransport.Inbound> peerSources=new HashMap<>();
     private final ConcurrentMap<ReplyRoute,QuorumTransport.Inbound> adminSources=new ConcurrentHashMap<>();
     private SnapshotCoordinator coordinator;private volatile DeadlineScheduler.Ticket ticker;
@@ -82,7 +83,9 @@ public final class ControllerNode implements AutoCloseable {
             else if(event instanceof Invoke invoke)invoke.action().run();
             else {
                 QuorumTransport.Inbound source=null;
+                vn.huyqt.logbroker.broker.ResourceBudget.Lease memory=null;
                 if(event instanceof DiskDone done)source=diskSources.remove(done.token());else if(event instanceof DiskFailed failed)source=diskSources.remove(failed.token());
+                if(event instanceof DiskDone done)memory=readMemory.remove(done.token());else if(event instanceof DiskFailed failed)memory=readMemory.remove(failed.token());
                 try {
                     if(event instanceof Tick)for(var route:List.copyOf(peerSources.keySet()))if(!peerSources.get(route).isActive()){peerSources.remove(route).close();}
                     if(event instanceof DiskDone done) {
@@ -94,7 +97,7 @@ public final class ControllerNode implements AutoCloseable {
                     if(event instanceof DiskDone done&&done.result() instanceof DiskResult.Installed){appendedBytes=0;coordinator.close();resetCoordinator();}
                     if(event instanceof Applied applied&&(applied.generation()==null||applied.generation().equals(core.status().generation()))&&core.status().role()!=QuorumStatus.Role.FAILED&&core.status().role()!=QuorumStatus.Role.STOPPING)
                         coordinator.onApplied(metadata.image(),core.epochIndex().positionAt(core.status().applied()).lastEpoch(),appendedBytes);
-                } finally {if(source!=null)source.close();}
+                } finally {if(source!=null)source.close();if(memory!=null)memory.close();}
             }
         }catch(RuntimeException error){process(new Fatal(error.toString()),null);}
     }
@@ -120,6 +123,7 @@ public final class ControllerNode implements AutoCloseable {
     private void runEffects(List<QuorumEffect> effects,QuorumTransport.Inbound source) {
         for(var effect:effects) {
             if(effect instanceof QuorumEffect.DiskEffect work&&source!=null)diskSources.put(work.token(),source.retain());
+            if(effect instanceof QuorumEffect.ReadLog read){int budget=Math.min(read.budget(),config.logConfig().maxBatchBytes());var memory=transport.reserveReadMemory(budget);if(memory==null){submitInternal(new DiskDone(read.token(),new DiskResult.Overloaded()));continue;}readMemory.put(read.token(),memory);runner.run(List.of(new QuorumEffect.ReadLog(read.token(),read.offset(),budget)));continue;}
             runner.run(List.of(effect));
         }
     }
@@ -145,6 +149,7 @@ public final class ControllerNode implements AutoCloseable {
         var drained=new CompletableFuture<Void>();submitInternal(new Invoke(()->drained.complete(null)));await(drained,deadline);
         await(transport.closeAsync(),deadline);loop.close();
         for(var source:peerSources.values())source.close();peerSources.clear();for(var source:diskSources.values())source.close();diskSources.clear();
+        for(var memory:readMemory.values())memory.close();readMemory.clear();
         for(var route:List.copyOf(adminSources.keySet())){var source=adminSources.remove(route);if(source!=null)source.close();}
         snapshots.close();generation.close();state.close();clock.close();closed=true;
         try {if(!service.awaitClosed(remaining(deadline)))throw new IOException("Response worker shutdown timed out");}

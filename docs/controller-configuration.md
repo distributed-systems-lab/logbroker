@@ -19,12 +19,18 @@ Properties are strict: unknown keys fail startup. Relative `data.dir` is relativ
 | `snapshot.trigger.bytes` | 16777216 | positive; appended storage batch bytes since last snapshot |
 | `max.pending.requests` | 1024 | 1..1024 |
 | `event.queue.capacity` | 4096 | >512 + disk capacity, <=4096 |
-| `disk.queue.capacity` | 256 | 1..256; completion slots reserved before disk admission |
-| `inbound.bytes`, `outbound.bytes` | 67108864 | at least max frame, <=67108864; one eighth reserved for peer control |
+| `disk.queue.capacity` | 256 | 32..256; completion slots reserved before disk admission; 16 reserved against ordinary append/snapshot pressure |
+| `inbound.bytes`, `outbound.bytes` | 67108864 | at least max frame, <=67108864; outbound also >=32 times max batch; one eighth reserved for peer control |
 | `max.topics`, `max.partitions` | 128, 1024 | topics 1..128; total partitions topics..1024 |
-| `log.segment.bytes`, `log.max.batch.bytes`, `log.index.interval.bytes` | 67108864, 1048576, 4096 | segment >= batch >=50; positive index interval; batch <= fetch budget |
+| `log.segment.bytes`, `log.max.batch.bytes`, `log.index.interval.bytes` | 67108864, 1048576, 4096 | segment >= batch >=336; positive index interval; batch <= fetch budget |
 
 Metadata log defaults: 64 MiB segments, 1 MiB batches, 4096-byte sparse index interval. Journal frames <=64 KiB and journal file <=64 MiB; reaching the cap fails explicitly (journal compaction is future work). Transport caps: 64 connections, 32 pending requests per connection, 256 validation jobs with 64 reserved for control, 30-second partial-frame deadline, two pinned snapshot uploads with 30-second idle expiry. Snapshots keep latest two plus active-generation references and active pins. Client caps: 1024 active invocations, one RPC per attempt connection, shared 64 MiB inbound/outbound budgets, 30-second absolute invocation deadline, 1-second attempt deadline, 50 ms exponential retry capped at 1 second with deterministic jitter.
+
+Admin admission is additionally bounded by `min(max.pending.requests, (disk.queue.capacity - 16) / 4)`, or 60 with defaults. Proposal cohorts split into batches while their read barrier remains after all captured creates. A follower appends fetched batches sequentially. Queue rejection returns overload and permits retry; actual storage failure still fails the controller.
+
+Connections must identify within the RPC timeout, even if they send no bytes. At the global connection cap, an unclassified/admin connection may be evicted to admit another connection; up to eight classified peer connections are protected. A disconnected admin invocation can have an unknown outcome and must use the documented retry semantics.
+
+Outbound DTOs reserve budget before entering the validation queue. The conservative charge includes eight times encoded size plus per-element overhead, held through socket write. Log reads reserve memory before loading and return at most one configured max-batch byte budget per response. These limits favor bounded memory and control progress; they may reduce throughput or require additional Fetch RPCs under pressure.
 
 Build and format in a fresh Linux directory:
 

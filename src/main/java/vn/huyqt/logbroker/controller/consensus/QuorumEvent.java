@@ -25,6 +25,7 @@ public sealed interface QuorumEvent {
         record SnapshotChunk(SnapshotId id,long position,long totalLength,byte[] bytes) implements DiskResult {public SnapshotChunk{bytes=bytes.clone();}@Override public byte[] bytes(){return bytes.clone();}}
         record SnapshotRejected(vn.huyqt.logbroker.controller.protocol.QuorumError error) implements DiskResult {}
         record Discarded() implements DiskResult {}
+        record Overloaded() implements DiskResult {}
         record SnapshotCreated(SnapshotId id) implements DiskResult {}
         record PrefixRetained(EpochIndex index,SnapshotId base) implements DiskResult {}
     }

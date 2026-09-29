@@ -47,7 +47,7 @@ public final class SnapshotTransfer {
         });emit.accept(new QuorumEffect.WriteSnapshotChunk(token,id,position,reply.chunk()));
     }
     private void finish(){var token=tokens.get();pending.put(token,result->{var done=(DiskResult.DownloadFinished)result;installToken=tokens.get();pending.put(installToken,ignored->{id=null;installToken=null;});emit.accept(new QuorumEffect.InstallSnapshot(installToken,done.id(),done.image()));});emit.accept(new QuorumEffect.FinishDownload(token,id,total));}
-    public boolean onCompletion(DiskDone done){var callback=pending.remove(done.token());if(callback==null)return false;if(!(done.result() instanceof DiskResult.Discarded))callback.accept(done.result());return true;}
+    public boolean onCompletion(DiskDone done){var callback=pending.remove(done.token());if(callback==null)return false;if(done.result() instanceof DiskResult.Overloaded){cancel();return true;}if(!(done.result() instanceof DiskResult.Discarded))callback.accept(done.result());return true;}
     public void onTick(long now){this.now=now;if(flight!=null&&now>=flightDeadline)send();}
     public boolean installAllowed(DiskToken token){return token.equals(installToken);}
     public boolean active(){return id!=null;}

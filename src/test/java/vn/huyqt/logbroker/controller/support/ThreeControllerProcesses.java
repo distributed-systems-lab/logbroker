@@ -9,7 +9,7 @@ public final class ThreeControllerProcesses implements AutoCloseable {
         try{for(int i=0;i<3;i++){try(var socket=new ServerSocket(0)){backend[i]=socket.getLocalPort();}proxies[i]=new ControllerFaultProxy(i,backend[i],isolated);voters.add(new ClusterIdentity.Voter(i,"127.0.0.1",proxies[i].port()));}
             var identity=new ClusterIdentity(cluster,0,voters);client=new ControllerClient(identity,voters.stream().map(v->new InetSocketAddress(v.host(),v.port())).toList(),clock,new NettyControllerClientTransport.Factory(identity,clock));
             String membership=voters.stream().map(v->v.id()+"@"+v.host()+":"+v.port()).collect(java.util.stream.Collectors.joining(","));
-            for(int i=0;i<3;i++){QuorumStateStore.format(data(i),new ClusterIdentity(cluster,i,voters),new DurableFiles());Files.writeString(config(i),"cluster.id="+cluster+"\nnode.id="+i+"\nvoters="+membership+"\ndata.dir="+data(i)+"\nfetch.idle.wait.ms=20\nrpc.timeout.ms=100\nelection.min.ms=300\nelection.max.ms=600\nleader.contact.timeout.ms=1000\nsnapshot.trigger.bytes=100\nlog.segment.bytes=512\nlog.max.batch.bytes=256\nlog.index.interval.bytes=64\n");}
+            for(int i=0;i<3;i++){QuorumStateStore.format(data(i),new ClusterIdentity(cluster,i,voters),new DurableFiles());Files.writeString(config(i),"cluster.id="+cluster+"\nnode.id="+i+"\nvoters="+membership+"\ndata.dir="+data(i)+"\nfetch.idle.wait.ms=20\nrpc.timeout.ms=100\nelection.min.ms=300\nelection.max.ms=600\nleader.contact.timeout.ms=1000\nsnapshot.trigger.bytes=100\nlog.segment.bytes=512\nlog.max.batch.bytes=336\nlog.index.interval.bytes=64\n");}
         }catch(Exception error){close();throw error;}
     }
     public Path data(int node){return root.resolve("node-"+node);}private Path config(int node){return root.resolve("node-"+node+".properties");}
@@ -26,4 +26,3 @@ public final class ThreeControllerProcesses implements AutoCloseable {
     private AssertionError failure(String text){return new AssertionError(text+"; process logs: "+root);}
     public void close()throws Exception {if(client!=null)client.close();clock.close();for(int i=0;i<3;i++)kill(i);for(var proxy:proxies)if(proxy!=null)proxy.close();Path retained=Path.of("target","controller-process-logs",root.getFileName()+"-"+cluster);Files.createDirectories(retained);for(int i=0;i<3;i++)for(String kind:List.of("stdout","stderr")){Path log=root.resolve(kind+"-"+i+".log");if(Files.exists(log))Files.copy(log,retained.resolve(log.getFileName()),StandardCopyOption.REPLACE_EXISTING);}}
 }
-

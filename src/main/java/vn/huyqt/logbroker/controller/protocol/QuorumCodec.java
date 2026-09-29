@@ -16,6 +16,26 @@ import static vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 /** Two-pass bounded decoder: preflight validates sizes without materializing batch/chunk payloads. */
 public final class QuorumCodec {
     private QuorumCodec(){}
+    /** Exact v1 wire size without materializing batch/chunk payloads. */
+    public static long encodedSize(Frame frame) {
+        long bytes=73;var message=frame.message();
+        if(message instanceof Reply reply){bytes+=18+utf8(reply.meta().message());if(reply.meta().error()!=QuorumError.NONE)return bytes;}
+        return bytes+switch(message){
+            case Vote ignored->24L;case BeginQuorumEpoch ignored->8L;case EndQuorumEpoch ignored->8L;
+            case QuorumFetch ignored->40L;case FetchSnapshot ignored->52L;case DescribeQuorum ignored->0L;case ReadLocalMetadata ignored->0L;
+            case CreateTopic create->12L+utf8(create.name());case ReadMetadata ignored->4L;
+            case VoteReply ignored->1L;case EpochReply ignored->0L;case Failure ignored->0L;case CreateTopicReply ignored->16L;
+            case FetchSnapshotReply reply->56L+reply.chunkLength();
+            case DescribeQuorumReply reply->82L+12L*reply.status().durableMatches().size()+utf8(reply.status().failure());
+            case MetadataReply reply->37L+reply.view().topics().stream().mapToLong(topic->30L+topic.name().length()).sum();
+            case QuorumFetchReply reply->16L+switch(reply.payload()){
+                case Divergence ignored->17L;case SnapshotRequired ignored->33L;
+                case FetchData data->5L+data.batches().stream().mapToLong(batch->16L+batch.entries().stream().mapToLong(entry->4L+QuorumEntryCodec.encodedSize(entry)).sum()).sum();
+            };
+        };
+    }
+    public static long outboundCharge(Frame frame){long elements=0;if(frame.message() instanceof QuorumFetchReply reply&&reply.payload() instanceof FetchData data)for(var batch:data.batches())elements+=1L+batch.entries().size();else if(frame.message() instanceof MetadataReply reply)elements=reply.view().topics().size();return Math.addExact(Math.multiplyExact(8,encodedSize(frame)),Math.multiplyExact(64,elements));}
+    private static int utf8(String value){return value.getBytes(StandardCharsets.UTF_8).length;}
     public static byte[] encode(Frame frame) {
         try {
             var bytes=new ByteArrayOutputStream();var out=new DataOutputStream(bytes);

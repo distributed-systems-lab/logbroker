@@ -12,12 +12,13 @@ public final class QuorumFrameDecoder extends ChannelInboundHandlerAdapter {
     private final byte[] header=new byte[69];private int headerCount,count,total;private byte[] bytes;
     private ResourceBudget.Lease lease;private DeadlineScheduler.Ticket deadline;private boolean peerControl;
     public QuorumFrameDecoder(ControllerConfig config,ResourceBudget control,ResourceBudget shared,DeadlineScheduler clock){this.config=config;this.control=control;this.shared=shared;this.clock=clock;}
+    @Override public void channelActive(ChannelHandlerContext context)throws Exception{if(clock!=null)deadline=clock.schedule(clock.nanoTime()+30_000_000_000L,context::close);super.channelActive(context);}
     @Override public void channelRead(ChannelHandlerContext context,Object message) {
         if(!(message instanceof ByteBuf input)){ReferenceCountUtil.release(message);context.close();return;}
         try {
             while(input.isReadable()&&context.channel().isOpen()) {
                 if(bytes==null) {
-                    if(headerCount==0&&clock!=null)deadline=clock.schedule(clock.nanoTime()+30_000_000_000L,context::close);
+                    if(headerCount==0&&clock!=null){if(deadline!=null)deadline.cancel();deadline=clock.schedule(clock.nanoTime()+30_000_000_000L,context::close);}
                     int wanted=headerCount<4?4:69;
                     int copy=Math.min(wanted-headerCount,input.readableBytes());input.readBytes(header,headerCount,copy);headerCount+=copy;
                     if(headerCount<4)return;

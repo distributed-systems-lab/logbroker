@@ -26,6 +26,7 @@ public final class NettyQuorumTransport implements QuorumTransport {
     }
     private final ControllerConfig config;private final DeadlineScheduler clock;
     private final ResourceBudget inboundControl,inboundShared,outboundControl,outboundShared,connectionBudget=new ResourceBudget(64);
+    private final ResourceBudget peerConnections=new ResourceBudget(8);
     private final Validation validation=new Validation();private final AtomicLong connectionIds=new AtomicLong();
     private final Map<Long,Connection> routes=new ConcurrentHashMap<>();
     private final Map<Integer,CompletableFuture<Channel>> peers=new ConcurrentHashMap<>();
@@ -82,14 +83,24 @@ public final class NettyQuorumTransport implements QuorumTransport {
     }
     public long inboundUsed(){return inboundControl.used()+inboundShared.used();}
     public long outboundUsed(){return outboundControl.used()+outboundShared.used();}
+    /** Covers transient storage decoding/DTOs before a reply can acquire its own encode/write lease. */
+    public ResourceBudget.Lease reserveReadMemory(int bytes){return outboundShared.reserve(12L*bytes+1024).orElse(null);}
+    boolean validationTask(boolean control,Runnable action){return validation.execute(control,action);}
     public long connectionsUsed(){return connectionBudget.used();}
     private ResourceBudget.Lease reserve(ResourceBudget control,ResourceBudget shared,long amount,boolean peerControl){
         var lease=(peerControl?control:shared).reserve(amount).orElse(null);return lease==null&&peerControl?shared.reserve(amount).orElse(null):lease;
     }
     private boolean control(Frame frame,int length,boolean peer){return peer&&frame.operation()!=105&&frame.operation()<=106&&length<=64*1024;}
+    private synchronized ResourceBudget.Lease admitConnection() {
+        var lease=connectionBudget.reserve(1).orElse(null);if(lease!=null)return lease;
+        var victim=routes.values().stream().filter(c->c.peer<0&&!c.evicted).min(Comparator.comparingLong(c->c.id)).orElse(null);
+        if(victim==null)return null;
+        victim.evicted=true;routes.remove(victim.id,victim);victim.connectionLease.close();victim.context.close();
+        return connectionBudget.reserve(1).orElse(null);
+    }
     private final class Connection extends ChannelInboundHandlerAdapter {
-        private final long id=connectionIds.incrementAndGet();private final int expectedPeer;private int peer=-2;
-        private ChannelHandlerContext context;private ResourceBudget.Lease connectionLease;
+        private final long id=connectionIds.incrementAndGet();private final int expectedPeer;private volatile int peer=-2;private volatile boolean evicted;
+        private ChannelHandlerContext context;private ResourceBudget.Lease connectionLease,peerLease;private DeadlineScheduler.Ticket handshake;
         private final ArrayDeque<QuorumFrameDecoder.OwnedFrame> received=new ArrayDeque<>();
         private final Semaphore incomingSlots=new Semaphore(32),outgoingSlots=new Semaphore(32);
         private final Map<Long,Inbound> requests=new ConcurrentHashMap<>();private final Map<Long,Rpc> rpcs=new ConcurrentHashMap<>();
@@ -97,7 +108,7 @@ public final class NettyQuorumTransport implements QuorumTransport {
         private final CompletableFuture<Channel> activated=new CompletableFuture<>();
         private record Rpc(short operation,DeadlineScheduler.Ticket timeout){}
         Connection(int expectedPeer){this.expectedPeer=expectedPeer;if(expectedPeer>=0)peer=expectedPeer;}
-        @Override public void channelActive(ChannelHandlerContext context){this.context=context;connectionLease=connectionBudget.reserve(1).orElse(null);if(connectionLease==null||closed){activated.completeExceptionally(new IOException("Connection admission unavailable"));context.close();return;}routes.put(id,this);context.fireChannelActive();activated.complete(context.channel());}
+        @Override public void channelActive(ChannelHandlerContext context){this.context=context;connectionLease=admitConnection();if(expectedPeer>=0)peerLease=peerConnections.reserve(1).orElse(null);if(connectionLease==null||expectedPeer>=0&&peerLease==null||closed){activated.completeExceptionally(new IOException("Connection admission unavailable"));context.close();return;}routes.put(id,this);if(expectedPeer<0)handshake=clock.schedule(clock.nanoTime()+config.rpcTimeout().toNanos(),()->{if(peer==-2)context.close();});context.fireChannelActive();activated.complete(context.channel());}
         @Override public synchronized void channelRead(ChannelHandlerContext context,Object message) {
             if(!(message instanceof QuorumFrameDecoder.OwnedFrame frame)){context.close();return;}
             if(!incomingSlots.tryAcquire()){frame.close();context.close();return;}received.addLast(frame);scheduleDecode();
@@ -115,13 +126,15 @@ public final class NettyQuorumTransport implements QuorumTransport {
                 long charge=QuorumCodec.preflight(raw.bytes(),config);decoded=reserve(inboundControl,inboundShared,charge,raw.control());
                 if(decoded==null){context.close();return;}Frame frame=QuorumCodec.decode(raw.bytes(),config);
                 synchronized(this) {
-                    if(!context.channel().isActive()||closed)return;
+                    if(!context.channel().isActive()||evicted||closed)return;
                     if(expectedPeer>=0) {
                         if(!frame.response()||frame.senderId()!=expectedPeer){context.close();return;}
                         var rpc=rpcs.get(frame.requestId());if(rpc==null||rpc.operation()!=frame.operation())return;
                         if(rpcs.remove(frame.requestId(),rpc)){rpc.timeout().cancel();outgoingSlots.release();}
                     } else {
-                        if(frame.response()||peer!=-2&&peer!=frame.senderId()){context.close();return;}peer=frame.senderId();
+                        if(frame.response()||peer!=-2&&peer!=frame.senderId()){context.close();return;}
+                        if(peer==-2&&frame.senderId()>=0){peerLease=peerConnections.reserve(1).orElse(null);if(peerLease==null){context.close();return;}}
+                        peer=frame.senderId();if(handshake!=null){handshake.cancel();handshake=null;}
                         if(requests.containsKey(frame.requestId())){context.close();return;}
                     }
                     final var ownedDecoded=decoded;
@@ -146,22 +159,27 @@ public final class NettyQuorumTransport implements QuorumTransport {
             return write(frame).whenComplete((ignored,error)->{var owned=requests.remove(frame.requestId());if(owned!=null)owned.close();});
         }
         private CompletableFuture<Void> write(Frame frame) {
-            var result=new CompletableFuture<Void>();boolean isControl=control(frame,128,peer>=0);
+            var result=new CompletableFuture<Void>();final long size,charge;try{size=QuorumCodec.encodedSize(frame);charge=QuorumCodec.outboundCharge(frame);}catch(RuntimeException error){return CompletableFuture.failedFuture(error);}
+            if(size>config.maxFrameBytes()+4L)return CompletableFuture.failedFuture(new IOException("Outbound frame exceeds limit"));
+            boolean isControl=control(frame,(int)size,peer>=0);var lease=reserve(outboundControl,outboundShared,charge,isControl);
+            if(lease==null)return CompletableFuture.failedFuture(new IOException("Outbound ownership budget exhausted"));
             if(!validation.execute(isControl,()->{
-                if(!context.channel().isActive()||closed){result.completeExceptionally(new IOException("Connection closed"));return;}
+                boolean handed=false;
                 try {
+                    if(!context.channel().isActive()||evicted||closed){result.completeExceptionally(new IOException("Connection closed"));return;}
                     byte[] bytes=QuorumCodec.encode(frame);if(bytes.length>config.maxFrameBytes()+4)throw new IOException("Outbound frame exceeds limit");
-                    var lease=reserve(outboundControl,outboundShared,bytes.length,control(frame,bytes.length,peer>=0));
-                    if(lease==null){result.completeExceptionally(new IOException("Outbound budget exhausted"));context.close();return;}
+                    if(bytes.length!=size)throw new IOException("Outbound sizing mismatch");
                     context.writeAndFlush(Unpooled.wrappedBuffer(bytes)).addListener(done->{lease.close();if(done.isSuccess())result.complete(null);else {result.completeExceptionally(done.cause());context.close();}});
-                }catch(Exception error){result.completeExceptionally(error);context.close();}
-            }))result.completeExceptionally(new IOException("Validation admission exhausted"));return result;
+                    handed=true;
+                }catch(Exception error){result.completeExceptionally(error);context.close();}finally{if(!handed)lease.close();}
+            })){lease.close();result.completeExceptionally(new IOException("Validation admission exhausted"));}return result;
         }
         private void notifyFailure(Throwable error){if(!closed&&failure!=null)failure.accept(new TransportException(id,peer,error));}
         @Override public synchronized void channelInactive(ChannelHandlerContext context) {
             activated.completeExceptionally(new IOException("Connection closed before activation"));
             routes.remove(id,this);if(expectedPeer>=0)peers.remove(expectedPeer);
             if(connectionLease!=null)connectionLease.close();
+            if(peerLease!=null)peerLease.close();if(handshake!=null)handshake.cancel();
             while(!received.isEmpty()){received.removeFirst().close();incomingSlots.release();}
             for(var request:List.copyOf(requests.keySet())){var owned=requests.remove(request);if(owned!=null)owned.close();}
             for(var request:List.copyOf(rpcs.keySet())){var rpc=rpcs.remove(request);if(rpc!=null){rpc.timeout().cancel();outgoingSlots.release();}}
