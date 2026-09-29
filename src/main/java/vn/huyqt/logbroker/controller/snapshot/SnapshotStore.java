@@ -8,13 +8,20 @@ import java.util.*;
 import vn.huyqt.logbroker.controller.ClusterIdentity;
 import vn.huyqt.logbroker.controller.metadata.*;
 import vn.huyqt.logbroker.controller.persistence.*;
+import vn.huyqt.logbroker.controller.protocol.QuorumError;
 import static java.nio.file.StandardOpenOption.READ;
+import static java.nio.file.StandardOpenOption.*;
 
 /** Immutable snapshots are visible only through a forced journal publication. */
-public final class SnapshotStore {
+public final class SnapshotStore implements AutoCloseable {
     private final Path directory; private final ClusterIdentity identity; private final DurableFiles files;
     private final QuorumStateStore state; private final int maxBytes;
     private volatile List<SnapshotId> retained=List.of(); private final Map<SnapshotId,Integer> pins=new HashMap<>();
+    private SnapshotId downloading;private FileChannel download;private long downloaded;
+    public static final class Unavailable extends IOException {private final QuorumError error;public Unavailable(QuorumError error){super(error.name());this.error=error;}public QuorumError error(){return error;}}
+    public record UploadChunk(SnapshotId id,long position,long totalLength,byte[] bytes){}
+    private final class Upload {final SnapshotId id;final Pin pin;long accessed;Upload(SnapshotId id,Pin pin,long accessed){this.id=id;this.pin=pin;this.accessed=accessed;}}
+    private final Map<Integer,Upload> uploads=new HashMap<>();
     public SnapshotStore(Path root,ClusterIdentity identity,DurableFiles files,QuorumStateStore state,int maxBytes)throws IOException {
         directory=root.resolve("snapshots");this.identity=identity;this.files=files;this.state=state;this.maxBytes=maxBytes;
         if(maxBytes<114||maxBytes>64*1024*1024)throw new IllegalArgumentException("Invalid snapshot limit");
@@ -46,6 +53,60 @@ public final class SnapshotStore {
         for(var snapshot:next)snapshot.writeTo(payload);
         state.journal().append(StateJournal.SNAPSHOT_SET,payload.array());retained=List.copyOf(next);
     }
+    public void publishInstalled(SnapshotId id)throws IOException {
+        load(id);var out=ByteBuffer.allocate(36).putInt(1);id.writeTo(out);
+        state.journal().append(StateJournal.SNAPSHOT_SET,out.array());retained=List.of(id);
+    }
+    public synchronized void beginDownload(SnapshotId id)throws IOException {
+        cancelDownload();Path path=partial(id);Files.deleteIfExists(path);
+        download=FileChannel.open(path,CREATE_NEW,READ,WRITE);downloading=id;downloaded=0;
+    }
+    private Path partial(SnapshotId id){return directory.resolve(id.contentId()+".download.partial");}
+    public synchronized void writeChunk(SnapshotId id,long position,byte[] bytes)throws IOException {
+        if(!id.equals(downloading)||download==null||position<0||bytes.length==0||bytes.length>256*1024||position>downloaded||position>Math.min(maxBytes,512+128*281)-bytes.length)throw new IOException("Invalid snapshot chunk");
+        if(position<downloaded) {
+            if(position+bytes.length>downloaded)throw new IOException("Overlapping snapshot chunk");
+            var existing=ByteBuffer.allocate(bytes.length);long offset=position;
+            while(existing.hasRemaining()){int count=download.read(existing,offset);if(count<=0)throw new IOException("Snapshot duplicate read stalled");offset+=count;}
+            if(!Arrays.equals(bytes,existing.array()))throw new IOException("Conflicting snapshot duplicate");return;
+        }
+        var buffer=ByteBuffer.wrap(bytes);long offset=position;
+        while(buffer.hasRemaining()){int count=download.write(buffer,offset);if(count<=0)throw new IOException("Snapshot write stalled");offset+=count;}
+        downloaded+=bytes.length;
+    }
+    public synchronized MetadataImage finishDownload(SnapshotId id,long totalLength)throws IOException {
+        if(!id.equals(downloading)||download==null||totalLength!=downloaded||totalLength<114||totalLength>Math.min(maxBytes,512+128*281))throw new IOException("Snapshot download length mismatch");
+        Path temporary=partial(id);files.forceFile(temporary);var image=decode(id,Files.readAllBytes(temporary));download.close();download=null;
+        if(Files.exists(path(id))) {
+            if(!Arrays.equals(Files.readAllBytes(path(id)),Files.readAllBytes(temporary)))throw new IOException("Snapshot content ID reused with different bytes");
+            Files.delete(temporary);
+        } else Files.move(temporary,path(id),StandardCopyOption.ATOMIC_MOVE);
+        files.syncDirectory(directory);downloading=null;downloaded=0;return image;
+    }
+    public synchronized long downloadedBytes(){return downloaded;}
+    public synchronized void cancelDownload()throws IOException {
+        if(download!=null){download.close();download=null;}
+        if(downloading!=null)Files.deleteIfExists(partial(downloading));downloading=null;downloaded=0;
+    }
+    public synchronized UploadChunk readUpload(int peer,SnapshotId id,long position,int maxBytes)throws IOException {
+        long now=System.nanoTime();
+        for(int key:List.copyOf(uploads.keySet()))if(now-uploads.get(key).accessed>=30_000_000_000L){uploads.remove(key).pin.close();}
+        var upload=uploads.get(peer);
+        if(upload!=null&&!upload.id.equals(id)){uploads.remove(peer).pin.close();upload=null;}
+        if(upload==null) {
+            if(!retained.contains(id)&&!id.equals(GenerationStore.snapshotReference(state)))throw new Unavailable(QuorumError.SNAPSHOT_NOT_FOUND);
+            if(uploads.size()>=2)throw new Unavailable(QuorumError.OVERLOADED);
+            upload=new Upload(id,pin(id),now);uploads.put(peer,upload);
+        }
+        upload.accessed=now;long total=upload.pin.length();
+        if(position<0||position>=total||maxBytes<1||maxBytes>256*1024)throw new Unavailable(QuorumError.INVALID_REQUEST);
+        byte[] bytes=upload.pin.read(position,maxBytes);
+        if(position+bytes.length==total){uploads.remove(peer);upload.pin.close();}
+        return new UploadChunk(id,position,total,bytes);
+    }
+    public synchronized int activeUploads(){return uploads.size();}
+    public void refreshRetained()throws IOException {retained=new SnapshotStore(directory.getParent(),identity,files,state,maxBytes).retained();}
+    @Override public synchronized void close()throws IOException {cancelDownload();for(var upload:uploads.values())upload.pin.close();uploads.clear();}
     public byte[] encode(SnapshotId id,MetadataImage image)throws IOException {
         if(image.appliedOffset()!=id.endOffset())throw new IOException("Snapshot image boundary mismatch");
         byte[] payload=MetadataImageCodec.encode(image);long length=102L+payload.length;
@@ -57,7 +118,7 @@ public final class SnapshotStore {
         out.putInt(StateJournal.crc(bytes,0,bytes.length-4));return bytes;
     }
     public MetadataImage decode(SnapshotId expected,byte[] bytes)throws IOException {
-        if(bytes.length<114||bytes.length>maxBytes)throw new IOException("Invalid snapshot length");
+        if(bytes.length<114||bytes.length>Math.min(maxBytes,512+128*281))throw new IOException("Invalid snapshot length");
         try {
             var in=ByteBuffer.wrap(bytes);
             if(in.getInt()!=0x51534e31||in.getShort()!=1||in.getLong()!=bytes.length)throw new IOException("Invalid snapshot header");
@@ -71,7 +132,7 @@ public final class SnapshotStore {
         }catch(java.nio.BufferUnderflowException|IllegalArgumentException e){throw new IOException("Invalid snapshot",e);}
     }
     public MetadataImage load(SnapshotId id)throws IOException {
-        long length=Files.size(path(id));if(length>maxBytes)throw new IOException("Snapshot exceeds limit");
+        long length=Files.size(path(id));if(length>Math.min(maxBytes,512+128*281))throw new IOException("Snapshot exceeds limit");
         return decode(id,Files.readAllBytes(path(id)));
     }
     public List<SnapshotId> retained() { return retained; }

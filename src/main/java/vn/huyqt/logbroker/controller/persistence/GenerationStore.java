@@ -11,8 +11,9 @@ import vn.huyqt.logbroker.controller.metadata.*;
 
 /** Journal references decide the active generation; directory discovery cannot invent committed state. */
 public final class GenerationStore implements AutoCloseable {
+    public static final class InstallCancelled extends IOException {public InstallCancelled(){super("Snapshot install fence expired");}}
     private final QuorumStateStore state; private final DurableFiles files; private final LogConfig config;
-    private UUID generation; private long start,committed; private QuorumLog log;
+    private volatile UUID generation; private long start,committed; private QuorumLog log;
     private SnapshotId baseSnapshot;
     private GenerationStore(QuorumStateStore state,DurableFiles files,LogConfig config) {
         this.state=state;this.files=files;this.config=config;
@@ -126,6 +127,46 @@ public final class GenerationStore implements AutoCloseable {
     }
     public EpochIndex epochIndex(){return log.epochs();}
     public SnapshotId baseSnapshot(){return baseSnapshot;}
+    public void install(SnapshotId id,MetadataImage image)throws IOException {install(id,image,()->true);}
+    /** Best-effort cleanup after publication and drain; failure leaves recoverable garbage only. */
+    public boolean releaseObsoleteGenerations() {
+        Path parent=state.root().resolve("generations").toAbsolutePath().normalize();
+        try(var children=Files.list(parent)) {
+            for(var child:children.toList()) {
+                Path target=child.toAbsolutePath().normalize();String name=target.getFileName().toString();UUID id;
+                try{id=UUID.fromString(name);}catch(IllegalArgumentException ignored){continue;}
+                if(!id.toString().equals(name)||id.equals(generation)||!target.getParent().equals(parent)||!Files.isDirectory(target,LinkOption.NOFOLLOW_LINKS))continue;
+                try(var paths=Files.walk(target)) {
+                    for(var path:paths.sorted(Comparator.reverseOrder()).toList()) {
+                        if(!path.toAbsolutePath().normalize().startsWith(target))throw new IOException("Generation cleanup escaped root");Files.delete(path);
+                    }
+                }
+            }
+            files.syncDirectory(parent);return true;
+        }catch(IOException e){return false;}
+    }
+    public void install(SnapshotId id,MetadataImage image,java.util.function.BooleanSupplier allowed)throws IOException {
+        if(image.appliedOffset()!=id.endOffset()||id.endOffset()<committed||id.endOffset()<=log.start())throw new IOException("Snapshot does not advance safe prefix");
+        if(log.epochs().positionAt(committed).lastEpoch()>id.lastEpoch())throw new IOException("Snapshot contradicts known committed epoch");
+        var snapshots=new SnapshotStore(state.root(),state.identity(),files,state,64*1024*1024);
+        if(!image.equals(snapshots.load(id)))throw new IOException("Installed image differs from immutable snapshot");
+        UUID next=UUID.randomUUID();Path generationDirectory=state.root().resolve("generations").resolve(next.toString());
+        Files.createDirectory(generationDirectory);files.syncDirectory(generationDirectory.getParent());
+        Path directory=generationDirectory.resolve("log");QuorumLog replacement=null;
+        try {
+            replacement=QuorumLog.open(directory,config,id.endOffset(),id.endOffset(),id.lastEpoch(),true,files);
+            replacement.flush();files.syncDirectory(generationDirectory);files.syncDirectory(generationDirectory.getParent());
+            if(!allowed.getAsBoolean())throw new InstallCancelled();
+            log.close();
+            if(!allowed.getAsBoolean()) {
+                log=QuorumLog.open(directory(),config,start,committed,baseSnapshot==null?start:baseSnapshot.endOffset(),baseSnapshot==null?0:baseSnapshot.lastEpoch(),false,files);
+                throw new InstallCancelled();
+            }
+            state.journal().append(StateJournal.GENERATION,encodeGeneration(next,id.endOffset(),id));
+            generation=next;start=id.endOffset();committed=id.endOffset();baseSnapshot=id;log=replacement;replacement=null;
+            snapshots.publishInstalled(id);
+        } finally {if(replacement!=null)replacement.close();}
+    }
     private byte[] encodeBoundary(long end) { return ByteBuffer.allocate(24).putLong(generation.getMostSignificantBits()).putLong(generation.getLeastSignificantBits()).putLong(end).array(); }
     public Path directory() { return state.root().resolve("generations").resolve(generation.toString()).resolve("log"); }
     public QuorumLog log() { return log; }

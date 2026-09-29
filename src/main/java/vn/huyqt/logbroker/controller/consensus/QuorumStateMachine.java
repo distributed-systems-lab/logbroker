@@ -9,18 +9,19 @@ import vn.huyqt.logbroker.controller.log.*;
 import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.controller.consensus.QuorumEvent.*;
-import vn.huyqt.logbroker.controller.snapshot.SnapshotId;
+import vn.huyqt.logbroker.controller.snapshot.*;
 import vn.huyqt.logbroker.controller.metadata.MetadataImage;
 import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
 
 /** Pure transitions; I/O effects are interpreted outside this state owner. */
 public final class QuorumStateMachine {
-    private final ControllerConfig config;private QuorumStatus status;private EpochIndex index;private int votedFor;
+    private final ControllerConfig config;private volatile QuorumStatus status;private EpochIndex index;private int votedFor;
     private final RandomGenerator random;
     private final LongSupplier clock;
     private long persistedEpoch,now,electionDeadline,operationId,requestId;
     private final Map<DiskToken,Consumer<DiskResult>> diskCallbacks=new HashMap<>();
     private final Set<DiskToken> logWork=new HashSet<>();
+    private final Set<DiskToken> voteWork=new HashSet<>();
     private final Map<Long,Integer> voteRequests=new HashMap<>();
     private final Set<Integer> votes=new HashSet<>();
     private List<QuorumEffect> effects;
@@ -48,6 +49,7 @@ public final class QuorumStateMachine {
     private final List<Long> waitingReads=new ArrayList<>();
     private final List<PendingTopic> waitingTopics=new ArrayList<>();
     private boolean drainScheduled;
+    private final SnapshotTransfer transfer;
     public QuorumStateMachine(ControllerConfig config,QuorumStatus status,EpochIndex index,int votedFor,RandomGenerator random,long now) {
         this(config,status,index,votedFor,random,now,()->now);
     }
@@ -58,25 +60,32 @@ public final class QuorumStateMachine {
         this.config=config;this.status=status;this.index=index;this.votedFor=votedFor;this.random=random;
         this.clock=clock;
         if(recoveredImage.appliedOffset()!=status.applied())throw new IllegalArgumentException("Recovered image offset mismatch");image=recoveredImage;
+        transfer=new SnapshotTransfer(config.snapshotChunkBytes(),config.snapshotMaxBytes(),config.rpcTimeout().toNanos(),()->this.status.leaderId(),this::request,this::token,effect->effects.add(effect));
         this.now=now;persistedEpoch=status.epoch();resetElectionDeadline();
     }
     public List<QuorumEffect> on(QuorumEvent event) {
         now=Math.max(now,clock.getAsLong());
         effects=new ArrayList<>();
         if(event instanceof DiskDone done) {
-            var callback=diskCallbacks.remove(done.token());logWork.remove(done.token());
-            if(callback!=null&&done.token().generation().equals(status.generation())&&active()) {
-                updatePhysical(done.result());callback.accept(done.result());
+            var callback=diskCallbacks.remove(done.token());logWork.remove(done.token());voteWork.remove(done.token());
+            if(done.result() instanceof DiskResult.Installed installed&&done.token().generation().equals(status.generation())) {
+                boolean current=done.token().epoch()==status.epoch()&&transfer.installAllowed(done.token());
+                installPhysical(installed);transfer.onCompletion(done);if(current&&active())fetch();
+            } else if(done.token().generation().equals(status.generation())&&active()) {
+                if(!transfer.onCompletion(done)&&callback!=null&&!(done.result() instanceof DiskResult.Discarded)){updatePhysical(done.result());callback.accept(done.result());}
+            } else if(done.result() instanceof DiskResult.VoteSaved&&callback!=null&&active()) {
+                callback.accept(done.result()); // Global hard state survives metadata generation changes.
             }
         } else if(event instanceof DiskFailed failed) {
-            diskCallbacks.remove(failed.token());logWork.remove(failed.token());
-            if(failed.token().generation().equals(status.generation())&&active())fail(failed.failure());
-        } else if(event instanceof Stop) {transition(QuorumStatus.Role.STOPPING,status.epoch(),-1,false,"");completeAll(QuorumError.NODE_UNAVAILABLE);}
+            diskCallbacks.remove(failed.token());logWork.remove(failed.token());boolean global=voteWork.remove(failed.token());
+            if((global||failed.token().generation().equals(status.generation()))&&active())fail(failed.failure());
+        } else if(event instanceof Stop) {transfer.cancel();transition(QuorumStatus.Role.STOPPING,status.epoch(),-1,false,"");completeAll(QuorumError.NODE_UNAVAILABLE);}
         else if(event instanceof Admin admin)handleAdmin(admin);
         else if(active()) {
             if(event instanceof Tick tick) {
                 now=Math.max(now,tick.nowNanos());
                 expireAdmins();
+                transfer.onTick(now);if(!transfer.active()&&replicaBusy&&logWork.isEmpty())replicaBusy=false;
                 if(status.role()==QuorumStatus.Role.LEADER) {
                     long last=contacts.values().stream().mapToLong(Long::longValue).max().orElse(leaderSince);
                     if(now-last>=config.leaderContactTimeout().toNanos())stepDown(status.epoch(),-1);
@@ -92,6 +101,7 @@ public final class QuorumStateMachine {
             else if(event instanceof Propose proposal&&status.role()==QuorumStatus.Role.LEADER&&status.ready())append(proposal.entries(),false);
             else if(event instanceof DrainProposals)drainProposals();
             else if(event instanceof Applied applied) {
+                if(applied.generation()!=null&&!applied.generation().equals(status.generation()))return List.copyOf(effects);
                 if(applied.end()<status.applied()||applied.end()>status.commit())fail("Invalid applied boundary");
                 else {
                     progress(status.logEnd(),status.durableEnd(),status.commit(),applied.end());image=applied.image();applyBusy=false;
@@ -174,15 +184,27 @@ public final class QuorumStateMachine {
             if(exact&&fetch.end()==status.logEnd()&&fetch.maxWaitMs()>0)
                 waitingFetches.put(peer,new WaitingFetch(event,now+fetch.maxWaitMs()*1_000_000L));
             else serveFetch(event);
+        } else if(request instanceof FetchSnapshot snapshotRequest) {
+            if(status.role()!=QuorumStatus.Role.LEADER||persistedEpoch!=status.epoch()){reply(event,new Failure(meta(QuorumError.NOT_LEADER)));return;}
+            var token=token();diskCallbacks.put(token,result->{
+                if(status.role()!=QuorumStatus.Role.LEADER||status.epoch()!=token.epoch())return;
+                if(result instanceof DiskResult.SnapshotChunk chunk)reply(event,new FetchSnapshotReply(meta(QuorumError.NONE),chunk.id(),chunk.position(),chunk.totalLength(),chunk.bytes()));
+                else if(result instanceof DiskResult.SnapshotRejected rejected)reply(event,new Failure(meta(rejected.error())));
+            });effects.add(new QuorumEffect.ReadSnapshotChunk(token,event.frame().senderId(),snapshotRequest.id(),snapshotRequest.position(),snapshotRequest.maxBytes()));
         }
     }
     private void handleResponse(Frame frame) {
         Reply reply=(Reply)frame.message();
         boolean correlated=voteRequests.getOrDefault(frame.requestId(),-1)==frame.senderId()
-            ||fetchFlight!=null&&fetchFlight.requestId()==frame.requestId()&&fetchFlight.leader()==frame.senderId();
+            ||fetchFlight!=null&&fetchFlight.requestId()==frame.requestId()&&fetchFlight.leader()==frame.senderId()||transfer.correlated(frame);
         if(!correlated)return;
         if(reply.meta().epoch()>status.epoch()) {
             long epoch=reply.meta().epoch();stepDown(epoch,-1);votedFor=-1;persistVote(epoch,-1,()->{});return;
+        }
+        if(transfer.correlated(frame)) {
+            if(reply.meta().epoch()!=status.epoch()){transfer.cancel();replicaBusy=false;return;}
+            transfer.acceptFrame(frame);if(!transfer.active()){replicaBusy=false;nextFetchAt=now+config.fetchIdleWait().toNanos();}
+            return;
         }
         if(reply instanceof VoteReply vote&&status.role()==QuorumStatus.Role.CANDIDATE&&vote.meta().epoch()==status.epoch()
             &&vote.meta().error()==QuorumError.NONE&&vote.granted()) {
@@ -208,11 +230,19 @@ public final class QuorumStateMachine {
             } else if(fetch.payload() instanceof Divergence divergence) {
                 reconcile(divergence);
             } else if(fetch.payload() instanceof SnapshotRequired required) {
-                // Transfer admission is connected in Task 12; do not advertise progress meanwhile.
-                snapshot=required.id();nextFetchAt=now+config.fetchIdleWait().toNanos();
+                if(required.id().endOffset()<=status.applied()||required.id().endOffset()<status.commit()
+                    ||required.id().lastEpoch()<index.positionAt(status.commit()).lastEpoch()||required.id().lastEpoch()>status.epoch()){fail("Snapshot contradicts known safe prefix");return;}
+                replicaBusy=true;transfer.begin(required.id(),status.epoch());
             }
         }
     }
+    private void installPhysical(DiskResult.Installed installed) {
+        if(installed.id().endOffset()<status.commit()||installed.id().endOffset()<status.applied()){fail("Published snapshot regresses safe prefix");return;}
+        index=installed.index();image=installed.image();replicaBusy=false;applyBusy=false;electionPending=false;fetchFlight=null;
+        long end=installed.id().endOffset();status=new QuorumStatus(status.nodeId(),status.role(),status.epoch(),status.leaderId(),installed.generation(),end,end,end,end,end,false,Map.of(),status.failure());
+        effects.add(new QuorumEffect.Restore(installed.image()));
+    }
+    public boolean installAllowed(DiskToken token){var current=status;return active()&&token.epoch()==current.epoch()&&token.generation().equals(current.generation())&&transfer.installAllowed(token);}
     private void becomeLeader() {
         transition(QuorumStatus.Role.LEADER,status.epoch(),status.nodeId(),false,"");voteRequests.clear();
         replication.reset(status.epoch());contacts.clear();challenges.clear();leaderSince=now;leaderMarkerEnd=0;
@@ -356,11 +386,11 @@ public final class QuorumStateMachine {
         applyBusy=true;long target=status.commit(),from=status.applied();var token=token();
         diskCallbacks.put(token,result->{
             var batches=((DiskResult.Read)result).batches().stream().filter(b->b.baseOffset()>=from&&b.nextOffset()<=target).toList();
-            if(batches.isEmpty()){fail("Committed batch missing during apply");return;}effects.add(new QuorumEffect.Apply(batches));
+            if(batches.isEmpty()){fail("Committed batch missing during apply");return;}effects.add(new QuorumEffect.Apply(batches,token.generation()));
         });effects.add(new QuorumEffect.ReadLog(token,from,config.fetchMaxBytes()));
     }
     private void persistVote(long epoch,int voter,Runnable after) {
-        var token=token();diskCallbacks.put(token,result->{
+        var token=token();voteWork.add(token);diskCallbacks.put(token,result->{
             if(result instanceof DiskResult.VoteSaved saved)persistedEpoch=Math.max(persistedEpoch,saved.epoch());after.run();
         });effects.add(new QuorumEffect.PersistVote(token,epoch,voter));
     }
@@ -369,14 +399,14 @@ public final class QuorumStateMachine {
         else if(result instanceof DiskResult.Flushed flushed)progress(status.logEnd(),flushed.end(),status.commit(),status.applied());
         else if(result instanceof DiskResult.Truncated truncated){index=truncated.index();progress(index.end(),index.end(),status.commit(),status.applied());}
     }
-    private void stepDown(long epoch,int leader){transition(QuorumStatus.Role.FOLLOWER,epoch,leader,false,"");completeAll(QuorumError.NOT_LEADER);votes.clear();voteRequests.clear();waitingFetches.clear();fetchFlight=null;echoChallenge=0;nextFetchAt=now;leaderCommit=status.commit();resetElectionDeadline();}
+    private void stepDown(long epoch,int leader){transfer.cancel();if(logWork.isEmpty())replicaBusy=false;transition(QuorumStatus.Role.FOLLOWER,epoch,leader,false,"");completeAll(QuorumError.NOT_LEADER);votes.clear();voteRequests.clear();waitingFetches.clear();fetchFlight=null;echoChallenge=0;nextFetchAt=now;leaderCommit=status.commit();resetElectionDeadline();}
     private void resetElectionDeadline(){long min=config.electionMin().toNanos(),max=config.electionMax().toNanos();electionDeadline=now+min+random.nextLong(max-min);}
     private DiskToken token(){return new DiskToken(++operationId,status.epoch(),status.generation());}
     private Frame request(Request request){return new Frame(QuorumProtocol.operation(request),false,config.identity().clusterId(),status.nodeId(),++requestId,config.identity().voterHash(),request);}
     private void reply(PeerRequest request,Reply reply){effects.add(new QuorumEffect.Reply(request.route(),new Frame(request.frame().operation(),true,config.identity().clusterId(),status.nodeId(),request.frame().requestId(),config.identity().voterHash(),reply)));}
     private ReplyMeta meta(QuorumError error){return new ReplyMeta(error,"",status.epoch(),status.leaderId());}
     private Reply errorReply(Request request,QuorumError error){return request instanceof Vote?new VoteReply(meta(error),false):new Failure(meta(error));}
-    private void fail(String failure){transition(QuorumStatus.Role.FAILED,status.epoch(),-1,false,failure);completeAll(QuorumError.NODE_UNAVAILABLE);effects.add(new QuorumEffect.Fail(failure));}
+    private void fail(String failure){transfer.cancel();transition(QuorumStatus.Role.FAILED,status.epoch(),-1,false,failure);completeAll(QuorumError.NODE_UNAVAILABLE);effects.add(new QuorumEffect.Fail(failure));}
     private void transition(QuorumStatus.Role role,long epoch,int leader,boolean ready,String failure){status=new QuorumStatus(status.nodeId(),role,epoch,leader,status.generation(),status.logEnd(),status.durableEnd(),status.commit(),status.applied(),status.snapshotEnd(),ready,status.durableMatches(),failure);}
     private void progress(long end,long durable,long commit,long applied){status=new QuorumStatus(status.nodeId(),status.role(),status.epoch(),status.leaderId(),status.generation(),end,durable,commit,applied,status.snapshotEnd(),status.ready(),status.durableMatches(),status.failure());}
     public QuorumStatus status(){return status;}

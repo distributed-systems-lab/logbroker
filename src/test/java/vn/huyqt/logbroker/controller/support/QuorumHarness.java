@@ -18,7 +18,7 @@ public final class QuorumHarness {
     private final int adminCapacity;
     private final Map<Long,Map<Long,QuorumEntryEvidence>> committedEvidence=new HashMap<>();
     private record QuorumEntryEvidence(Object entry){}
-    private QuorumHarness(long seed,int adminCapacity){this.seed=seed;this.adminCapacity=adminCapacity;for(int i=0;i<3;i++){disks[i]=new FakeDisk();restart(i);}}
+    private QuorumHarness(long seed,int adminCapacity){this.seed=seed;this.adminCapacity=adminCapacity;for(int i=0;i<3;i++){disks[i]=new FakeDisk(new UUID(0,i+10));restart(i);}}
     public static QuorumHarness threeNodes(long seed){return new QuorumHarness(seed,1024);}
     public static QuorumHarness threeNodes(long seed,int adminCapacity){return new QuorumHarness(seed,adminCapacity);}
     public QuorumStateMachine node(int node){return nodes[node];}
@@ -38,10 +38,11 @@ public final class QuorumHarness {
             if(effect instanceof QuorumEffect.DiskEffect work)disks[node].enqueue(work);
             else if(effect instanceof QuorumEffect.Send send)transport.send(node,send);
             else if(effect instanceof QuorumEffect.Reply reply)transport.reply(node,reply);
-            else if(effect instanceof QuorumEffect.Apply apply){try{for(var batch:apply.batches())metadata[node].apply(batch);deliver(node,new QuorumEvent.Applied(metadata[node].image().appliedOffset(),metadata[node].image()));}catch(Exception e){throw new AssertionError(e);}}
+            else if(effect instanceof QuorumEffect.Apply apply){try{for(var batch:apply.batches())metadata[node].apply(batch);deliver(node,new QuorumEvent.Applied(metadata[node].image().appliedOffset(),metadata[node].image(),apply.generation()));}catch(Exception e){throw new AssertionError(e);}}
             else if(effect instanceof QuorumEffect.Fail failure){if(nodes[node].status().role()!=QuorumStatus.Role.FAILED)throw new AssertionError(failure.failure());}
             else if(effect instanceof QuorumEffect.CompleteAdmin complete)services[node].complete(complete.invocationId(),complete.reply());
             else if(effect instanceof QuorumEffect.Enqueue enqueue)reentries.addLast(()->deliver(node,enqueue.event()));
+            else if(effect instanceof QuorumEffect.Restore restore){try{metadata[node].restore(restore.image());deliver(node,new QuorumEvent.Applied(restore.image().appliedOffset(),restore.image()));}catch(Exception e){throw new AssertionError(e);}}
         }
         assertSafety();
     }
@@ -58,11 +59,13 @@ public final class QuorumHarness {
     public void powerLoss(int node){crash(node);disks[node].powerLoss();}
     public void restart(int node){
         disks[node].recover();metadata[node]=new MetadataStateMachine();
+        try{metadata[node].restore(disks[node].installedImage());}catch(Exception e){throw new AssertionError(e);}
         try{for(var batch:disks[node].batches())if(batch.nextOffset()<=disks[node].committed())metadata[node].apply(batch);}catch(Exception e){throw new AssertionError(e);}
-        var index=disks[node].index();var status=new QuorumStatus(node,QuorumStatus.Role.UNATTACHED,disks[node].epoch(),-1,new UUID(0,node+10),index.end(),disks[node].durable(),disks[node].committed(),metadata[node].image().appliedOffset(),0,false,Map.of(),"");
+        var index=disks[node].index();var status=new QuorumStatus(node,QuorumStatus.Role.UNATTACHED,disks[node].epoch(),-1,disks[node].generation(),index.end(),disks[node].durable(),disks[node].committed(),metadata[node].image().appliedOffset(),index.start(),false,Map.of(),"");
         nodes[node]=new QuorumStateMachine(ControllerConfig.builder(ControllerTestSupport.identity(node)).maxPendingRequests(adminCapacity).build(),status,index,disks[node].votedFor(),new Random(seed+node),now,()->this.now,metadata[node].image());
         services[node]=new ControllerService(adminCapacity,event->{deliver(node,event);return true;},responses::addLast,()->this.now);
     }
+    public void compact(int node){try{var id=disks[node].compact(metadata[node].image());deliver(node,new QuorumEvent.SnapshotAvailable(id));deliver(node,new QuorumEvent.LogRetained(disks[node].index(),id));}catch(Exception e){throw new AssertionError(e);}}
     public void assertSafety(){
         var leaders=new HashMap<Long,Integer>();
         for(int i=0;i<3;i++)if(nodes[i]!=null){var s=nodes[i].status();
