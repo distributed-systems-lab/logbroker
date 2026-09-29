@@ -27,7 +27,7 @@ public record ControllerConfig(ClusterIdentity identity, LogConfig logConfig,
                 || fetch > frame - 1024 || chunk < 1 || chunk > 256 * 1024 || chunk > frame - 1024
                 || snapshot < 512L + (long) topics * 281 || snapshot > 64 * 1024 * 1024
                 || trigger <= 0 || pending < 1 || pending > 1024 || disks < 1 || disks > 256
-                || events < disks + 512 || events > 4096 || inbound < frame || outbound < frame
+                || events <= disks + 512 || events > 4096 || inbound < frame || outbound < frame
                 || inbound > 64L * 1024 * 1024 || outbound > 64L * 1024 * 1024
                 || topics < 1 || topics > 128 || partitions < topics || partitions > 1024)
             throw new IllegalArgumentException("Inconsistent controller limits");

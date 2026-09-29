@@ -41,7 +41,8 @@ public final class ControllerService implements AutoCloseable {
     public CompletableFuture<MetadataView> readLocalMetadata(){return invoke(new ReadLocalMetadata(),Long.MAX_VALUE).thenApply(reply->((MetadataReply)reply).view());}
     public CompletableFuture<QuorumStatus> describe(){return invoke(new DescribeQuorum(),Long.MAX_VALUE).thenApply(reply->((DescribeQuorumReply)reply).status());}
     private int timeout(long deadline){return (int)Math.max(1,Math.min(30_000,(deadline-clock.getAsLong())/1_000_000));}
-    private CompletableFuture<Reply> invoke(Request request,long deadline) {
+    public CompletableFuture<Reply> request(Request request,long deadline){return invoke(request,deadline);}
+    private synchronized CompletableFuture<Reply> invoke(Request request,long deadline) {
         if(closed)return failed(QuorumError.NODE_UNAVAILABLE);
         if(!slots.tryAcquire())return failed(QuorumError.OVERLOADED);
         long id=ids.incrementAndGet();var future=new CompletableFuture<Reply>();pending.put(id,future);
@@ -49,11 +50,12 @@ public final class ControllerService implements AutoCloseable {
         return future;
     }
     private CompletableFuture<Reply> failed(QuorumError error){return CompletableFuture.failedFuture(new ServiceException(new ReplyMeta(error,"",0,-1)));}
-    public void complete(long id,Reply reply) {
+    public synchronized void complete(long id,Reply reply) {
         var future=pending.remove(id);if(future==null)return;
         // Admission owns the queue slot until all synchronous future callbacks return.
         responses.execute(()->{try{if(reply.meta().error()==QuorumError.NONE)future.complete(reply);else future.completeExceptionally(new ServiceException(reply.meta()));}finally{slots.release();}});
     }
     public int pendingCount(){return pending.size();}
-    @Override public void close(){closed=true;for(long id:List.copyOf(pending.keySet()))complete(id,new Failure(new ReplyMeta(QuorumError.NODE_UNAVAILABLE,"Service closed",0,-1)));if(owned!=null)owned.shutdown();}
+    @Override public synchronized void close(){closed=true;for(long id:List.copyOf(pending.keySet()))complete(id,new Failure(new ReplyMeta(QuorumError.NODE_UNAVAILABLE,"Service closed",0,-1)));if(owned!=null)owned.shutdown();}
+    public boolean awaitClosed(java.time.Duration timeout)throws InterruptedException{return owned==null||owned.awaitTermination(timeout.toNanos(),TimeUnit.NANOSECONDS);}
 }

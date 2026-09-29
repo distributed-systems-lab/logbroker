@@ -6,6 +6,9 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class ControllerConfigTest {
+    @Test void eventQueueMustLeaveGeneralAdmissionBeyondReservedSlots() {
+        assertThrows(IllegalArgumentException.class,()->ControllerConfig.builder(identity()).eventQueueCapacity(768).diskQueueCapacity(256).build());
+    }
     static ClusterIdentity identity() {
         return new ClusterIdentity(new UUID(0, 1), 0, List.of(
             new ClusterIdentity.Voter(0, "localhost", 19090),

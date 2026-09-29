@@ -125,7 +125,7 @@ public final class NettyQuorumTransport implements QuorumTransport {
                         if(requests.containsKey(frame.requestId())){context.close();return;}
                     }
                     final var ownedDecoded=decoded;
-                    var inbound=new Inbound(new ReplyRoute(id,frame.requestId()),frame,()->{ownedDecoded.close();raw.close();incomingSlots.release();},()->context.channel().isActive());
+                    var inbound=new Inbound(new ReplyRoute(id,frame.requestId()),frame,()->{ownedDecoded.close();raw.close();incomingSlots.release();},()->context.channel().isActive()).rejectWith(()->context.close());
                     if(!frame.response())requests.put(frame.requestId(),inbound.retain());transferred=true;
                     try {receiver.accept(inbound);}catch(RuntimeException error){inbound.close();context.close();notifyFailure(error);}
                 }

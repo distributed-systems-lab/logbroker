@@ -79,7 +79,8 @@ public final class QuorumStateMachine {
         } else if(event instanceof DiskFailed failed) {
             diskCallbacks.remove(failed.token());logWork.remove(failed.token());boolean global=voteWork.remove(failed.token());
             if((global||failed.token().generation().equals(status.generation()))&&active())fail(failed.failure());
-        } else if(event instanceof Stop) {transfer.cancel();transition(QuorumStatus.Role.STOPPING,status.epoch(),-1,false,"");completeAll(QuorumError.NODE_UNAVAILABLE);}
+        } else if(event instanceof Fatal fatal) {if(active())fail(fatal.failure());}
+        else if(event instanceof Stop) {transfer.cancel();transition(QuorumStatus.Role.STOPPING,status.epoch(),-1,false,"");completeAll(QuorumError.NODE_UNAVAILABLE);}
         else if(event instanceof Admin admin)handleAdmin(admin);
         else if(active()) {
             if(event instanceof Tick tick) {
@@ -410,4 +411,5 @@ public final class QuorumStateMachine {
     private void transition(QuorumStatus.Role role,long epoch,int leader,boolean ready,String failure){status=new QuorumStatus(status.nodeId(),role,epoch,leader,status.generation(),status.logEnd(),status.durableEnd(),status.commit(),status.applied(),status.snapshotEnd(),ready,status.durableMatches(),failure);}
     private void progress(long end,long durable,long commit,long applied){status=new QuorumStatus(status.nodeId(),status.role(),status.epoch(),status.leaderId(),status.generation(),end,durable,commit,applied,status.snapshotEnd(),status.ready(),status.durableMatches(),status.failure());}
     public QuorumStatus status(){return status;}
+    public EpochIndex epochIndex(){return index;}
 }

@@ -37,4 +37,7 @@ public sealed interface QuorumEvent {
     record Admin(long invocationId,Request request,long deadlineNanos) implements QuorumEvent {}
     record DrainProposals() implements QuorumEvent {}
     record LogRetained(EpochIndex index,SnapshotId base) implements QuorumEvent {}
+    record Network(vn.huyqt.logbroker.controller.transport.QuorumTransport.Inbound inbound) implements QuorumEvent {}
+    record Invoke(Runnable action) implements QuorumEvent {}
+    record Fatal(String failure) implements QuorumEvent {}
 }
