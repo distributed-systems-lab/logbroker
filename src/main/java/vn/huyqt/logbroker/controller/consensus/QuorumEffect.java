@@ -20,4 +20,6 @@ public sealed interface QuorumEffect {
     record Reply(ReplyRoute route,Frame frame) implements QuorumEffect {}
     record Apply(List<QuorumBatch> batches) implements QuorumEffect {public Apply{batches=List.copyOf(batches);}}
     record Fail(String failure) implements QuorumEffect {}
+    record CompleteAdmin(long invocationId,vn.huyqt.logbroker.controller.protocol.QuorumProtocol.Reply reply) implements QuorumEffect {}
+    record Enqueue(QuorumEvent event) implements QuorumEffect {}
 }

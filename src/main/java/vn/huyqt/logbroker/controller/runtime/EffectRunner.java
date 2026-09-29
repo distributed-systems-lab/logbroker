@@ -17,6 +17,7 @@ public final class EffectRunner {
     public void run(List<QuorumEffect> effects){for(var effect:effects){
         if(effect instanceof QuorumEffect.DiskEffect work){if(!disk.submit(work.token(),()->execute(work)))events.accept(new DiskFailed(work.token(),"Disk admission exhausted"));}
         else if(effect instanceof QuorumEffect.Apply apply){try{for(var batch:apply.batches())metadata.apply(batch);events.accept(new Applied(metadata.image().appliedOffset(),metadata.image()));}catch(IOException e){external.accept(new QuorumEffect.Fail(e.toString()));}}
+        else if(effect instanceof QuorumEffect.Enqueue enqueue)events.accept(enqueue.event());
         else external.accept(effect);
     }}
     private DiskResult execute(QuorumEffect.DiskEffect effect)throws IOException {

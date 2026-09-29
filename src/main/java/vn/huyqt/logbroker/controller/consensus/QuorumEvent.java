@@ -26,4 +26,6 @@ public sealed interface QuorumEvent {
     record Stop() implements QuorumEvent {}
     record Propose(List<QuorumEntry> entries) implements QuorumEvent {public Propose{entries=List.copyOf(entries);}}
     record SnapshotAvailable(SnapshotId id) implements QuorumEvent {}
+    record Admin(long invocationId,Request request,long deadlineNanos) implements QuorumEvent {}
+    record DrainProposals() implements QuorumEvent {}
 }

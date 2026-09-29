@@ -11,13 +11,19 @@ import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 public final class QuorumHarness {
     private final QuorumStateMachine[] nodes=new QuorumStateMachine[3];private final FakeDisk[] disks=new FakeDisk[3];
     private final MetadataStateMachine[] metadata=new MetadataStateMachine[3];private final boolean[] paused=new boolean[3];
+    private final ControllerService[] services=new ControllerService[3];
+    private final ArrayDeque<Runnable> responses=new ArrayDeque<>();
+    private final ArrayDeque<Runnable> reentries=new ArrayDeque<>();
     private final SimulatedTransport transport=new SimulatedTransport();private final long seed;private long now;
+    private final int adminCapacity;
     private final Map<Long,Map<Long,QuorumEntryEvidence>> committedEvidence=new HashMap<>();
     private record QuorumEntryEvidence(Object entry){}
-    private QuorumHarness(long seed){this.seed=seed;for(int i=0;i<3;i++){disks[i]=new FakeDisk();restart(i);}}
-    public static QuorumHarness threeNodes(long seed){return new QuorumHarness(seed);}
+    private QuorumHarness(long seed,int adminCapacity){this.seed=seed;this.adminCapacity=adminCapacity;for(int i=0;i<3;i++){disks[i]=new FakeDisk();restart(i);}}
+    public static QuorumHarness threeNodes(long seed){return new QuorumHarness(seed,1024);}
+    public static QuorumHarness threeNodes(long seed,int adminCapacity){return new QuorumHarness(seed,adminCapacity);}
     public QuorumStateMachine node(int node){return nodes[node];}
     public FakeDisk disk(int node){return disks[node];}
+    public ControllerService service(int node){return services[node];}
     public SimulatedTransport transport(){return transport;}
     public long now(){return now;}
     public void tickNode(int node,Duration duration){now+=duration.toNanos();deliver(node,new QuorumEvent.Tick(now));}
@@ -34,6 +40,8 @@ public final class QuorumHarness {
             else if(effect instanceof QuorumEffect.Reply reply)transport.reply(node,reply);
             else if(effect instanceof QuorumEffect.Apply apply){try{for(var batch:apply.batches())metadata[node].apply(batch);deliver(node,new QuorumEvent.Applied(metadata[node].image().appliedOffset(),metadata[node].image()));}catch(Exception e){throw new AssertionError(e);}}
             else if(effect instanceof QuorumEffect.Fail failure){if(nodes[node].status().role()!=QuorumStatus.Role.FAILED)throw new AssertionError(failure.failure());}
+            else if(effect instanceof QuorumEffect.CompleteAdmin complete)services[node].complete(complete.invocationId(),complete.reply());
+            else if(effect instanceof QuorumEffect.Enqueue enqueue)reentries.addLast(()->deliver(node,enqueue.event()));
         }
         assertSafety();
     }
@@ -41,7 +49,7 @@ public final class QuorumHarness {
         deliver(envelope.target(),envelope.frame().response()?new QuorumEvent.PeerResponse(envelope.frame()):new QuorumEvent.PeerRequest(envelope.frame(),envelope.route()));}}
     public void completeDisks(){for(int i=0;i<3;i++)if(nodes[i]!=null&&!paused[i]){int count=disks[i].pending();for(int j=0;j<count;j++)deliver(i,disks[i].completeNext());}}
     public void completeOneDisk(int node){deliver(node,disks[node].completeNext());}
-    public void settle(){for(int steps=0;steps<10000;steps++){int pending=transport.pending();for(int i=0;i<3;i++)if(nodes[i]!=null&&!paused[i])pending+=disks[i].pending();if(pending==0)return;completeDisks();deliverAll();}throw new AssertionError("Quorum failed to settle");}
+    public void settle(){for(int steps=0;steps<10000;steps++){int pending=transport.pending()+responses.size()+reentries.size();for(int i=0;i<3;i++)if(nodes[i]!=null&&!paused[i])pending+=disks[i].pending();if(pending==0)return;while(!reentries.isEmpty())reentries.removeFirst().run();completeDisks();deliverAll();while(!responses.isEmpty())responses.removeFirst().run();}throw new AssertionError("Quorum failed to settle");}
     public void isolate(int node){transport.isolate(node);}
     public void heal(){transport.heal();}
     public void pauseDisk(int node){paused[node]=true;}
@@ -52,7 +60,8 @@ public final class QuorumHarness {
         disks[node].recover();metadata[node]=new MetadataStateMachine();
         try{for(var batch:disks[node].batches())if(batch.nextOffset()<=disks[node].committed())metadata[node].apply(batch);}catch(Exception e){throw new AssertionError(e);}
         var index=disks[node].index();var status=new QuorumStatus(node,QuorumStatus.Role.UNATTACHED,disks[node].epoch(),-1,new UUID(0,node+10),index.end(),disks[node].durable(),disks[node].committed(),metadata[node].image().appliedOffset(),0,false,Map.of(),"");
-        nodes[node]=new QuorumStateMachine(ControllerConfig.defaults(ControllerTestSupport.identity(node)),status,index,disks[node].votedFor(),new Random(seed+node),now,()->this.now);
+        nodes[node]=new QuorumStateMachine(ControllerConfig.builder(ControllerTestSupport.identity(node)).maxPendingRequests(adminCapacity).build(),status,index,disks[node].votedFor(),new Random(seed+node),now,()->this.now,metadata[node].image());
+        services[node]=new ControllerService(adminCapacity,event->{deliver(node,event);return true;},responses::addLast,()->this.now);
     }
     public void assertSafety(){
         var leaders=new HashMap<Long,Integer>();
