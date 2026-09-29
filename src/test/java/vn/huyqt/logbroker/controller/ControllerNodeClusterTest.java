@@ -31,6 +31,10 @@ class ControllerNodeClusterTest {
             var metadata=leader.service().readMetadata(System.nanoTime()+TimeUnit.SECONDS.toNanos(5)).get(5,TimeUnit.SECONDS);assertEquals("orders",metadata.topics().getFirst().name());
             release.countDown();callback.get(2,TimeUnit.SECONDS);
             limit=System.nanoTime()+TimeUnit.SECONDS.toNanos(3);while(leader.status().join().snapshotEnd()==0&&System.nanoTime()<limit)Thread.sleep(10);assertTrue(leader.status().join().snapshotEnd()>0);
+            try(var clock=vn.huyqt.logbroker.broker.DeadlineScheduler.system();var client=new vn.huyqt.logbroker.controller.client.ControllerClient(new ClusterIdentity(new UUID(0,123),0,voters),List.of(new java.net.InetSocketAddress(voters.getFirst().host(),voters.getFirst().port())),clock,new vn.huyqt.logbroker.controller.client.NettyControllerClientTransport.Factory(new ClusterIdentity(new UUID(0,123),0,voters),clock))) {
+                var id=client.createTopic("client-orders",2).get(10,TimeUnit.SECONDS);assertEquals(id,client.createTopic("client-orders",2).get(10,TimeUnit.SECONDS));
+                assertEquals(2,client.metadata().get(10,TimeUnit.SECONDS).topics().size());assertEquals(vn.huyqt.logbroker.controller.protocol.QuorumProtocol.Consistency.LOCAL,client.localMetadata(2).get(10,TimeUnit.SECONDS).consistency());assertEquals(1,client.describe(1).get(10,TimeUnit.SECONDS).nodeId());
+            }
         } finally {release.countDown();for(var node:nodes)node.close();}
     }
 }
