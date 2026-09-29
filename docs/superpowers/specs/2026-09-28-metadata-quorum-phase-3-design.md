@@ -2,7 +2,7 @@
 
 Ngày: 2026-09-28
 
-Trạng thái: Bản spec tổng hợp đã được người dùng duyệt ngày 2026-09-28, bao gồm cấu hình và giới hạn ban đầu. Đã có [implementation plan](../plans/2026-09-28-metadata-quorum-phase-3.md). Chưa triển khai Phase 3.
+Trạng thái: Bản spec tổng hợp đã được người dùng duyệt ngày 2026-09-28, bao gồm cấu hình và giới hạn ban đầu. Đã có [implementation plan](../plans/2026-09-28-metadata-quorum-phase-3.md). Đã triển khai Phase 3 và kiểm chứng trên Linux/WSL ext4 ngày 2026-09-29; xem [verification](../../controller-verification.md).
 
 ## 1. Mục tiêu và phạm vi
 
