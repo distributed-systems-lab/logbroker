@@ -58,9 +58,12 @@ public final class ControllerNode implements AutoCloseable {
         }catch(IOException|RuntimeException error){if(generation!=null)try{generation.close();}catch(IOException close){error.addSuppressed(close);}if(state!=null)try{state.close();}catch(IOException close){error.addSuppressed(close);}throw error;}
     }
     public synchronized InetSocketAddress start()throws IOException {
+        var voter=config.identity().voter(config.identity().nodeId());return start(new InetSocketAddress(voter.host(),voter.port()));
+    }
+    /** Package-private bind seam for the test fault proxy; membership endpoints remain unchanged. */
+    synchronized InetSocketAddress start(InetSocketAddress bind)throws IOException {
         if(started||stopping)throw new IllegalStateException("Controller already started or stopping");
-        var voter=config.identity().voter(config.identity().nodeId());
-        var bound=transport.start(new InetSocketAddress(voter.host(),voter.port()),this::receive,error->{/* RPC deadlines and elections handle network failure. */});
+        var bound=transport.start(bind,this::receive,error->{/* RPC deadlines and elections handle network failure. */});
         started=true;scheduleTick();return bound;
     }
     public boolean isStarted(){return started;}

@@ -22,6 +22,7 @@ Properties are strict: unknown keys fail startup. Relative `data.dir` is relativ
 | `disk.queue.capacity` | 256 | 1..256; completion slots reserved before disk admission |
 | `inbound.bytes`, `outbound.bytes` | 67108864 | at least max frame, <=67108864; one eighth reserved for peer control |
 | `max.topics`, `max.partitions` | 128, 1024 | topics 1..128; total partitions topics..1024 |
+| `log.segment.bytes`, `log.max.batch.bytes`, `log.index.interval.bytes` | 67108864, 1048576, 4096 | segment >= batch >=50; positive index interval; batch <= fetch budget |
 
 Metadata log defaults: 64 MiB segments, 1 MiB batches, 4096-byte sparse index interval. Journal frames <=64 KiB and journal file <=64 MiB; reaching the cap fails explicitly (journal compaction is future work). Transport caps: 64 connections, 32 pending requests per connection, 256 validation jobs with 64 reserved for control, 30-second partial-frame deadline, two pinned snapshot uploads with 30-second idle expiry. Snapshots keep latest two plus active-generation references and active pins. Client caps: 1024 active invocations, one RPC per attempt connection, shared 64 MiB inbound/outbound budgets, 30-second absolute invocation deadline, 1-second attempt deadline, 50 ms exponential retry capped at 1 second with deterministic jitter.
 

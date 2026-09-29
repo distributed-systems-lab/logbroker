@@ -51,7 +51,10 @@ class ControllerLifecycleTest {
         var node=ControllerNode.open(root,config,files);
         try {files.block=true;node.start();assertTrue(reached.await(3,TimeUnit.SECONDS));
             assertThrows(IOException.class,node::close);assertThrows(IOException.class,()->QuorumStateStore.open(root,identity,files));
-        } finally {release.countDown();node.close();}
+        } finally {
+            release.countDown();long cleanupDeadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);
+            while(true)try{node.close();break;}catch(IOException timedOut){if(System.nanoTime()>=cleanupDeadline)throw timedOut;Thread.sleep(20);}
+        }
         try(var state=QuorumStateStore.open(root,identity,files)){assertEquals(identity,state.identity());}
     }
 }
