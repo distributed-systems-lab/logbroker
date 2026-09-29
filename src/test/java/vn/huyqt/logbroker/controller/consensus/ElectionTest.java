@@ -30,7 +30,9 @@ class ElectionTest {
         assertFalse(h.transport().voteRequests().isEmpty());h.assertSafety();
     }
     @Test void electionAppendsMarkerButCannotAdvertiseReadinessYet() {
-        var h=QuorumHarness.threeNodes(9);h.elect(0);
+        var h=QuorumHarness.threeNodes(9);h.tickNode(0,Duration.ofSeconds(4));
+        for(int i=0;i<10&&h.leader()<0;i++){h.completeDisks();h.deliverAll();}
+        h.pauseDisk(1);h.pauseDisk(2);h.settle();
         assertEquals(0,h.leader());assertFalse(h.node(0).status().ready());
         assertInstanceOf(QuorumEntry.LeaderChange.class,h.disk(0).batches().getFirst().entries().getFirst());
     }

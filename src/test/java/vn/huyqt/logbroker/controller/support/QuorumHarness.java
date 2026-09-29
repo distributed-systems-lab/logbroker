@@ -20,7 +20,9 @@ public final class QuorumHarness {
     public FakeDisk disk(int node){return disks[node];}
     public SimulatedTransport transport(){return transport;}
     public long now(){return now;}
+    public void tickNode(int node,Duration duration){now+=duration.toNanos();deliver(node,new QuorumEvent.Tick(now));}
     public void request(int node,Frame frame){deliver(node,new QuorumEvent.PeerRequest(frame,new ReplyRoute(frame.senderId(),frame.requestId())));}
+    public void appendBarrier(int node){deliver(node,new QuorumEvent.Propose(List.of(new vn.huyqt.logbroker.controller.log.QuorumEntry.ReadBarrier(nodes[node].status().epoch()))));}
     public int leader(){for(int i=0;i<3;i++)if(nodes[i]!=null&&nodes[i].status().role()==QuorumStatus.Role.LEADER)return i;return -1;}
     public void elect(int node){for(int attempts=0;attempts<20;attempts++){now+=Duration.ofSeconds(4).toNanos();deliver(node,new QuorumEvent.Tick(now));settle();if(leader()==node)return;}throw new AssertionError("Target node did not win election");}
     public void tick(Duration duration){now+=duration.toNanos();for(int i=0;i<3;i++)if(nodes[i]!=null)deliver(i,new QuorumEvent.Tick(now));}
@@ -31,13 +33,14 @@ public final class QuorumHarness {
             else if(effect instanceof QuorumEffect.Send send)transport.send(node,send);
             else if(effect instanceof QuorumEffect.Reply reply)transport.reply(node,reply);
             else if(effect instanceof QuorumEffect.Apply apply){try{for(var batch:apply.batches())metadata[node].apply(batch);deliver(node,new QuorumEvent.Applied(metadata[node].image().appliedOffset(),metadata[node].image()));}catch(Exception e){throw new AssertionError(e);}}
-            else if(effect instanceof QuorumEffect.Fail failure)throw new AssertionError(failure.failure());
+            else if(effect instanceof QuorumEffect.Fail failure){if(nodes[node].status().role()!=QuorumStatus.Role.FAILED)throw new AssertionError(failure.failure());}
         }
         assertSafety();
     }
     public void deliverAll(){SimulatedTransport.Envelope envelope;int count=0;while((envelope=transport.next())!=null){if(++count>10000)throw new AssertionError("Network livelock");
         deliver(envelope.target(),envelope.frame().response()?new QuorumEvent.PeerResponse(envelope.frame()):new QuorumEvent.PeerRequest(envelope.frame(),envelope.route()));}}
     public void completeDisks(){for(int i=0;i<3;i++)if(nodes[i]!=null&&!paused[i]){int count=disks[i].pending();for(int j=0;j<count;j++)deliver(i,disks[i].completeNext());}}
+    public void completeOneDisk(int node){deliver(node,disks[node].completeNext());}
     public void settle(){for(int steps=0;steps<10000;steps++){int pending=transport.pending();for(int i=0;i<3;i++)if(nodes[i]!=null&&!paused[i])pending+=disks[i].pending();if(pending==0)return;completeDisks();deliverAll();}throw new AssertionError("Quorum failed to settle");}
     public void isolate(int node){transport.isolate(node);}
     public void heal(){transport.heal();}
@@ -49,7 +52,7 @@ public final class QuorumHarness {
         disks[node].recover();metadata[node]=new MetadataStateMachine();
         try{for(var batch:disks[node].batches())if(batch.nextOffset()<=disks[node].committed())metadata[node].apply(batch);}catch(Exception e){throw new AssertionError(e);}
         var index=disks[node].index();var status=new QuorumStatus(node,QuorumStatus.Role.UNATTACHED,disks[node].epoch(),-1,new UUID(0,node+10),index.end(),disks[node].durable(),disks[node].committed(),metadata[node].image().appliedOffset(),0,false,Map.of(),"");
-        nodes[node]=new QuorumStateMachine(ControllerConfig.defaults(ControllerTestSupport.identity(node)),status,index,disks[node].votedFor(),new Random(seed+node),now);
+        nodes[node]=new QuorumStateMachine(ControllerConfig.defaults(ControllerTestSupport.identity(node)),status,index,disks[node].votedFor(),new Random(seed+node),now,()->this.now);
     }
     public void assertSafety(){
         var leaders=new HashMap<Long,Integer>();

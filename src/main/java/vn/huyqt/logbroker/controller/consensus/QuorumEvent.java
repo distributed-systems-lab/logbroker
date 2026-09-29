@@ -24,4 +24,6 @@ public sealed interface QuorumEvent {
     record DiskFailed(DiskToken token,String failure) implements QuorumEvent {}
     record Applied(long end,MetadataImage image) implements QuorumEvent {}
     record Stop() implements QuorumEvent {}
+    record Propose(List<QuorumEntry> entries) implements QuorumEvent {public Propose{entries=List.copyOf(entries);}}
+    record SnapshotAvailable(SnapshotId id) implements QuorumEvent {}
 }
