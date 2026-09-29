@@ -101,6 +101,10 @@ public final class QuorumStateMachine {
                     applyCommitted();
                 }
             } else if(event instanceof SnapshotAvailable available)snapshot=available.id();
+            else if(event instanceof LogRetained retained) {
+                if(retained.base().endOffset()>status.applied())fail("Retention exceeds applied image");
+                else {index=retained.index();status=new QuorumStatus(status.nodeId(),status.role(),status.epoch(),status.leaderId(),status.generation(),status.logEnd(),status.durableEnd(),status.commit(),status.applied(),retained.base().endOffset(),status.ready(),status.durableMatches(),status.failure());fetchFlight=null;nextFetchAt=now;}
+            }
         }
         return List.copyOf(effects);
     }

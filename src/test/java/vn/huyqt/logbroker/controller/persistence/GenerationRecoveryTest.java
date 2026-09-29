@@ -24,6 +24,7 @@ class GenerationRecoveryTest {
         }
         try(var state=QuorumStateStore.open(root,identity(),io);var generation=GenerationStore.open(state,io,LogConfig.defaults())) {
             assertEquals(1,generation.committedOffset()); assertEquals(2,generation.log().end());
+            assertEquals(1,generation.recoveredImage().appliedOffset());
         }
     }
     @Test void unfinishedTruncateIntentResumesAndCannotCrossCommit() throws Exception {

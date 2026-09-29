@@ -6,11 +6,14 @@ import java.nio.file.*;
 import java.util.*;
 import vn.huyqt.logbroker.controller.log.*;
 import vn.huyqt.logbroker.storage.*;
+import vn.huyqt.logbroker.controller.snapshot.*;
+import vn.huyqt.logbroker.controller.metadata.*;
 
 /** Journal references decide the active generation; directory discovery cannot invent committed state. */
 public final class GenerationStore implements AutoCloseable {
     private final QuorumStateStore state; private final DurableFiles files; private final LogConfig config;
     private UUID generation; private long start,committed; private QuorumLog log;
+    private SnapshotId baseSnapshot;
     private GenerationStore(QuorumStateStore state,DurableFiles files,LogConfig config) {
         this.state=state;this.files=files;this.config=config;
     }
@@ -24,10 +27,13 @@ public final class GenerationStore implements AutoCloseable {
             try {
                 switch(frame.type()) {
                     case StateJournal.GENERATION -> {
-                        UUID next=new UUID(in.getLong(),in.getLong()); long nextStart=in.getLong(); byte snapshot=in.get();
-                        if(nextStart<0||snapshot!=0||in.hasRemaining())throw new IOException("Invalid generation record");
-                        if(!next.equals(generation)) { committed=nextStart;truncate=null;prefix=null; }
-                        generation=next;start=nextStart;
+                        UUID next=new UUID(in.getLong(),in.getLong()); long nextStart=in.getLong();byte present=in.get();
+                        if(present!=0&&present!=1)throw new IOException("Invalid generation snapshot flag");
+                        SnapshotId snapshot=present==1?SnapshotId.readFrom(in):null;
+                        if(nextStart<0||snapshot!=null&&snapshot.endOffset()<nextStart||in.hasRemaining())throw new IOException("Invalid generation record");
+                        if(!next.equals(generation)) { committed=snapshot==null?nextStart:snapshot.endOffset();truncate=null;prefix=null; }
+                        else if(snapshot!=null) {if(baseSnapshot!=null&&snapshot.endOffset()<baseSnapshot.endOffset())throw new IOException("Recovery base regression");committed=Math.max(committed,snapshot.endOffset());}
+                        generation=next;start=nextStart;baseSnapshot=snapshot;
                     }
                     case StateJournal.COMMIT -> {
                         UUID id=new UUID(in.getLong(),in.getLong());long end=in.getLong();
@@ -67,7 +73,10 @@ public final class GenerationStore implements AutoCloseable {
             LogIntentRecovery.truncate(directory,config,start,committed,truncate,files::syncDirectory);
             state.journal().append(StateJournal.TRUNCATE_DONE,ByteBuffer.allocate(8).putLong(truncateSequence).array());
         }
-        log=QuorumLog.open(directory,config,start,committed,false,files);
+        long logicalStart=baseSnapshot==null?start:baseSnapshot.endOffset(),lastEpoch=baseSnapshot==null?0:baseSnapshot.lastEpoch();
+        if(baseSnapshot!=null)new SnapshotStore(state.root(),state.identity(),files,state,64*1024*1024).load(baseSnapshot);
+        log=QuorumLog.open(directory,config,start,committed,logicalStart,lastEpoch,false,files);
+        try {log.epochs().positionAt(committed);}catch(IllegalArgumentException e){log.close();throw new IOException("Commit is not a retained batch boundary",e);}
     }
     public void checkpointCommit(long end)throws IOException {
         if(end<committed||end>log.durableEnd())throw new IllegalArgumentException("Invalid committed boundary");
@@ -81,6 +90,42 @@ public final class GenerationStore implements AutoCloseable {
         log.truncate(end,committed);
         state.journal().append(StateJournal.TRUNCATE_DONE,ByteBuffer.allocate(8).putLong(intent).array());
     }
+    public void retainPrefix(long olderSnapshotEnd)throws IOException {
+        var snapshots=new SnapshotStore(state.root(),state.identity(),files,state,64*1024*1024);
+        if(snapshots.retained().size()!=2||snapshots.retained().get(1).endOffset()!=olderSnapshotEnd||olderSnapshotEnd>committed)throw new IllegalArgumentException("Retention requires two committed snapshots");
+        var base=snapshots.retained().get(1);log.epochs().positionAt(base.endOffset());
+        if(base.endOffset()<log.start()||log.epochs().positionAt(base.endOffset()).lastEpoch()!=base.lastEpoch())throw new IllegalArgumentException("Snapshot epoch mismatch");
+        // The new recovery base is durable before any bytes required by the old base disappear.
+        state.journal().append(StateJournal.GENERATION,encodeGeneration(generation,start,base));baseSnapshot=base;
+        long nextStart=log.storage().prefixStartAfter(olderSnapshotEnd);
+        long intent=state.journal().append(StateJournal.PREFIX_INTENT,encodeBoundary(nextStart));
+        start=nextStart;log.advanceStart(base.endOffset(),base.lastEpoch());log.storage().deleteSegmentsBefore(olderSnapshotEnd);log.refresh();
+        state.journal().append(StateJournal.PREFIX_DONE,ByteBuffer.allocate(8).putLong(intent).array());
+    }
+    public static byte[] encodeGeneration(UUID id,long start,SnapshotId snapshot) {
+        var out=ByteBuffer.allocate(snapshot==null?25:57).putLong(id.getMostSignificantBits()).putLong(id.getLeastSignificantBits()).putLong(start).put((byte)(snapshot==null?0:1));
+        if(snapshot!=null)snapshot.writeTo(out);return out.array();
+    }
+    public static SnapshotId snapshotReference(QuorumStateStore state)throws IOException {
+        SnapshotId result=null;
+        for(var frame:state.journal().frames())if(frame.type()==StateJournal.GENERATION) {
+            try {var in=ByteBuffer.wrap(frame.payload());in.getLong();in.getLong();in.getLong();byte present=in.get();if(present!=0&&present!=1)throw new IOException("Invalid generation snapshot flag");result=present==1?SnapshotId.readFrom(in):null;if(in.hasRemaining())throw new IOException("Invalid generation payload");}
+            catch(java.nio.BufferUnderflowException|IllegalArgumentException e){throw new IOException("Invalid generation snapshot reference",e);}
+        }
+        return result;
+    }
+    public MetadataImage recoveredImage()throws IOException {
+        var metadata=new MetadataStateMachine();
+        if(baseSnapshot!=null)metadata.restore(new SnapshotStore(state.root(),state.identity(),files,state,64*1024*1024).load(baseSnapshot));
+        while(metadata.image().appliedOffset()<committed) {
+            var batches=log.read(metadata.image().appliedOffset(),config.maxBatchBytes());
+            if(batches.isEmpty())throw new IOException("Committed replay gap");
+            for(var batch:batches){if(batch.nextOffset()>committed)break;metadata.apply(batch);}
+        }
+        return metadata.image();
+    }
+    public EpochIndex epochIndex(){return log.epochs();}
+    public SnapshotId baseSnapshot(){return baseSnapshot;}
     private byte[] encodeBoundary(long end) { return ByteBuffer.allocate(24).putLong(generation.getMostSignificantBits()).putLong(generation.getLeastSignificantBits()).putLong(end).array(); }
     public Path directory() { return state.root().resolve("generations").resolve(generation.toString()).resolve("log"); }
     public QuorumLog log() { return log; }

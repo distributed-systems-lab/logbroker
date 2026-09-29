@@ -14,7 +14,7 @@ import static java.nio.file.StandardOpenOption.READ;
 public final class SnapshotStore {
     private final Path directory; private final ClusterIdentity identity; private final DurableFiles files;
     private final QuorumStateStore state; private final int maxBytes;
-    private List<SnapshotId> retained=List.of(); private final Map<SnapshotId,Integer> pins=new HashMap<>();
+    private volatile List<SnapshotId> retained=List.of(); private final Map<SnapshotId,Integer> pins=new HashMap<>();
     public SnapshotStore(Path root,ClusterIdentity identity,DurableFiles files,QuorumStateStore state,int maxBytes)throws IOException {
         directory=root.resolve("snapshots");this.identity=identity;this.files=files;this.state=state;this.maxBytes=maxBytes;
         if(maxBytes<114||maxBytes>64*1024*1024)throw new IllegalArgumentException("Invalid snapshot limit");
@@ -31,6 +31,7 @@ public final class SnapshotStore {
         for(var id:retained)load(id);
     }
     public SnapshotId create(MetadataImage image,long lastEpoch)throws IOException {
+        if(!retained.isEmpty()&&image.appliedOffset()<retained.getFirst().endOffset())throw new IOException("Snapshot boundary regression");
         var id=new SnapshotId(image.appliedOffset(),lastEpoch,UUID.randomUUID());
         byte[] bytes=encode(id,image);Path temporary=directory.resolve(id.contentId()+".partial");
         files.writeNew(temporary,bytes);
@@ -75,9 +76,23 @@ public final class SnapshotStore {
     }
     public List<SnapshotId> retained() { return retained; }
     public Path path(SnapshotId id) { return directory.resolve(id.contentId()+".snapshot"); }
-    public Pin pin(SnapshotId id)throws IOException {
+    public synchronized Pin pin(SnapshotId id)throws IOException {
         load(id); FileChannel channel=FileChannel.open(path(id),READ);
         pins.merge(id,1,Integer::sum);return new Pin(id,channel);
+    }
+    public synchronized void releaseObsolete()throws IOException {
+        var referenced=new HashSet<UUID>();for(var id:retained)referenced.add(id.contentId());
+        var base=GenerationStore.snapshotReference(state);if(base!=null)referenced.add(base.contentId());
+        for(var id:pins.keySet())referenced.add(id.contentId());
+        boolean deleted=false;
+        try(var paths=Files.list(directory)) {
+            for(var path:paths.toList()) {
+                String name=path.getFileName().toString();if(!name.endsWith(".snapshot"))continue;
+                UUID id;try{id=UUID.fromString(name.substring(0,name.length()-9));}catch(IllegalArgumentException ignored){continue;}
+                if(!referenced.contains(id)){Files.delete(path);deleted=true;}
+            }
+        }
+        if(deleted)files.syncDirectory(directory);
     }
     public final class Pin implements AutoCloseable {
         private final SnapshotId id;private final FileChannel channel;private boolean closed;
@@ -90,7 +105,7 @@ public final class SnapshotStore {
             return buffer.array();
         }
         @Override public void close()throws IOException {
-            if(closed)return;closed=true;channel.close();pins.computeIfPresent(id,(key,count)->count==1?null:count-1);
+            synchronized(SnapshotStore.this){if(closed)return;closed=true;channel.close();pins.computeIfPresent(id,(key,count)->count==1?null:count-1);}
         }
     }
 }

@@ -19,6 +19,8 @@ public sealed interface QuorumEvent {
         record Checkpointed(long end) implements DiskResult {}
         record Read(List<QuorumBatch> batches) implements DiskResult {public Read{batches=List.copyOf(batches);}}
         record Installed(UUID generation,SnapshotId id,EpochIndex index) implements DiskResult {}
+        record SnapshotCreated(SnapshotId id) implements DiskResult {}
+        record PrefixRetained(EpochIndex index,SnapshotId base) implements DiskResult {}
     }
     record DiskDone(DiskToken token,DiskResult result) implements QuorumEvent {}
     record DiskFailed(DiskToken token,String failure) implements QuorumEvent {}
@@ -28,4 +30,5 @@ public sealed interface QuorumEvent {
     record SnapshotAvailable(SnapshotId id) implements QuorumEvent {}
     record Admin(long invocationId,Request request,long deadlineNanos) implements QuorumEvent {}
     record DrainProposals() implements QuorumEvent {}
+    record LogRetained(EpochIndex index,SnapshotId base) implements QuorumEvent {}
 }

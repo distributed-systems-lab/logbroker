@@ -35,9 +35,12 @@ public final class FakeDisk {
             case QuorumEffect.Checkpoint p->{forceBoundary();if(p.end()>durable()||p.end()<committed)throw new IOException("Invalid commit checkpoint");committed=p.end();yield new DiskResult.Checkpointed(committed);}
             case QuorumEffect.ReadLog p->{var result=new ArrayList<QuorumBatch>();long bytes=0;for(var batch:batches){if(batch.nextOffset()<=p.offset())continue;long size=16;for(var e:batch.entries())size+=4+QuorumEntryCodec.encode(e).length;if(!result.isEmpty()&&bytes+size>p.budget())break;result.add(batch);bytes+=size;if(bytes>=p.budget())break;}yield new DiskResult.Read(result);}
             case QuorumEffect.InstallSnapshot ignored->throw new IOException("Fake snapshot install not connected");
+            case QuorumEffect.CreateSnapshot create->{forceBoundary();yield new DiskResult.SnapshotCreated(new vn.huyqt.logbroker.controller.snapshot.SnapshotId(create.image().appliedOffset(),create.lastEpoch(),UUID.randomUUID()));}
+            case QuorumEffect.RetainSnapshotPrefix retain->throw new IOException("Fake retention not connected");
         };
     }
     private void forceBoundary()throws IOException{if(failForce){failForce=false;throw new IOException("Injected force failure");}}
+    public int pendingSnapshots(){return (int)pending.stream().filter(QuorumEffect.CreateSnapshot.class::isInstance).count();}
     public void powerLoss(){batches=new ArrayList<>(forced);pending.clear();}
     public void processCrash(){pending.clear();}
     public void recover(){forced=new ArrayList<>(batches);}

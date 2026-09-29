@@ -5,6 +5,7 @@ import vn.huyqt.logbroker.controller.log.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.controller.snapshot.SnapshotId;
 import vn.huyqt.logbroker.controller.consensus.QuorumEvent.DiskToken;
+import vn.huyqt.logbroker.controller.metadata.MetadataImage;
 
 public sealed interface QuorumEffect {
     sealed interface DiskEffect extends QuorumEffect { DiskToken token(); }
@@ -16,6 +17,8 @@ public sealed interface QuorumEffect {
     record Checkpoint(DiskToken token,long end) implements DiskEffect {}
     record ReadLog(DiskToken token,long offset,int budget) implements DiskEffect {}
     record InstallSnapshot(DiskToken token,SnapshotId id) implements DiskEffect {}
+    record CreateSnapshot(DiskToken token,MetadataImage image,long lastEpoch) implements DiskEffect {}
+    record RetainSnapshotPrefix(DiskToken token,long olderEnd) implements DiskEffect {}
     record Send(int peerId,Frame frame) implements QuorumEffect {}
     record Reply(ReplyRoute route,Frame frame) implements QuorumEffect {}
     record Apply(List<QuorumBatch> batches) implements QuorumEffect {public Apply{batches=List.copyOf(batches);}}

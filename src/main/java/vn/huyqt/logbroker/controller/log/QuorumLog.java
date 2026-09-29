@@ -9,9 +9,9 @@ import vn.huyqt.logbroker.storage.*;
 /** Metadata payload adapter; storage remains unaware of elections and quorum progress. */
 public final class QuorumLog implements AutoCloseable {
     private final PartitionLog log; private final LogConfig config;
-    private final long originEpoch; private EpochIndex index;
-    private QuorumLog(PartitionLog log,LogConfig config,long originEpoch) throws IOException {
-        this.log=log; this.config=config; this.originEpoch=originEpoch; rebuild();
+    private long originOffset,originEpoch; private EpochIndex index;
+    private QuorumLog(PartitionLog log,LogConfig config,long originOffset,long originEpoch) throws IOException {
+        this.log=log; this.config=config; this.originOffset=originOffset;this.originEpoch=originEpoch; rebuild();
     }
     public static QuorumLog open(Path path,LogConfig config,long start,long minimumEnd,
             boolean create,DurableFiles files) throws IOException {
@@ -19,8 +19,12 @@ public final class QuorumLog implements AutoCloseable {
     }
     public static QuorumLog open(Path path,LogConfig config,long start,long minimumEnd,long originEpoch,
             boolean create,DurableFiles files) throws IOException {
-        PartitionLog log=PartitionLog.open(path,config,new LogOpenOptions(start,minimumEnd,create,files::syncDirectory));
-        try { return new QuorumLog(log,config,originEpoch); }
+        return open(path,config,start,minimumEnd,start,originEpoch,create,files);
+    }
+    public static QuorumLog open(Path path,LogConfig config,long physicalStart,long minimumEnd,long logicalStart,long originEpoch,
+            boolean create,DurableFiles files) throws IOException {
+        PartitionLog log=PartitionLog.open(path,config,new LogOpenOptions(physicalStart,minimumEnd,create,files::syncDirectory));
+        try { return new QuorumLog(log,config,logicalStart,originEpoch); }
         catch(IOException|RuntimeException e) { log.close(); throw e; }
     }
     public QuorumBatch append(long epoch,List<QuorumEntry> entries) throws IOException {
@@ -41,6 +45,10 @@ public final class QuorumLog implements AutoCloseable {
         log.append(records); rebuild();
     }
     public List<QuorumBatch> read(long offset,int budget) throws IOException {
+        if(offset<originOffset)throw new IOException("Offset precedes quorum recovery base");
+        return readPhysical(offset,budget);
+    }
+    private List<QuorumBatch> readPhysical(long offset,int budget) throws IOException {
         var result=new ArrayList<QuorumBatch>();
         for(var batch:log.read(offset,budget)) {
             var entries=new ArrayList<QuorumEntry>();
@@ -56,10 +64,11 @@ public final class QuorumLog implements AutoCloseable {
     private void rebuild() throws IOException {
         var batches=new ArrayList<QuorumBatch>(); long offset=log.logStartOffset();
         while(offset<log.logEndOffset()) {
-            var next=read(offset,config.maxBatchBytes()); if(next.isEmpty())throw new IOException("Quorum replay gap");
+            var next=readPhysical(offset,config.maxBatchBytes()); if(next.isEmpty())throw new IOException("Quorum replay gap");
             batches.addAll(next); offset=next.getLast().nextOffset();
         }
-        try { index=new EpochIndex(log.logStartOffset(),originEpoch,batches); }
+        if(originOffset<log.logStartOffset()||originOffset>log.logEndOffset()||originOffset!=log.logStartOffset()&&batches.stream().noneMatch(b->b.nextOffset()==originOffset))throw new IOException("Invalid logical quorum origin");
+        try { index=new EpochIndex(originOffset,originEpoch,batches.stream().filter(b->b.baseOffset()>=originOffset).toList()); }
         catch(IllegalArgumentException e) { throw new IOException("Invalid quorum epoch sequence",e); }
     }
     public void truncate(long end,long knownCommit) throws IOException {
@@ -69,7 +78,12 @@ public final class QuorumLog implements AutoCloseable {
     public long flush() throws IOException { return log.flush(); }
     public long end() { return log.logEndOffset(); }
     public long durableEnd() { return log.durableEndOffset(); }
-    public long start() { return log.logStartOffset(); }
+    public long start() { return originOffset; }
+    public void advanceStart(long start,long epoch)throws IOException {
+        if(start<originOffset||index.positionAt(start).lastEpoch()!=epoch)throw new IllegalArgumentException("Invalid recovery base");
+        originOffset=start;originEpoch=epoch;rebuild();
+    }
+    public void refresh()throws IOException {rebuild();}
     public EpochIndex epochs() { return index; }
     public PartitionLog storage() { return log; }
     @Override public void close() throws IOException { log.close(); }

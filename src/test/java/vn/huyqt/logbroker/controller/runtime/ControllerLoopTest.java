@@ -8,6 +8,18 @@ import org.junit.jupiter.api.Test;
 import vn.huyqt.logbroker.controller.consensus.*;
 
 class ControllerLoopTest {
+    @Test void queuedSnapshotYieldsToControlDiskWorkWithoutReorderingMutations() throws Exception {
+        var order=new CopyOnWriteArrayList<Integer>();var start=new CountDownLatch(1);var release=new CountDownLatch(1);
+        try(var loop=new ControllerLoop(32,8,8,ignored->{},false);var disk=new OrderedDiskExecutor(8,loop)) {
+            var token=new QuorumEvent.DiskToken(1,1,new UUID(0,1));
+            assertTrue(disk.submit(token,()->{start.countDown();release.await();order.add(0);return new QuorumEvent.DiskResult.Flushed(0);}));
+            assertTrue(start.await(2,TimeUnit.SECONDS));
+            assertTrue(disk.submitLowPriority(token,()->{order.add(3);return new QuorumEvent.DiskResult.Flushed(0);}));
+            assertTrue(disk.submit(token,()->{order.add(1);return new QuorumEvent.DiskResult.Flushed(0);}));
+            assertTrue(disk.submit(token,()->{order.add(2);return new QuorumEvent.DiskResult.Flushed(0);}));
+            release.countDown();assertTrue(disk.awaitIdle(Duration.ofSeconds(2)));loop.drain();assertEquals(List.of(0,1,2,3),order);
+        } finally {release.countDown();}
+    }
     @Test void timerCoalescesAndControlsYieldAfterEightEvents() {
         var events=new ArrayList<QuorumEvent>();
         try(var loop=new ControllerLoop(32,16,2,events::add,false)) {
