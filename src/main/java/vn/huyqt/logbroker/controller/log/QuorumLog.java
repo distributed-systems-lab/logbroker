@@ -6,7 +6,20 @@ import java.util.*;
 import vn.huyqt.logbroker.controller.persistence.DurableFiles;
 import vn.huyqt.logbroker.storage.*;
 
-/** Metadata payload adapter; storage remains unaware of elections and quorum progress. */
+/**
+ * Metadata payload adapter; storage remains unaware of elections and quorum progress.
+ *
+ * <p>Stores one {@link QuorumEntry} per ordinary {@link PartitionLog} record (timestamp 0, null
+ * key, no headers), one storage batch per leader batch, and keeps an {@link EpochIndex} rebuilt
+ * from disk after every mutation. See {@code docs/controller-storage-v1.md}.
+ *
+ * <p>The physical start is a segment base; the logical origin is the recovery snapshot boundary
+ * and may lie after it. Batches before the origin stay on disk but are not readable through
+ * {@link #read} and are not part of the epoch index.
+ *
+ * <p>Appends are not durable until {@link #flush}. Not thread-safe; the caller serializes access.
+ * The returned {@link EpochIndex} is immutable and may be handed to other threads.
+ */
 public final class QuorumLog implements AutoCloseable {
   private final PartitionLog log;
   private final LogConfig config;
@@ -22,12 +35,22 @@ public final class QuorumLog implements AutoCloseable {
     rebuild();
   }
 
+  /**
+   * Opens a log whose logical origin is its physical start, with origin epoch 0.
+   *
+   * @see #open(Path, LogConfig, long, long, long, long, boolean, DurableFiles)
+   */
   public static QuorumLog open(
       Path path, LogConfig config, long start, long minimumEnd, boolean create, DurableFiles files)
       throws IOException {
     return open(path, config, start, minimumEnd, 0, create, files);
   }
 
+  /**
+   * Opens a log whose logical origin is its physical start.
+   *
+   * @see #open(Path, LogConfig, long, long, long, long, boolean, DurableFiles)
+   */
   public static QuorumLog open(
       Path path,
       LogConfig config,
@@ -40,6 +63,18 @@ public final class QuorumLog implements AutoCloseable {
     return open(path, config, start, minimumEnd, start, originEpoch, create, files);
   }
 
+  /**
+   * Opens and recovers the log, then replays it to build the epoch index. The underlying log is
+   * closed if validation fails.
+   *
+   * @param physicalStart segment base offset the log directory starts at
+   * @param minimumEnd committed floor; recovery fails rather than remove data below it
+   * @param logicalStart logical origin; must be the physical start or a retained batch end
+   * @param originEpoch epoch of the last entry before {@code logicalStart}
+   * @param create whether a missing log directory may be created
+   * @throws IOException if recovery fails, a record is not a valid quorum entry, or the origin or
+   *     epoch sequence is inconsistent
+   */
   public static QuorumLog open(
       Path path,
       LogConfig config,
@@ -63,6 +98,14 @@ public final class QuorumLog implements AutoCloseable {
     }
   }
 
+  /**
+   * Appends {@code entries} as one leader batch at the current end. The batch is not durable until
+   * {@link #flush}.
+   *
+   * @return the batch with its assigned base offset
+   * @throws IllegalArgumentException if an entry epoch differs from {@code epoch}, the epoch would
+   *     regress, or the batch exceeds the configured batch size
+   */
   public QuorumBatch append(long epoch, List<QuorumEntry> entries) throws IOException {
     var batch = new QuorumBatch(log.logEndOffset(), entries);
     if (batch.entries().getFirst().epoch() != epoch)
@@ -71,11 +114,20 @@ public final class QuorumLog implements AutoCloseable {
     return batch;
   }
 
+  /**
+   * Appends {@code batch} unchanged, preserving the leader's offsets and batch boundary. The batch
+   * is not durable until {@link #flush}.
+   *
+   * @throws IllegalArgumentException if the batch does not start at {@link #end()}, its epoch is
+   *     lower than the last retained epoch, or it exceeds the configured batch size
+   */
   public void appendReplica(QuorumBatch batch) throws IOException {
     if (batch.baseOffset() != end()
         || batch.entries().getFirst().epoch() < index.positionAt(end()).lastEpoch())
       throw new IllegalArgumentException("Replica base or epoch mismatch");
     var records = new ArrayList<LogRecord>();
+    // The batch must fit both encodings: the replication wire form (base, count and CRC, plus a
+    // length prefix per entry) and the storage batch (30-byte header plus record framing).
     long wireBytes = 16;
     for (var entry : batch.entries()) {
       byte[] payload = QuorumEntryCodec.encode(entry);
@@ -89,6 +141,13 @@ public final class QuorumLog implements AutoCloseable {
     rebuild();
   }
 
+  /**
+   * Reads whole batches from {@code offset} within {@code budget} bytes, with the budget rules of
+   * {@link PartitionLog#read}.
+   *
+   * @throws IOException if {@code offset} precedes the logical origin or a stored record is not a
+   *     valid quorum entry or batch
+   */
   public List<QuorumBatch> read(long offset, int budget) throws IOException {
     if (offset < originOffset) throw new IOException("Offset precedes quorum recovery base");
     return readPhysical(offset, budget);
@@ -112,6 +171,8 @@ public final class QuorumLog implements AutoCloseable {
     return List.copyOf(result);
   }
 
+  // The index is always derived from what storage returns, never patched in memory. Batches
+  // before the logical origin are decoded too, so an invalid record there also fails the rebuild.
   private void rebuild() throws IOException {
     var batches = new ArrayList<QuorumBatch>();
     long offset = log.logStartOffset();
@@ -137,6 +198,15 @@ public final class QuorumLog implements AutoCloseable {
     }
   }
 
+  /**
+   * Removes every batch after {@code end}. Both checks run before storage is modified. This call
+   * alone is not crash-atomic; {@link vn.huyqt.logbroker.controller.persistence.GenerationStore}
+   * journals a truncate intent around it.
+   *
+   * @param knownCommit committed offset the truncation must not cross
+   * @throws IllegalArgumentException if {@code end} is below {@code knownCommit} or is not a
+   *     retained batch boundary
+   */
   public void truncate(long end, long knownCommit) throws IOException {
     if (end < knownCommit) throw new IllegalArgumentException("Truncation crosses commit");
     index.positionAt(end);
@@ -144,6 +214,7 @@ public final class QuorumLog implements AutoCloseable {
     rebuild();
   }
 
+  /** Forces appended data to storage and returns the exclusive durable end offset. */
   public long flush() throws IOException {
     return log.flush();
   }
@@ -152,14 +223,24 @@ public final class QuorumLog implements AutoCloseable {
     return log.logEndOffset();
   }
 
+  /** Returns the exclusive end covered by recovery or the last successful {@link #flush}. */
   public long durableEnd() {
     return log.durableEndOffset();
   }
 
+  /** Returns the logical origin, which may be after the physical start. */
   public long start() {
     return originOffset;
   }
 
+  /**
+   * Moves the logical origin forward to a retained boundary. Only the in-memory origin changes;
+   * segment deletion and its durable intent are the caller's responsibility.
+   *
+   * @param epoch epoch expected at {@code start}; it must match the retained boundary
+   * @throws IllegalArgumentException if {@code start} moves backwards, is not a retained boundary,
+   *     or its epoch differs from {@code epoch}
+   */
   public void advanceStart(long start, long epoch) throws IOException {
     if (start < originOffset || index.positionAt(start).lastEpoch() != epoch)
       throw new IllegalArgumentException("Invalid recovery base");
@@ -168,14 +249,20 @@ public final class QuorumLog implements AutoCloseable {
     rebuild();
   }
 
+  /** Rebuilds the epoch index after the caller changed {@link #storage()} directly. */
   public void refresh() throws IOException {
     rebuild();
   }
 
+  /** Returns the immutable index as of the last mutation. */
   public EpochIndex epochs() {
     return index;
   }
 
+  /**
+   * Returns the underlying storage log. Callers that mutate it directly must call {@link
+   * #refresh()} afterwards.
+   */
   public PartitionLog storage() {
     return log;
   }
