@@ -13,7 +13,22 @@ import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.controller.snapshot.*;
 
-/** Pure transitions; I/O effects are interpreted outside this state owner. */
+/**
+ * Pure transitions; I/O effects are interpreted outside this state owner.
+ *
+ * <p>Owns role, epoch, vote, election, replica progress, reconciliation, commit and pending admin
+ * requests for one voter, as specified in {@code
+ * docs/superpowers/specs/2026-09-28-metadata-quorum-phase-3-design.md}. Each {@link #on} call
+ * consumes one event and returns the effects to run. Disk results come back as {@link
+ * QuorumEvent.DiskDone} events and are matched to their callback by {@link QuorumEvent.DiskToken}.
+ *
+ * <p>Vote grants, vote requests and peer replies are sent only after the vote or epoch they carry
+ * is durable through {@link QuorumEffect.PersistVote}. Votes, fetches and commit decisions
+ * use only the flushed log end, never appends still in page cache.
+ *
+ * <p>Must be driven by a single thread. {@link #status()} and {@link #installAllowed} may be
+ * called from other threads; the status is published through a volatile field.
+ */
 public final class QuorumStateMachine {
   private final ControllerConfig config;
   private volatile QuorumStatus status;
@@ -68,6 +83,13 @@ public final class QuorumStateMachine {
   private boolean drainScheduled;
   private final SnapshotTransfer transfer;
 
+  /**
+   * Creates a state machine whose clock stays at {@code now} and whose recovered image has no
+   * topics.
+   *
+   * @see #QuorumStateMachine(ControllerConfig, QuorumStatus, EpochIndex, int, RandomGenerator,
+   *     long, LongSupplier, MetadataImage)
+   */
   public QuorumStateMachine(
       ControllerConfig config,
       QuorumStatus status,
@@ -78,6 +100,12 @@ public final class QuorumStateMachine {
     this(config, status, index, votedFor, random, now, () -> now);
   }
 
+  /**
+   * Creates a state machine whose recovered image has no topics.
+   *
+   * @see #QuorumStateMachine(ControllerConfig, QuorumStatus, EpochIndex, int, RandomGenerator,
+   *     long, LongSupplier, MetadataImage)
+   */
   public QuorumStateMachine(
       ControllerConfig config,
       QuorumStatus status,
@@ -97,6 +125,18 @@ public final class QuorumStateMachine {
         new MetadataImage(status.applied(), List.of()));
   }
 
+  /**
+   * Creates a state machine from recovered durable state.
+   *
+   * @param status recovered status; its epoch is treated as already persisted
+   * @param index epoch index of the recovered log
+   * @param votedFor durable vote in {@code status.epoch()}, or -1 for none
+   * @param random source of election timeout jitter
+   * @param now initial monotonic time in nanoseconds
+   * @param clock monotonic nanosecond clock sampled on every event
+   * @param recoveredImage committed metadata image; its offset must equal {@code status.applied()}
+   * @throws IllegalArgumentException if the image offset differs from the applied offset
+   */
   public QuorumStateMachine(
       ControllerConfig config,
       QuorumStatus status,
@@ -129,6 +169,13 @@ public final class QuorumStateMachine {
     resetElectionDeadline();
   }
 
+  /**
+   * Processes one event and returns the effects it produced, in the order they were produced.
+   * Performs no I/O and never blocks. Time never moves backwards, even if the clock does.
+   *
+   * <p>Once the node is {@code FAILED} or {@code STOPPING}, peer traffic, ticks and proposals are
+   * ignored, and admin requests other than DescribeQuorum fail with {@code NODE_UNAVAILABLE}.
+   */
   public List<QuorumEffect> on(QuorumEvent event) {
     now = Math.max(now, clock.getAsLong());
     effects = new ArrayList<>();
@@ -136,6 +183,8 @@ public final class QuorumStateMachine {
       var callback = diskCallbacks.remove(done.token());
       logWork.remove(done.token());
       voteWork.remove(done.token());
+      // Rejected work never ran and its callback is dropped. If that callback was still live, the
+      // node abandons what it was waiting for: admin waiters fail and it steps down in-epoch.
       if (done.result() instanceof DiskResult.Overloaded) {
         if (transfer.onCompletion(done)) replicaBusy = false;
         if (callback != null && active()) {
@@ -146,12 +195,15 @@ public final class QuorumStateMachine {
         }
       } else if (done.result() instanceof DiskResult.Installed installed
           && done.token().generation().equals(status.generation())) {
+        // A published install changes physical state even if its epoch has since ended; only an
+        // install from the current epoch and transfer resumes fetching.
         boolean current =
             done.token().epoch() == status.epoch() && transfer.installAllowed(done.token());
         installPhysical(installed);
         transfer.onCompletion(done);
         if (current && active()) fetch();
       } else if (done.token().generation().equals(status.generation()) && active()) {
+        // Callbacks run only for the active generation; each one rechecks epoch and role itself.
         if (!transfer.onCompletion(done)
             && callback != null
             && !(done.result() instanceof DiskResult.Discarded)) {
@@ -164,6 +216,8 @@ public final class QuorumStateMachine {
     } else if (event instanceof DiskFailed failed) {
       diskCallbacks.remove(failed.token());
       logWork.remove(failed.token());
+      // No votes or acks after a durability failure. Vote failures always count because hard
+      // state is global; other failures count only for the active generation.
       boolean global = voteWork.remove(failed.token());
       if ((global || failed.token().generation().equals(status.generation())) && active())
         fail(failed.failure());
@@ -181,6 +235,7 @@ public final class QuorumStateMachine {
         transfer.onTick(now);
         if (!transfer.active() && replicaBusy && logWork.isEmpty()) replicaBusy = false;
         if (status.role() == QuorumStatus.Role.LEADER) {
+          // With three voters, one recently contacted follower plus the leader is a majority.
           long last =
               contacts.values().stream().mapToLong(Long::longValue).max().orElse(leaderSince);
           if (now - last >= config.leaderContactTimeout().toNanos()) stepDown(status.epoch(), -1);
@@ -260,6 +315,7 @@ public final class QuorumStateMachine {
     return status.role() != QuorumStatus.Role.FAILED && status.role() != QuorumStatus.Role.STOPPING;
   }
 
+  // Frames from self, non-voters, another cluster or another voter set never touch consensus state.
   private boolean validPeer(Frame frame) {
     return frame.senderId() != status.nodeId()
         && config.identity().voters().stream().anyMatch(v -> v.id() == frame.senderId())
@@ -292,6 +348,7 @@ public final class QuorumStateMachine {
     votes.clear();
     voteRequests.clear();
     resetElectionDeadline();
+    // The new epoch and self-vote must be durable before any Vote request is sent.
     persistVote(
         epoch,
         votedFor,
@@ -319,11 +376,13 @@ public final class QuorumStateMachine {
           case FetchSnapshot f -> f.epoch();
           default -> status.epoch();
         };
+    // Replies carry the current epoch, so none is sent before that epoch is durable.
     if (epoch < status.epoch()) {
       if (persistedEpoch == status.epoch())
         reply(event, errorReply(request, QuorumError.STALE_EPOCH));
       return;
     }
+    // Adopt the higher epoch with no vote, persist it, then handle the request again in it.
     if (epoch > status.epoch()) {
       stepDown(epoch, -1);
       votedFor = -1;
@@ -336,6 +395,7 @@ public final class QuorumStateMachine {
       return;
     }
     if (request instanceof Vote vote) {
+      // Resolve pending log work first so the candidate is compared with a settled durable tip.
       if (status.durableEnd() < status.logEnd() || !logWork.isEmpty()) {
         var token = token();
         diskCallbacks.put(
@@ -346,6 +406,8 @@ public final class QuorumStateMachine {
         effects.add(new QuorumEffect.Flush(token));
         return;
       }
+      // Grant at most one candidate per epoch, only while no leader is known, and only if its log
+      // is at least as up to date: compare last epoch, then end offset.
       var local = index.positionAt(status.durableEnd());
       boolean fresh =
           vote.lastEpoch() > local.lastEpoch()
@@ -361,6 +423,7 @@ public final class QuorumStateMachine {
       }
       votedFor = event.frame().senderId();
       resetElectionDeadline();
+      // The grant is sent only once the vote is durable.
       persistVote(
           vote.epoch(),
           votedFor,
@@ -369,6 +432,7 @@ public final class QuorumStateMachine {
               reply(event, new VoteReply(meta(QuorumError.NONE), true));
           });
     } else if (request instanceof BeginQuorumEpoch begin) {
+      // Accept only the first leader announced in this epoch, and never while leading it.
       if (status.leaderId() != -1 && status.leaderId() != event.frame().senderId()
           || status.role() == QuorumStatus.Role.LEADER) {
         if (persistedEpoch == status.epoch())
@@ -399,6 +463,8 @@ public final class QuorumStateMachine {
         return;
       }
       int peer = event.frame().senderId();
+      // Only a fetch echoing a recently issued challenge counts as contact, so old or replayed
+      // fetches cannot extend leadership.
       Challenge challenge = challenges.get(peer);
       if (challenge != null
           && fetch.challenge() == challenge.nonce()
@@ -406,12 +472,14 @@ public final class QuorumStateMachine {
         contacts.put(peer, now);
         challenges.remove(peer);
       }
+      // Followers fetch from their flushed end, so a matching fetch position is a durable match.
       replication.confirm(peer, fetch.end(), fetch.lastEpoch(), index);
       publishMatches();
       advanceLeaderCommit();
       if (fetchReads.contains(peer)) return;
       var pending = waitingFetches.get(peer);
       if (pending != null) return; // One admitted pull per follower, with a fixed wait deadline.
+      // A caught-up follower is parked until new data is appended or its wait expires.
       boolean exact = matches(fetch.end(), fetch.lastEpoch());
       if (exact && fetch.end() == status.logEnd() && fetch.maxWaitMs() > 0)
         waitingFetches.put(peer, new WaitingFetch(event, now + fetch.maxWaitMs() * 1_000_000L));
@@ -451,6 +519,7 @@ public final class QuorumStateMachine {
 
   private void handleResponse(Frame frame) {
     Reply reply = (Reply) frame.message();
+    // Only replies to this node's outstanding requests count; late or duplicate ones are dropped.
     boolean correlated =
         voteRequests.getOrDefault(frame.requestId(), -1) == frame.senderId()
             || fetchFlight != null
@@ -458,6 +527,7 @@ public final class QuorumStateMachine {
                 && fetchFlight.leader() == frame.senderId()
             || transfer.correlated(frame);
     if (!correlated) return;
+    // A higher epoch in any correlated reply is adopted and persisted with no vote.
     if (reply.meta().epoch() > status.epoch()) {
       long epoch = reply.meta().epoch();
       stepDown(epoch, -1);
@@ -507,6 +577,8 @@ public final class QuorumStateMachine {
           nextFetchAt = now + config.fetchIdleWait().toNanos();
           return;
         }
+        // Data must continue the local log contiguously, with epochs that never decrease and
+        // never exceed the current epoch.
         long end = status.logEnd(), last = index.positionAt(end).lastEpoch();
         for (var batch : data.batches()) {
           if (batch.baseOffset() != end
@@ -523,6 +595,8 @@ public final class QuorumStateMachine {
       } else if (fetch.payload() instanceof Divergence divergence) {
         reconcile(divergence);
       } else if (fetch.payload() instanceof SnapshotRequired required) {
+        // A snapshot must move this node forward and agree with its committed prefix; anything
+        // else is a safety violation, not a reason to discard committed state.
         if (required.id().endOffset() <= status.applied()
             || required.id().endOffset() < status.commit()
             || required.id().lastEpoch() < index.positionAt(status.commit()).lastEpoch()
@@ -542,6 +616,7 @@ public final class QuorumStateMachine {
       fail("Published snapshot regresses safe prefix");
       return;
     }
+    // The new generation is an empty log at the snapshot end, so every offset collapses to it.
     index = installed.index();
     image = installed.image();
     replicaBusy = false;
@@ -567,6 +642,8 @@ public final class QuorumStateMachine {
     effects.add(new QuorumEffect.Restore(installed.image()));
   }
 
+  // Appends leader batches one at a time, then flushes once. Commit and the next fetch, which
+  // advertises progress, wait for the flush.
   private void replicate(List<QuorumBatch> batches, int position, long epoch) {
     var token = token();
     logWork.add(token);
@@ -593,6 +670,11 @@ public final class QuorumStateMachine {
     }
   }
 
+  /**
+   * Install fence checked by the disk worker before and during a snapshot install. True only while
+   * the node is active, {@code token} matches the current epoch and generation, and it is the
+   * install the snapshot transfer is waiting for. Safe to call from other threads.
+   */
   public boolean installAllowed(DiskToken token) {
     var current = status;
     return active()
@@ -631,6 +713,7 @@ public final class QuorumStateMachine {
           if (marker) leaderMarkerEnd = ((DiskResult.Appended) result).batch().nextOffset();
           accepted.accept(((DiskResult.Appended) result).batch());
           for (var pending : List.copyOf(waitingFetches.values())) serveFetch(pending.request());
+          // The leader's own copy counts toward commit only after this flush.
           var flush = token();
           logWork.add(flush);
           diskCallbacks.put(
@@ -683,6 +766,8 @@ public final class QuorumStateMachine {
               .findFirst()
               .orElse(null);
       PendingTopic pending = pendingTopics.get(create.name());
+      // A matching pending request shares that operation; a matching applied topic is answered
+      // after a read barrier commits, like a linearizable read.
       if (existing != null || pending != null) {
         int partitions = existing != null ? existing.partitions() : pending.topic.partitions();
         if (partitions != create.partitions()) {
@@ -706,6 +791,7 @@ public final class QuorumStateMachine {
         complete(admin.invocationId(), new Failure(meta(QuorumError.INVALID_REQUEST)));
         return;
       }
+      // Catalog capacity counts pending topics as well as applied ones.
       long partitions =
           image.topics().stream().mapToLong(TopicCreated::partitions).sum()
               + pendingTopics.values().stream().mapToLong(p -> p.topic.partitions()).sum();
@@ -748,6 +834,8 @@ public final class QuorumStateMachine {
     }
     if (!reads.isEmpty()) entries.add(new QuorumEntry.ReadBarrier(status.epoch()));
     if (entries.isEmpty()) return;
+    // Split so each batch passes the size checks in QuorumLog.appendReplica. Beyond entry bytes,
+    // storage adds a 30-byte header and 20 bytes per record; the wire adds 16 plus 4 per entry.
     var groups = new ArrayList<List<QuorumEntry>>();
     var group = new ArrayList<QuorumEntry>();
     long storage = 30, wire = 16;
@@ -829,6 +917,7 @@ public final class QuorumStateMachine {
     effects.add(new QuorumEffect.CompleteAdmin(id, reply));
   }
 
+  // Expiry only drops the waiter. An admitted entry is never withdrawn, so the outcome is unknown.
   private void expireAdmins() {
     for (var waiter : List.copyOf(adminWaiters.values()))
       if (waiter.invocation().deadlineNanos() <= now) {
@@ -857,6 +946,8 @@ public final class QuorumStateMachine {
     for (var pending : pendingTopics.values()) pending.waiters.clear();
   }
 
+  // At most one fetch in flight, sent from the durable end with no local log work pending and the
+  // current epoch persisted.
   private void fetch() {
     if (status.role() != QuorumStatus.Role.FOLLOWER
         || status.leaderId() < 0
@@ -897,6 +988,7 @@ public final class QuorumStateMachine {
     waitingFetches.remove(peer);
     var fetch = (QuorumFetch) event.frame().message();
     if (status.role() != QuorumStatus.Role.LEADER || status.epoch() != fetch.epoch()) return;
+    // A mismatched position gets a divergence hint, or a snapshot if the common prefix is gone.
     if (!matches(fetch.end(), fetch.lastEpoch())) {
       try {
         var common = index.commonPrefix(fetch.end(), fetch.lastEpoch());
@@ -937,6 +1029,8 @@ public final class QuorumStateMachine {
               .max()
               .orElse(-1);
     }
+    // Truncation must remove something, stay within the retained log and not cross the commit.
+    // Otherwise fail closed rather than delete committed data.
     if (common < status.commit() || common >= status.logEnd() || common < index.start()) {
       fail("Divergence cannot safely advance reconciliation");
       return;
@@ -993,6 +1087,8 @@ public final class QuorumStateMachine {
     advanceCommit(end);
   }
 
+  // The checkpoint trails the in-memory commit. Losing it in a crash only delays re-confirming the
+  // commit; it cannot let an election lose committed entries.
   private void advanceCommit(long end) {
     if (end <= status.commit()) return;
     progress(status.logEnd(), status.durableEnd(), end, status.applied());
@@ -1002,6 +1098,7 @@ public final class QuorumStateMachine {
     applyCommitted();
   }
 
+  // One apply in flight; only batches wholly inside the committed range are applied.
   private void applyCommitted() {
     if (applyBusy || status.applied() >= status.commit()) return;
     applyBusy = true;
@@ -1024,6 +1121,7 @@ public final class QuorumStateMachine {
     effects.add(new QuorumEffect.ReadLog(token, from, config.fetchMaxBytes()));
   }
 
+  // persistedEpoch advances only once the disk confirms the vote record.
   private void persistVote(long epoch, int voter, Runnable after) {
     var token = token();
     voteWork.add(token);
@@ -1150,10 +1248,12 @@ public final class QuorumStateMachine {
             status.failure());
   }
 
+  /** Returns the latest published status; safe to call from any thread. */
   public QuorumStatus status() {
     return status;
   }
 
+  /** Returns the current epoch index. Unlike {@link #status()}, call only from the event loop. */
   public EpochIndex epochIndex() {
     return index;
   }

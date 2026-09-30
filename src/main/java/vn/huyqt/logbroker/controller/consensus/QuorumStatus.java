@@ -2,6 +2,15 @@ package vn.huyqt.logbroker.controller.consensus;
 
 import java.util.*;
 
+/**
+ * Immutable view of one node's quorum state, as published by {@link QuorumStateMachine} and
+ * returned by DescribeQuorum.
+ *
+ * <p>All offsets are exclusive batch boundaries. {@code durableMatches} holds the remote durable
+ * matches last recorded while this node was leader; it is not a synchronized snapshot of the
+ * whole cluster. {@code leaderId} is -1 when no leader is known. {@code failure} carries the cause
+ * once the role is {@link Role#FAILED}.
+ */
 public record QuorumStatus(
     int nodeId,
     Role role,
@@ -16,6 +25,7 @@ public record QuorumStatus(
     boolean ready,
     Map<Integer, Long> durableMatches,
     String failure) {
+  /** Consensus role. A node never leaves {@code FAILED} or {@code STOPPING} for an active role. */
   public enum Role {
     UNATTACHED,
     FOLLOWER,
