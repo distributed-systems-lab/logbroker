@@ -11,7 +11,18 @@ import vn.huyqt.logbroker.broker.DeadlineScheduler;
 import vn.huyqt.logbroker.broker.ResourceBudget;
 import vn.huyqt.logbroker.protocol.ProtocolLimits;
 
-/** Incremental length framing with a reservation before body allocation. */
+/**
+ * Incremental length framing with a reservation before body allocation.
+ *
+ * <p>Reads a big-endian {@code int32} length prefix, rejects lengths outside {@code
+ * [minFrameBytes, maxFrameBytes]}, and reserves {@code length + 4} bytes from the shared budget
+ * before allocating the body. Any violation or an exhausted budget closes the connection, as
+ * malformed framing does in {@code docs/protocol-v1.md}. Partial and coalesced reads are both
+ * handled. Each complete frame is copied into a heap array and passed on as an
+ * {@link OwnedFrame}, so no pooled Netty buffer escapes the event loop.
+ *
+ * <p>Not {@code @Sharable}: one instance per channel, confined to its event loop.
+ */
 public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
   private final int minFrameBytes, maxFrameBytes;
   private final ResourceBudget budget;
@@ -23,15 +34,34 @@ public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
   private ResourceBudget.Lease lease;
   private DeadlineScheduler.Ticket frameDeadline;
 
+  /** Broker protocol framing without a per-frame deadline, as used by the client transport. */
   public BoundedFrameDecoder(ProtocolLimits limits, ResourceBudget budget) {
     this(limits, budget, null);
   }
 
+  /**
+   * Broker protocol framing: the minimum of 12 bytes is the envelope header (operation, version,
+   * request ID) from {@code docs/protocol-v1.md}.
+   *
+   * @param clock if non-null, closes the connection when a frame is not complete within 30
+   *     seconds of its first byte
+   */
   public BoundedFrameDecoder(
       ProtocolLimits limits, ResourceBudget budget, DeadlineScheduler clock) {
     this(12, Objects.requireNonNull(limits).maxFrameBytes(), budget, clock);
   }
 
+  /**
+   * Framing with explicit bounds, independent of the broker protocol header.
+   *
+   * @param minFrameBytes smallest accepted length after the prefix
+   * @param maxFrameBytes largest accepted length after the prefix; bounded so that
+   *     {@code length + 4} cannot overflow
+   * @param budget shared reservation for complete and partial frames; a frame holds its lease
+   *     until its {@link OwnedFrame} is closed
+   * @param clock optional per-frame deadline, see
+   *     {@link #BoundedFrameDecoder(ProtocolLimits, ResourceBudget, DeadlineScheduler)}
+   */
   public BoundedFrameDecoder(
       int minFrameBytes, int maxFrameBytes, ResourceBudget budget, DeadlineScheduler clock) {
     if (minFrameBytes < 1 || maxFrameBytes < minFrameBytes || maxFrameBytes > Integer.MAX_VALUE - 4)
@@ -52,6 +82,8 @@ public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
     try {
       while (input.isReadable() && context.channel().isOpen()) {
         if (frame == null) {
+          // The deadline starts at the first prefix byte so a stalled sender cannot hold a
+          // partial frame and its reservation indefinitely.
           if (prefixCount == 0 && clock != null)
             frameDeadline =
                 clock.schedule(clock.nanoTime() + Duration.ofSeconds(30).toNanos(), context::close);
@@ -64,6 +96,8 @@ public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
             context.close();
             return;
           }
+          // Reserve before allocating so a peer-supplied length cannot force an allocation
+          // beyond the shared budget.
           lease = budget.reserve((long) length + 4).orElse(null);
           if (lease == null) {
             context.close();
@@ -82,6 +116,8 @@ public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
             frameDeadline = null;
           }
           OwnedFrame complete = new OwnedFrame(frame, lease);
+          // Lease ownership moves to the frame; clear local state first so releasePartial
+          // cannot return the reservation while the receiver still holds the frame.
           frame = null;
           frameCount = 0;
           prefixCount = 0;
@@ -90,6 +126,7 @@ public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
         }
       }
     } finally {
+      // Bytes were copied out, so this handler is the last user of the inbound buffer.
       input.release();
     }
   }
@@ -106,6 +143,8 @@ public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
     super.handlerRemoved(context);
   }
 
+  // Runs on both close and handler removal so a partial frame never leaks its reservation or
+  // leaves its deadline armed.
   private void releasePartial() {
     if (frameDeadline != null) {
       frameDeadline.cancel();
@@ -116,6 +155,11 @@ public final class BoundedFrameDecoder extends ChannelInboundHandlerAdapter {
     frame = null;
   }
 
+  /**
+   * A complete frame in a heap array that the receiver owns. {@link #bytes()} includes the
+   * 4-byte length prefix. The receiver must {@link #close()} it to return the reservation;
+   * closing more than once has no further effect.
+   */
   public static final class OwnedFrame implements AutoCloseable {
     private final byte[] bytes;
     private final ResourceBudget.Lease lease;

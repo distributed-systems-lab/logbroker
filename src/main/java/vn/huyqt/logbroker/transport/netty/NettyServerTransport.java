@@ -37,6 +37,16 @@ import vn.huyqt.logbroker.transport.ServerTransport;
 
 /**
  * Bounded Netty TCP adapter. All storage work is delegated outside event loops.
+ *
+ * <p>Event loops only frame bytes with {@link BoundedFrameDecoder}. Request decoding and
+ * response encoding run on a fixed validation pool with a bounded queue; dispatch goes to the
+ * {@link RequestDispatcher}. Limits from {@link BrokerConfig} (see
+ * {@code docs/broker-configuration.md}) cover connections, frame and decoded request bytes,
+ * validation tasks, live request contexts, and outbound bytes per connection and in total.
+ * Exceeding a limit, or any malformed framing, closes the offending connection; requests are
+ * never queued without bound.
+ *
+ * <p>{@link #start}, {@link #stopAccepting} and {@link #closeAsync} are synchronized.
  */
 public final class NettyServerTransport implements ServerTransport {
     private final BrokerConfig config;
@@ -59,6 +69,10 @@ public final class NettyServerTransport implements ServerTransport {
         this(config, clock, new ResourceBudget(config.maxQueuedRequestBytes()));
     }
 
+    /**
+     * @param inputBudget caller-supplied budget for framed and decoded request bytes, used
+     *     instead of one sized from {@link BrokerConfig#maxQueuedRequestBytes()}
+     */
     public NettyServerTransport(BrokerConfig config, DeadlineScheduler clock,
             ResourceBudget inputBudget) {
         this.config = config;
@@ -69,6 +83,8 @@ public final class NettyServerTransport implements ServerTransport {
         outboundBudget = new ResourceBudget(config.maxOutboundTotal());
         contextBudget = new ResourceBudget(config.maxRequestContexts());
         validation = new ThreadPoolExecutor(config.validationWorkers(), config.validationWorkers(),
+                // Bounded queue with AbortPolicy: a full queue surfaces as
+                // RejectedExecutionException, which closes the connection instead of blocking.
                 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(config.maxValidationTasks()),
                 task -> {
                     var thread = new Thread(task, "broker-validation");
@@ -78,6 +94,14 @@ public final class NettyServerTransport implements ServerTransport {
                 new ThreadPoolExecutor.AbortPolicy());
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Binding blocks the caller. On failure both event loop groups are shut down before the
+     * exception is thrown.
+     *
+     * @throws IllegalStateException if the transport was already started
+     */
     @Override
     public synchronized InetSocketAddress start(InetSocketAddress bind,
             RequestDispatcher dispatcher)
@@ -118,6 +142,14 @@ public final class NettyServerTransport implements ServerTransport {
             listener.close();
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Runs on the common pool: closes the listener and every connection, waits up to
+     * {@link BrokerConfig#shutdownTimeout()} for validation tasks before forcing them to stop,
+     * then shuts down the event loops. Responses not yet written when a connection closes are
+     * dropped. The future completes exceptionally if the closing thread is interrupted.
+     */
     @Override
     public synchronized CompletableFuture<Void> closeAsync() {
         if (closing != null)
@@ -143,6 +175,13 @@ public final class NettyServerTransport implements ServerTransport {
         return closing;
     }
 
+    /**
+     * Per-connection request pipeline. Frames are decoded one at a time on the validation pool,
+     * in arrival order, so requests from one connection reach the dispatcher in the order they
+     * were received. Responses may still complete and be written out of order. The frame queue
+     * and decoding flag are guarded by this handler's monitor because they are touched from
+     * both the event loop and validation threads.
+     */
     private final class ConnectionHandler extends ChannelInboundHandlerAdapter {
         private final long id = connectionIds.incrementAndGet();
         private final ArrayDeque<BoundedFrameDecoder.OwnedFrame> received = new ArrayDeque<>();
@@ -151,6 +190,7 @@ public final class NettyServerTransport implements ServerTransport {
         private ResourceBudget.Lease connectionLease;
         private boolean decoding;
 
+        // Connections beyond maxConnections are accepted and then closed immediately.
         @Override
         public void channelActive(ChannelHandlerContext context) {
             connectionLease = connectionBudget.reserve(1).orElse(null);
@@ -168,6 +208,8 @@ public final class NettyServerTransport implements ServerTransport {
                 context.close();
                 return;
             }
+            // Cap frames waiting behind this connection's decode so a fast sender cannot queue
+            // without bound; each queued frame still holds its input reservation.
             if (received.size() >= config.maxValidationTasks()) {
                 frame.close();
                 context.close();
@@ -183,6 +225,8 @@ public final class NettyServerTransport implements ServerTransport {
             decoding = true;
             var frame = received.removeFirst();
             try {
+                // The next frame is scheduled only after this one is dispatched, which keeps
+                // per-connection order while decoding runs off the event loop.
                 validation.execute(() -> {
                     try {
                         decode(context, frame);
@@ -203,6 +247,8 @@ public final class NettyServerTransport implements ServerTransport {
 
         private void decode(ChannelHandlerContext context, BoundedFrameDecoder.OwnedFrame owned) {
             byte[] bytes = owned.bytes();
+            // Decoded objects are charged to the same input budget before decoding, and the
+            // lease lives until the request completes, so in-process requests count as queued.
             ResourceBudget.Lease decoded = inputBudget.reserve(
                     codec.estimatedDecodedBytes(bytes)).orElse(null);
             if (decoded == null) {
@@ -215,6 +261,9 @@ public final class NettyServerTransport implements ServerTransport {
                 try {
                     request = codec.decodeRequest(bytes);
                 } catch (ProtocolException malformed) {
+                    // The decoder's 12-byte minimum guarantees the header is present, so a bad
+                    // body still gets an error reply echoing it. Request IDs must be >= 0
+                    // (docs/protocol-v1.md); a negative one closes the connection instead.
                     short operation = ByteBuffer.wrap(bytes).getShort(4);
                     short version = ByteBuffer.wrap(bytes).getShort(6);
                     long requestId = ByteBuffer.wrap(bytes).getLong(8);
@@ -227,6 +276,8 @@ public final class NettyServerTransport implements ServerTransport {
                                     malformed.getMessage()))));
                     return;
                 }
+                // At most 32 requests in flight per connection. IDs must be unique while in
+                // flight (docs/protocol-v1.md); a duplicate closes the connection.
                 if (activeIds.size() >= 32 || !activeIds.add(request.requestId())) {
                     context.close();
                     return;
@@ -237,12 +288,15 @@ public final class NettyServerTransport implements ServerTransport {
                     context.close();
                     return;
                 }
+                // Broker processing deadline starts after the request is received and admitted.
                 long deadline = clock.nanoTime() + Duration.ofSeconds(30).toNanos();
                 var requestContext = new RequestContext(id, request.requestId(), deadline);
                 dispatcher.handle(requestContext, request.body()).whenComplete((reply, error) -> {
                     activeIds.remove(request.requestId());
                     contextLease.close();
                     decoded.close();
+                    // Failures are mapped to a generic STORAGE_ERROR so every admitted request
+                    // gets a reply while the connection is open.
                     if (!context.channel().isActive())
                         return;
                     Protocol.Response response = error == null ? reply
@@ -263,6 +317,9 @@ public final class NettyServerTransport implements ServerTransport {
                 validation.execute(() -> {
                     if (!context.channel().isActive())
                         return;
+                    // Encoding stays off the event loop. Outbound bytes are held against both
+                    // budgets until the write completes, so a slow reader that exhausts either
+                    // one is disconnected rather than buffered without bound.
                     try {
                         byte[] bytes = codec.encodeResponse(reply);
                         ResourceBudget.Lease global = outboundBudget.reserve(bytes.length).orElse(null);
@@ -290,6 +347,8 @@ public final class NettyServerTransport implements ServerTransport {
             }
         }
 
+        // Cancels this connection's request contexts in the dispatcher, then returns the
+        // connection slot and the reservations of frames that were never decoded.
         @Override
         public synchronized void channelInactive(ChannelHandlerContext context) {
             dispatcher.disconnect(id);

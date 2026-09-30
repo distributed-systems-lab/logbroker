@@ -21,7 +21,14 @@ import vn.huyqt.logbroker.protocol.ProtocolCodec;
 import vn.huyqt.logbroker.protocol.ProtocolLimits;
 import vn.huyqt.logbroker.transport.ClientTransport;
 
-/** Netty framing is confined to this transport adapter. */
+/**
+ * Netty framing is confined to this transport adapter.
+ *
+ * <p>Owns a single-threaded event loop group for its lifetime; after {@link #close()} the
+ * transport cannot connect again. Inbound frames are bounded by {@link BoundedFrameDecoder}
+ * against a budget of 32 maximum-size frames, with no per-frame deadline. Replies are decoded
+ * and handed to the response callback on the event loop.
+ */
 public final class NettyClientTransport implements ClientTransport {
     private final ProtocolLimits limits;
     private final ProtocolCodec codec;
@@ -42,6 +49,7 @@ public final class NettyClientTransport implements ClientTransport {
         if (closed)
             return CompletableFuture.failedFuture(new IOException("Transport closed"));
         var ready = new CompletableFuture<Void>();
+        // Only one connection at a time; the old channel's callbacks still fire for its close.
         var old = channel;
         if (old != null)
             old.close();
@@ -58,6 +66,9 @@ public final class NettyClientTransport implements ClientTransport {
                                     context.close();
                                     return;
                                 }
+                                // Closing the frame returns its inbound reservation. A decode
+                                // or callback failure is reported and closes the connection
+                                // instead of skipping the frame.
                                 try (frame) {
                                     response.accept(codec.decodeResponse(frame.bytes()));
                                 } catch (Throwable error) {
@@ -90,6 +101,12 @@ public final class NettyClientTransport implements ClientTransport {
         return ready;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Does not wait for a pending {@link #connect}; it fails if the connection is not active
+     * yet. Thread-safe without locking because the current channel is read from a volatile.
+     */
     @Override
     public CompletableFuture<Void> send(Protocol.RequestFrame request) {
         final byte[] bytes;
@@ -111,6 +128,7 @@ public final class NettyClientTransport implements ClientTransport {
         return written;
     }
 
+    /** Closes the channel and starts event loop shutdown without waiting for it. Idempotent. */
     @Override
     public synchronized void close() {
         if (closed)
