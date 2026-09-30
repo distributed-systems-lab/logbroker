@@ -8,11 +8,19 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
-/** Versioned payload in the local metadata partition log. */
+/**
+ * Versioned payload in the local metadata partition log.
+ *
+ * <p>Version 1 encodes a {@link TopicCatalog.TopicCreated} as big-endian {@code int16 version=1},
+ * the topic UUID as two {@code int64}, {@code int32 nameLength}, the name bytes and
+ * {@code int32 partitions}. The payload is stored as the value of a record with timestamp 0, no
+ * key and no headers.
+ */
 public final class MetadataEventCodec {
     private MetadataEventCodec() {
     }
 
+    /** Encodes {@code event} as a version 1 payload. */
     public static byte[] encode(TopicCatalog.TopicCreated event) {
         byte[] name = event.name().getBytes(StandardCharsets.US_ASCII);
         ByteBuffer target = ByteBuffer.allocate(2 + 16 + 4 + name.length + 4)
@@ -23,6 +31,13 @@ public final class MetadataEventCodec {
         return target.array();
     }
 
+    /**
+     * Strictly decodes a version 1 payload.
+     *
+     * @throws IOException if the payload is truncated, has an unknown version, trailing bytes,
+     *     a name that is not valid UTF-8, or fields that {@link TopicCatalog.TopicCreated}
+     *     rejects
+     */
     public static TopicCatalog.TopicCreated decode(byte[] bytes) throws IOException {
         if (bytes == null || bytes.length < 27)
             throw new IOException("Incomplete metadata event");

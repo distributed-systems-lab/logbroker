@@ -26,6 +26,15 @@ import vn.huyqt.logbroker.storage.PartitionLog;
 
 /**
  * Local event source for topic metadata; KRaft will replace this source later.
+ *
+ * <p>Events are {@link TopicCatalog.TopicCreated} records in a separate {@code PartitionLog}
+ * under {@code metadata/} in the data directory; see {@link MetadataEventCodec}. CreateTopic
+ * requests are serialized on one dedicated {@code broker-metadata} thread with a bounded queue of
+ * 256, so data-partition load cannot delay them indefinitely. Metadata queries read the
+ * synchronized catalog and registry directly on the caller's thread.
+ *
+ * <p>Metadata failures are broker-wide: replay rejects any invalid or conflicting event, and a
+ * runtime append or flush failure stops further CreateTopic and invokes the fatal handler.
  */
 public final class MetadataService implements AutoCloseable {
     private final BrokerConfig config;
@@ -50,12 +59,22 @@ public final class MetadataService implements AutoCloseable {
         this.fatalHandler = fatalHandler;
     }
 
+    /** Opens the service with a fatal handler that does nothing. */
     public static MetadataService open(Path root, BrokerConfig config,
             PartitionRegistry registry) throws IOException {
         return open(root, config, registry, error -> {
         });
     }
 
+    /**
+     * Opens the metadata log, replays every event into the catalog, and initializes the data
+     * partitions of all replayed topics in {@code registry}. A data partition that fails to open
+     * is reported unavailable; its topic is kept.
+     *
+     * @param fatalHandler called on the metadata thread when a runtime metadata write fails
+     * @throws IOException if the log cannot be recovered, holds an invalid or conflicting event,
+     *     or describes more topics or partitions than the broker limits allow
+     */
     public static MetadataService open(Path root, BrokerConfig config,
             PartitionRegistry registry,
             Consumer<Throwable> fatalHandler) throws IOException {
@@ -102,6 +121,20 @@ public final class MetadataService implements AutoCloseable {
             throw new IOException("Metadata exceeds broker limits");
     }
 
+    /**
+     * Creates a topic on the metadata thread.
+     *
+     * <p>The event is appended and flushed before it is applied to the catalog and its data
+     * partitions are opened, so a topic is never visible from unflushed metadata. A repeated
+     * call with the same name and count returns the existing ID and current partition state
+     * without writing; the same name with a different count yields
+     * {@code TOPIC_ALREADY_EXISTS}. Success requires every partition to be available, otherwise
+     * the reply carries the ID with {@code PARTITION_UNAVAILABLE}. Other outcomes:
+     * {@code INVALID_REQUEST} for a bad name or count, {@code OVERLOADED} when topic or
+     * partition capacity is reached or the queue is full, {@code BROKER_SHUTTING_DOWN} after
+     * close or failure, and {@code STORAGE_ERROR} if the metadata write fails, which is fatal.
+     * After a {@code STORAGE_ERROR} the event may still be recovered on restart.
+     */
     public CompletableFuture<CreateTopicReply> create(String name, int partitions) {
         var result = new CompletableFuture<CreateTopicReply>();
         if (closed || failed) {
@@ -149,6 +182,8 @@ public final class MetadataService implements AutoCloseable {
         if (id.equals(new UUID(0, 0)))
             id = UUID.randomUUID();
         var event = new TopicCatalog.TopicCreated(id, name, partitions);
+        // Flush before apply: the catalog, and therefore Produce/Fetch, never sees a topic whose
+        // event is not durable. The flush is direct and does not wait for the data flush schedule.
         try {
             log.append(List.of(new LogRecord(0, null,
                     MetadataEventCodec.encode(event), List.of())));
@@ -180,6 +215,13 @@ public final class MetadataService implements AutoCloseable {
         return new TopicInfo(event.name(), event.id(), partitions);
     }
 
+    /**
+     * Describes the requested topics, or all topics if {@code names} is empty, with the current
+     * availability of each partition from the registry.
+     *
+     * <p>Duplicate names or more names than {@code maxTopics} yield {@code INVALID_REQUEST}. If
+     * any requested name is unknown, the whole reply is {@code UNKNOWN_TOPIC} with no topics.
+     */
     public MetadataReply metadata(List<String> names) {
         if (names == null || names.size() > config.maxTopics()
                 || new HashSet<>(names).size() != names.size())
@@ -203,6 +245,14 @@ public final class MetadataService implements AutoCloseable {
         return new MetadataReply(Error.none(), config.host(), config.port(), topics);
     }
 
+    /**
+     * Stops CreateTopic processing and closes the log once the metadata thread has terminated. A
+     * running CreateTopic completes; queued ones reply {@code BROKER_SHUTTING_DOWN}.
+     *
+     * @throws IOException if the thread does not stop within
+     *     {@link BrokerConfig#shutdownTimeout()}, in which case the log is left open because the
+     *     thread may still be writing it
+     */
     @Override
     public void close() throws IOException {
         closed = true;
