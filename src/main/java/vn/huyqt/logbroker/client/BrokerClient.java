@@ -11,7 +11,21 @@ import vn.huyqt.logbroker.protocol.ProtocolCodec;
 import vn.huyqt.logbroker.protocol.ProtocolLimits;
 import vn.huyqt.logbroker.transport.ClientTransport;
 
-/** Correlates one broker connection without replaying uncertain requests. */
+/**
+ * Correlates one broker connection without replaying uncertain requests.
+ *
+ * <p>The client connects lazily on the first request and again on the first request after a
+ * connection failure. Each connection has a generation number; transport callbacks and pending
+ * requests are bound to the generation they were created for, so a late reply or failure from
+ * an older connection cannot complete a newer request. Request IDs increase monotonically and
+ * are never reused, not even across reconnects. Requests that failed are never resent.
+ *
+ * <p>The client owns the {@link ClientTransport} and closes it on {@link #close()}; the
+ * {@link DeadlineScheduler} is owned by the caller. All state is guarded by this object's
+ * monitor, and transport callbacks acquire it too. Pending futures are completed while the
+ * monitor is held, so stages already attached to them run on the completing thread (a transport
+ * I/O thread, a scheduler thread, or the caller) with the monitor held.
+ */
 public final class BrokerClient implements AutoCloseable {
     private final ClientConfig config;
     private final ClientTransport transport;
@@ -31,12 +45,29 @@ public final class BrokerClient implements AutoCloseable {
         queued = new ResourceBudget(config.queuedBytes());
     }
 
+    /**
+     * Sends {@code body} as a version 1 request and returns a future for the broker's response.
+     *
+     * <p>A broker error is a successful completion carrying that error in the response body.
+     * The future completes exceptionally with {@link ClientException.Outcome#NOT_SENT} if the
+     * client is closed, {@link ClientConfig#maxInFlight()} or {@link ClientConfig#queuedBytes()}
+     * is exhausted, the connection cannot be established, or the timeout fires before the frame
+     * is handed to the transport. Once sending has started, a timeout, write failure or
+     * connection loss completes it with {@link ClientException.Outcome#UNKNOWN}. The timeout is
+     * {@link ClientConfig#requestTimeout()} from this call. A request that fails encoding
+     * completes with the codec's exception.
+     *
+     * <p>Cancelling the future releases its slot and buffer but does not prove the broker did
+     * not act on it.
+     */
     public synchronized CompletableFuture<Protocol.Response> request(Protocol.Request body) {
         Objects.requireNonNull(body);
         if (closed)
             return CompletableFuture.failedFuture(ClientException.notSent("Client closed"));
         if (pending.size() >= config.maxInFlight())
             return CompletableFuture.failedFuture(ClientException.notSent("In-flight request limit"));
+        // IDs must never be reused during a connection lifetime (docs/protocol-v1.md), so the
+        // client fails the connection instead of wrapping.
         if (nextId == Long.MAX_VALUE) {
             failConnection(generation, ClientException.notSent("Request ID exhausted"));
             return CompletableFuture.failedFuture(ClientException.notSent("Request ID exhausted"));
@@ -55,6 +86,7 @@ public final class BrokerClient implements AutoCloseable {
                     ClientException.notSent("Client request buffer full"));
         var item = new Pending(frame, lease, generation);
         pending.put(id, item);
+        // The deadline starts now, so time spent connecting counts against the request timeout.
         item.timer = clock.schedule(clock.nanoTime() + config.requestTimeout().toNanos(),
                 () -> timeout(id, item));
         item.result.whenComplete((ignored, error) -> {
@@ -75,6 +107,7 @@ public final class BrokerClient implements AutoCloseable {
         return item.result;
     }
 
+    // Callbacks capture the new generation so events from a replaced connection are ignored.
     private void connect() {
         long selected = ++generation;
         try {
@@ -88,6 +121,8 @@ public final class BrokerClient implements AutoCloseable {
     private synchronized void send(long id, Pending item) {
         if (pending.get(id) != item || closed || item.generation != generation)
             return;
+        // Marked before the write starts: from here a failure may leave a broker-side effect,
+        // so it must be reported as UNKNOWN rather than NOT_SENT.
         item.mayHaveSent = true;
         try {
             transport.send(item.frame).whenComplete((ignored, error) -> {
@@ -105,6 +140,8 @@ public final class BrokerClient implements AutoCloseable {
         var item = pending.get(reply.requestId());
         if (item == null)
             return; // Late reply for a timed-out or cancelled request.
+        // A reply must echo the request's operation and version (docs/protocol-v1.md). Fail
+        // closed on a mismatch: every pending request on this connection fails.
         if (reply.operation() != item.frame.operation() || reply.version() != item.frame.version()) {
             failConnection(selected, new IllegalStateException("Mismatched response envelope"));
             transport.close();
@@ -138,6 +175,8 @@ public final class BrokerClient implements AutoCloseable {
         return true;
     }
 
+    // Reports from an older generation are ignored. Clearing connecting makes the next request
+    // open a new connection with a new generation.
     private synchronized void failConnection(long selected, Throwable error) {
         if (selected != generation)
             return;
@@ -151,6 +190,11 @@ public final class BrokerClient implements AutoCloseable {
         }
     }
 
+    /**
+     * Fails every pending request (with {@link ClientException.Outcome#UNKNOWN} if it may have
+     * been sent) and closes the transport. Later requests fail with
+     * {@link ClientException.Outcome#NOT_SENT}. Idempotent.
+     */
     @Override
     public synchronized void close() {
         if (closed)
@@ -169,6 +213,7 @@ public final class BrokerClient implements AutoCloseable {
         };
     }
 
+    /** One in-flight request, its buffer lease and timer, bound to a connection generation. */
     private static final class Pending {
         final Protocol.RequestFrame frame;
         final ResourceBudget.Lease lease;
