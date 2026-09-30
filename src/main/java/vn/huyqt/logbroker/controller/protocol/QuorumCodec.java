@@ -16,12 +16,19 @@ import vn.huyqt.logbroker.controller.snapshot.SnapshotId;
 
 /**
  * Two-pass bounded decoder: preflight validates sizes without materializing batch/chunk payloads.
+ *
+ * <p>Encodes and decodes controller protocol v1 frames as specified in {@code
+ * docs/controller-protocol-v1.md}. Byte arrays passed in and returned include the 4-byte length
+ * prefix. Decoding is strict: it rejects unknown operations and versions, bad checksums, negative
+ * offsets and epochs, out-of-range counts and lengths, invalid UTF-8 and trailing bytes, all as
+ * {@link IOException}. Stateless and thread-safe.
  */
 public final class QuorumCodec {
   private QuorumCodec() {}
 
   /** Exact v1 wire size without materializing batch/chunk payloads. */
   public static long encodedSize(Frame frame) {
+    // 4-byte length prefix plus the 69-byte minimum frame: 65-byte envelope and 4-byte CRC.
     long bytes = 73;
     var message = frame.message();
     if (message instanceof Reply reply) {
@@ -46,6 +53,7 @@ public final class QuorumCodec {
           case FetchSnapshotReply reply -> 56L + reply.chunkLength();
           case DescribeQuorumReply reply ->
               82L + 12L * reply.status().durableMatches().size() + utf8(reply.status().failure());
+          // Topic names are ASCII-only, so String.length() equals their UTF-8 size.
           case MetadataReply reply ->
               37L
                   + reply.view().topics().stream()
@@ -72,6 +80,13 @@ public final class QuorumCodec {
         };
   }
 
+  /**
+   * Conservative outbound memory charge for {@code frame}: eight times its encoded size plus 64
+   * bytes per batch, entry or topic. See {@code docs/controller-configuration.md} for how the
+   * transport holds this reservation.
+   *
+   * @throws ArithmeticException on overflow
+   */
   public static long outboundCharge(Frame frame) {
     long elements = 0;
     if (frame.message() instanceof QuorumFetchReply reply
@@ -87,6 +102,10 @@ public final class QuorumCodec {
     return value.getBytes(StandardCharsets.UTF_8).length;
   }
 
+  /**
+   * Encodes {@code frame}, including the length prefix and trailing CRC32C. Callers enforce size
+   * limits; encoding itself does not check the configured frame maximum.
+   */
   public static byte[] encode(Frame frame) {
     try {
       var bytes = new ByteArrayOutputStream();
@@ -183,6 +202,7 @@ public final class QuorumCodec {
       case DescribeQuorumReply r -> {
         var s = r.status();
         out.writeInt(s.nodeId());
+        // Role is encoded by ordinal, so QuorumStatus.Role order is part of the wire format.
         out.writeByte(s.role().ordinal());
         out.writeLong(s.epoch());
         out.writeInt(s.leaderId());
@@ -194,6 +214,7 @@ public final class QuorumCodec {
         out.writeLong(s.snapshotEnd());
         out.writeBoolean(s.ready());
         out.writeInt(s.durableMatches().size());
+        // Sorted by voter ID so equal statuses encode to identical bytes.
         for (var e : new TreeMap<>(s.durableMatches()).entrySet()) {
           out.writeInt(e.getKey());
           out.writeLong(e.getValue());
@@ -248,12 +269,27 @@ public final class QuorumCodec {
     out.write(bytes);
   }
 
+  /**
+   * Validates a whole frame, including checksums and limits from {@code config}, without
+   * materializing batch entries, chunks or topics.
+   *
+   * @return memory to reserve before {@link #decode}: twice the frame length plus 64 bytes per
+   *     decoded array element
+   * @throws IOException if the frame is invalid
+   */
   public static long preflight(byte[] bytes, ControllerConfig config) throws IOException {
     var reader = new Reader(bytes, config, false);
     reader.frame();
     return Math.addExact(2L * bytes.length, 64L * reader.elements);
   }
 
+  /**
+   * Decodes a frame after running {@link #preflight} on it. Identity (cluster, sender, voter hash)
+   * is parsed but not checked against membership; callers such as the transport and {@link
+   * vn.huyqt.logbroker.controller.client.ControllerClient} check it.
+   *
+   * @throws IOException if the frame is invalid
+   */
   public static Frame decode(byte[] bytes, ControllerConfig config) throws IOException {
     preflight(bytes, config);
     return new Reader(bytes, config, true).frame();
@@ -287,6 +323,8 @@ public final class QuorumCodec {
         long request = in.getLong();
         byte[] hash = new byte[32];
         in.get(hash);
+        // Verify the frame CRC before interpreting any body field; the limit then hides the CRC
+        // so body parsing cannot read it and trailing-byte detection is exact.
         if (in.getInt(bytes.length - 4) != StateJournal.crc(bytes, 4, bytes.length - 8))
           throw new IOException("Frame checksum mismatch");
         in.limit(bytes.length - 4);
@@ -375,6 +413,8 @@ public final class QuorumCodec {
         int records = count(config.logConfig().maxBatchBytes() / 15, 15);
         if (records == 0) throw new IOException("Empty replicated batch");
         var entries = new ArrayList<QuorumEntry>();
+        // Size the batch as the follower will store it (30-byte storage header, 20 bytes per
+        // keyless record) so an accepted batch also fits the local log's max batch size.
         long storageBytes = 30;
         for (int j = 0; j < records; j++) {
           int n = length(11, config.logConfig().maxBatchBytes());
@@ -456,6 +496,8 @@ public final class QuorumCodec {
           Consistency.values()[consistency], node, epoch, leader, commit, applied, topics);
     }
 
+    // Bounds an array count by its cap and by remaining bytes at min bytes per element before
+    // anything is allocated for it.
     private int count(int max, int min) throws IOException {
       int n = in.getInt();
       if (n < 0 || n > max || n > in.remaining() / min)

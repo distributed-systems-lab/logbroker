@@ -2,6 +2,11 @@ package vn.huyqt.logbroker.controller.protocol;
 
 import java.io.IOException;
 
+/**
+ * Controller reply error codes. Numbers 0 to 13 keep their broker v1 meaning; 14 and above are
+ * controller-specific. The number, not the ordinal, is the wire value; see {@code
+ * docs/controller-protocol-v1.md}.
+ */
 public enum QuorumError {
   NONE(0),
   INVALID_REQUEST(1),
@@ -33,6 +38,11 @@ public enum QuorumError {
     return number;
   }
 
+  /**
+   * Maps a wire number back to its constant.
+   *
+   * @throws IOException if the number is not defined, so an unknown code is a decode error
+   */
   public static QuorumError fromNumber(short number) throws IOException {
     for (var value : values()) if (value.number == number) return value;
     throw new IOException("Unknown quorum error");
