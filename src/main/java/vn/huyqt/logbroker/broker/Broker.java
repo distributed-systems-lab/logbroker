@@ -18,7 +18,14 @@ import vn.huyqt.logbroker.broker.metadata.MetadataService;
 import vn.huyqt.logbroker.protocol.Protocol.TopicPartition;
 import vn.huyqt.logbroker.transport.netty.NettyServerTransport;
 
-/** Owns recovery, listener admission, data workers, and data-root lifetime. */
+/**
+ * Owns recovery, listener admission, data workers, and data-root lifetime.
+ *
+ * <p>The broker holds an exclusive {@code .broker.lock} on its data directory from {@link #start}
+ * until shutdown has closed storage. Partition runtimes are created lazily on first lookup and
+ * stay owned by the broker until shutdown. Startup and shutdown order follow section 10 of
+ * {@code docs/superpowers/specs/2026-09-25-broker-phase-2-design.md}.
+ */
 public final class Broker implements AutoCloseable {
     private final BrokerConfig config;
     private final FileChannel lockChannel;
@@ -54,6 +61,16 @@ public final class Broker implements AutoCloseable {
         this.runtimes = runtimes;
     }
 
+    /**
+     * Locks the data directory, replays metadata, opens the data partitions it references, and
+     * then binds the listener, so no request is served before recovery completes.
+     *
+     * <p>A data partition that fails to open is reported unavailable rather than failing startup.
+     * On any other failure, every component opened so far is closed and the lock is released.
+     *
+     * @throws IOException if the data directory is locked by another broker, metadata replay
+     *     fails, or the listener cannot bind
+     */
     public static Broker start(BrokerConfig config) throws IOException {
         Files.createDirectories(config.dataDirectory());
         FileChannel lockChannel = FileChannel.open(config.dataDirectory().resolve(".broker.lock"),
@@ -77,6 +94,8 @@ public final class Broker implements AutoCloseable {
         try {
             clock = DeadlineScheduler.system();
             registry = new PartitionRegistry(config, FilePartitionStore::open);
+            // A runtime metadata write failure is broker-wide: the handler shuts the broker down.
+            // The broker does not exist yet, so the handler resolves it through this reference.
             AtomicReference<Broker> owner = new AtomicReference<>();
             metadata = MetadataService.open(config.dataDirectory(), config, registry,
                     failure -> {
@@ -91,6 +110,8 @@ public final class Broker implements AutoCloseable {
             final DeadlineScheduler activeClock = clock;
             final ResourceBudget flushedWaiters = new ResourceBudget(config.maxFlushedWaiters());
             final Map<TopicPartition, PartitionRuntime> activeRuntimes = new ConcurrentHashMap<>();
+            // Shared lookup for Produce and Fetch: returns null unless the registry reports the
+            // partition healthy. A runtime failure marks the partition failed in the registry.
             java.util.function.Function<TopicPartition, PartitionRuntime> resolve = tp -> {
                 if (activeRegistry.state(tp) != vn.huyqt.logbroker.protocol.ErrorCode.NONE)
                     return null;
@@ -160,6 +181,19 @@ public final class Broker implements AutoCloseable {
         return address;
     }
 
+    /**
+     * Starts an orderly shutdown and returns its completion. Repeated calls return the first
+     * call's future, whatever deadline they pass.
+     *
+     * <p>New connections and requests are refused and parked Fetch waiters complete with the data
+     * available now. A background thread then drains admitted partition tasks, flushes every
+     * partition, closes the transport, and closes storage before releasing the data-root lock.
+     * The returned future fails with a {@link java.util.concurrent.TimeoutException} if this does
+     * not finish within {@code deadline}. If data or metadata workers cannot be stopped, storage
+     * and the lock are deliberately left open because a worker may still be using them.
+     *
+     * @throws IllegalArgumentException if {@code deadline} is null, zero or negative
+     */
     public synchronized CompletableFuture<Void> shutdown(Duration deadline) {
         if (deadline == null || deadline.isZero() || deadline.isNegative())
             throw new IllegalArgumentException("Positive shutdown deadline required");
@@ -236,6 +270,11 @@ public final class Broker implements AutoCloseable {
         return completion;
     }
 
+    /**
+     * Shuts down with {@link BrokerConfig#shutdownTimeout()} and waits for completion.
+     *
+     * @throws IllegalStateException if shutdown fails or times out
+     */
     @Override
     public void close() {
         try {

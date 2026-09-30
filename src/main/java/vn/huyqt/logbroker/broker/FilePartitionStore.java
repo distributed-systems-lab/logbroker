@@ -9,7 +9,12 @@ import vn.huyqt.logbroker.storage.LogRecord;
 import vn.huyqt.logbroker.storage.PartitionLog;
 import vn.huyqt.logbroker.storage.RecordBatch;
 
-/** Delegates broker data operations to the Phase 1 partition log. */
+/**
+ * Delegates broker data operations to the Phase 1 partition log.
+ *
+ * <p>Format, recovery and durability semantics are those of {@link PartitionLog}; see
+ * {@code docs/storage-format-v1.md}.
+ */
 public final class FilePartitionStore implements PartitionStore {
     private final PartitionLog log;
 
@@ -17,6 +22,10 @@ public final class FilePartitionStore implements PartitionStore {
         this.log = log;
     }
 
+    /**
+     * Opens and recovers the partition log in {@code directory}, holding its directory lock until
+     * {@link #close()}.
+     */
     public static FilePartitionStore open(Path directory, LogConfig config) throws IOException {
         return new FilePartitionStore(PartitionLog.open(directory, config));
     }

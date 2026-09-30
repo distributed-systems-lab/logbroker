@@ -11,11 +11,19 @@ import java.util.concurrent.CountDownLatch;
 import vn.huyqt.logbroker.protocol.ProtocolLimits;
 import vn.huyqt.logbroker.storage.LogConfig;
 
-/** CLI entry point for one local broker. */
+/**
+ * CLI entry point for one local broker.
+ *
+ * <p>Options and properties are described in {@code docs/broker-configuration.md}.
+ */
 public final class BrokerMain {
     private BrokerMain() {
     }
 
+    /**
+     * Starts a broker, prints {@code READY <port>} on standard output once the listener is bound,
+     * and blocks until the process exits. A JVM shutdown hook closes the broker.
+     */
     public static void main(String[] args) throws Exception {
         BrokerConfig config = parse(args);
         var logger = System.getLogger(BrokerMain.class.getName());
@@ -32,6 +40,8 @@ public final class BrokerMain {
         new CountDownLatch(1).await();
     }
 
+    // Fail closed: unknown or duplicate options and unknown property keys abort startup instead
+    // of being ignored. --host and --port override the property file.
     static BrokerConfig parse(String[] args) throws IOException {
         Path data = null, propertyFile = null;
         String host = null;

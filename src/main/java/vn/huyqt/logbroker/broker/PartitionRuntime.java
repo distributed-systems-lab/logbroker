@@ -24,7 +24,22 @@ import vn.huyqt.logbroker.storage.AppendResult;
 import vn.huyqt.logbroker.storage.RecordPayloadCodec;
 import vn.huyqt.logbroker.protocol.WireBatchCodec;
 
-/** Serial partition operations and local durability acknowledgments. */
+/**
+ * Serial partition operations and local durability acknowledgments.
+ *
+ * <p>Append, read and flush run as tasks on this partition's {@link PartitionExecutor} lane.
+ * Apart from {@link #close()}, the dirty-batch queue, the {@code FLUSHED} waiters and the flush
+ * timer are only touched from that lane. A {@code FLUSHED} produce parks a waiter instead of
+ * holding the lane; the waiter completes once {@link PartitionStore#durableEndOffset()} covers
+ * its batch. A flush is scheduled when unflushed storage bytes reach
+ * {@link BrokerConfig#flushBytes()} or the oldest unflushed batch reaches
+ * {@link BrokerConfig#flushInterval()}; see section 6 of
+ * {@code docs/superpowers/specs/2026-09-25-broker-phase-2-design.md}.
+ *
+ * <p>The first storage failure is permanent for this runtime: parked waiters fail with
+ * {@code STORAGE_ERROR}, later operations report {@code PARTITION_UNAVAILABLE}, and the failure
+ * handler is invoked once so the owner can isolate the partition.
+ */
 public final class PartitionRuntime implements AutoCloseable {
     private final TopicPartition partition;
     private final PartitionStore store;
@@ -43,6 +58,7 @@ public final class PartitionRuntime implements AutoCloseable {
     private volatile boolean closed;
     private DeadlineScheduler.Ticket flushTimer;
 
+    /** Creates a runtime with a private waiter budget and a failure handler that does nothing. */
     public PartitionRuntime(TopicPartition partition, PartitionStore store,
             PartitionExecutor executor, DeadlineScheduler clock,
             BrokerConfig config) {
@@ -51,6 +67,12 @@ public final class PartitionRuntime implements AutoCloseable {
                 });
     }
 
+    /**
+     * Creates a runtime over an open store.
+     *
+     * @param waiterBudget {@code FLUSHED} waiter capacity, usually shared by all partitions
+     * @param failureHandler called once, on the lane, with the first storage failure
+     */
     public PartitionRuntime(TopicPartition partition, PartitionStore store,
             PartitionExecutor executor, DeadlineScheduler clock,
             BrokerConfig config, ResourceBudget waiterBudget,
@@ -64,6 +86,24 @@ public final class PartitionRuntime implements AutoCloseable {
         this.failureHandler = Objects.requireNonNull(failureHandler);
     }
 
+    /**
+     * Validates one batch and queues its append on the partition lane.
+     *
+     * <p>Record count, storage size and, for {@code FLUSHED}, waiter capacity are checked before
+     * enqueue, so a rejected batch is never written. With {@code APPENDED} the result completes
+     * once the local append returns; with {@code FLUSHED} once the durable end covers the batch.
+     * Errors are reported in the {@link ProduceResult}:
+     * <ul>
+     * <li>{@code INVALID_REQUEST}, {@code BATCH_TOO_LARGE}, {@code OVERLOADED} (waiter budget or
+     * lane queue full) and {@code PARTITION_UNAVAILABLE}: nothing was written.</li>
+     * <li>{@code REQUEST_TIMED_OUT}: nothing was written if the deadline passed before the lane
+     * started the append; for a parked {@code FLUSHED} waiter the batch was appended but its
+     * durability is unconfirmed.</li>
+     * <li>{@code STORAGE_ERROR} or {@code BROKER_SHUTTING_DOWN}: the outcome is unknown.</li>
+     * </ul>
+     *
+     * @param deadlineNanos processing deadline on the {@link DeadlineScheduler#nanoTime()} scale
+     */
     public CompletableFuture<ProduceResult> produce(Batch batch, AckMode mode, long deadlineNanos) {
         Objects.requireNonNull(batch);
         Objects.requireNonNull(mode);
@@ -76,6 +116,8 @@ public final class PartitionRuntime implements AutoCloseable {
             result.complete(error(ErrorCode.INVALID_REQUEST, "Invalid record count"));
             return result;
         }
+        // Storage batch size (30-byte header plus record payload, see docs/protocol-v1.md). A
+        // batch that fits the wire limit can still exceed the storage limit.
         final int encodedBytes;
         try {
             encodedBytes = Math.addExact(30, RecordPayloadCodec.encodedSize(batch.records()));
@@ -87,6 +129,8 @@ public final class PartitionRuntime implements AutoCloseable {
             result.complete(error(ErrorCode.BATCH_TOO_LARGE, "Batch too large"));
             return result;
         }
+        // Reserve waiter capacity before appending, so a batch is never written without room to
+        // track its FLUSHED acknowledgment.
         ResourceBudget.Lease lease = null;
         if (mode == AckMode.FLUSHED) {
             lease = waiterBudget.reserve(1).orElse(null);
@@ -118,6 +162,7 @@ public final class PartitionRuntime implements AutoCloseable {
             result.complete(error(ErrorCode.PARTITION_UNAVAILABLE, "Partition unavailable"));
             return;
         }
+        // The deadline is only honored before mutation; a started append is never cancelled.
         if (clock.nanoTime() >= deadlineNanos) {
             if (lease != null)
                 lease.close();
@@ -129,6 +174,8 @@ public final class PartitionRuntime implements AutoCloseable {
             long now = clock.nanoTime();
             dirty.addLast(new Dirty(appended.nextOffset(), encodedBytes, now));
             dirtyBytes = Math.addExact(dirtyBytes, encodedBytes);
+            // A segment rollover during append may have forced earlier batches; settle them
+            // now instead of waiting for an explicit flush.
             pruneDurable(store.durableEndOffset());
             generation++;
             notifyListeners();
@@ -176,12 +223,16 @@ public final class PartitionRuntime implements AutoCloseable {
                 || clock.nanoTime() - dirty.peekFirst().atNanos >= config.flushInterval().toNanos()) {
             scheduleTick();
         } else if (flushTimer == null) {
+            // The deadline is anchored at the oldest dirty batch and an armed timer is kept, so
+            // later appends never postpone a due flush.
             long due = Math.addExact(dirty.peekFirst().atNanos,
                     config.flushInterval().toNanos());
             flushTimer = clock.schedule(due, this::scheduleTick);
         }
     }
 
+    // Flush and waiter-expiry checks use the lane's control slot: they are not rejected when the
+    // user queue is full, run ahead of queued user tasks, and coalesce while one is pending.
     private void scheduleTick() {
         if (!closed && !failed)
             executor.control(partition, this::tick);
@@ -207,6 +258,7 @@ public final class PartitionRuntime implements AutoCloseable {
         while (it.hasNext()) {
             Waiter waiter = it.next();
             if (clock.nanoTime() >= waiter.deadlineNanos) {
+                // The batch is already in the log; only its durability is unconfirmed.
                 waiter.finish(error(ErrorCode.REQUEST_TIMED_OUT,
                         "Produce may have been appended"));
                 it.remove();
@@ -215,10 +267,21 @@ public final class PartitionRuntime implements AutoCloseable {
         scheduleFlush();
     }
 
+    /**
+     * Schedules a threshold check on the lane. It flushes only if the byte or age threshold is
+     * already reached, and expires overdue {@code FLUSHED} waiters.
+     */
     public void requestFlush() {
         scheduleTick();
     }
 
+    /**
+     * Forces all appended data regardless of thresholds and completes the waiters it covers.
+     * Completes immediately if the runtime is closed or failed. A flush failure fails the
+     * runtime and then the returned future.
+     *
+     * @throws RejectedExecutionException if the lane cannot accept another user task
+     */
     public CompletableFuture<Void> flushNow() {
         if (closed || failed)
             return CompletableFuture.completedFuture(null);
@@ -236,10 +299,24 @@ public final class PartitionRuntime implements AutoCloseable {
         });
     }
 
+    /** Change counter, incremented after every successful append and on failure. */
     public long generation() {
         return generation;
     }
 
+    /**
+     * Reads whole batches from {@code entry.offset()} on the lane, up to {@code logEndOffset}
+     * and therefore including unflushed data. Sizes are measured as Fetch wire bytes, not
+     * storage bytes, against both {@code remainingWireBudget} and {@code entry.maxBytes()}.
+     *
+     * <p>Errors are returned in the {@link FetchResult}: {@code OFFSET_OUT_OF_RANGE} outside
+     * {@code [logStartOffset, logEndOffset]}, {@code OVERLOADED} if the lane queue is full,
+     * {@code PARTITION_UNAVAILABLE} after close or failure, and {@code STORAGE_ERROR} if the read
+     * fails, which also fails the runtime.
+     *
+     * @param allowFirstOversize whether the first batch may exceed both budgets so the response
+     *     makes progress; when used, no further batch is added
+     */
     public CompletableFuture<FetchResult> read(FetchEntry entry, int remainingWireBudget,
             boolean allowFirstOversize) {
         if (closed || failed)
@@ -298,6 +375,12 @@ public final class PartitionRuntime implements AutoCloseable {
         return new FetchResult(partition, new Error(code, message), -1, -1, List.of());
     }
 
+    /**
+     * Registers {@code listener} to run after every append and on failure. Listeners run on the
+     * partition lane and must not block.
+     *
+     * @return a ticket that unregisters the listener
+     */
     public synchronized DeadlineScheduler.Ticket onChange(Runnable listener) {
         Objects.requireNonNull(listener);
         long id = ++listenerId;
@@ -342,6 +425,12 @@ public final class PartitionRuntime implements AutoCloseable {
         return new ProduceResult(partition, new Error(code, message), -1, -1);
     }
 
+    /**
+     * Stops the runtime without flushing and fails parked {@code FLUSHED} waiters with
+     * {@code BROKER_SHUTTING_DOWN}. The store is not closed; it belongs to the caller. Waiter
+     * state is not synchronized with the lane; {@link Broker} calls this only after the
+     * partition workers have stopped.
+     */
     @Override
     public void close() {
         closed = true;

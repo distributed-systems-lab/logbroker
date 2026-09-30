@@ -13,7 +13,13 @@ import vn.huyqt.logbroker.protocol.ErrorCode;
 import vn.huyqt.logbroker.protocol.Protocol.*;
 import vn.huyqt.logbroker.protocol.Protocol.Error;
 
-/** Dispatches requests and preserves independent partition outcomes. */
+/**
+ * Dispatches requests and preserves independent partition outcomes.
+ *
+ * <p>The dispatcher performs no storage I/O itself: CreateTopic goes to the metadata worker,
+ * Produce and Fetch to partition lanes, and results are returned as futures. It tracks live
+ * requests per connection so that {@link #disconnect} can cancel them. Thread-safe.
+ */
 public final class RequestDispatcher {
     private final MetadataService metadata;
     private final Function<TopicPartition, PartitionRuntime> runtimes;
@@ -31,6 +37,12 @@ public final class RequestDispatcher {
         this.clock = Objects.requireNonNull(clock);
     }
 
+    /**
+     * Routes one decoded request. After {@link #beginShutdown()} it answers
+     * {@code BROKER_SHUTTING_DOWN} without routing. The future fails with a
+     * {@link CancellationException} if the request's connection closes first; the underlying
+     * operation, such as an append, is not cancelled by that.
+     */
     public CompletableFuture<Response> handle(RequestContext context, Request request) {
         Objects.requireNonNull(context);
         Objects.requireNonNull(request);
@@ -63,6 +75,9 @@ public final class RequestDispatcher {
         return result;
     }
 
+    // Entries are independent and not atomic across partitions. The reply is assembled when all
+    // entries finish or at the deadline, whichever is first; an entry still pending then is
+    // reported REQUEST_TIMED_OUT with unknown outcome, while known results are kept.
     private CompletableFuture<Response> produce(RequestContext context, Produce request) {
         if (request.entries().isEmpty())
             return CompletableFuture.completedFuture(new Failure(
@@ -114,6 +129,7 @@ public final class RequestDispatcher {
         return result;
     }
 
+    /** Cancels every live request of {@code connectionId}; parked Fetch waiters are released. */
     public void disconnect(long connectionId) {
         Set<RequestContext> active = connections.remove(connectionId);
         if (active != null)
@@ -121,6 +137,10 @@ public final class RequestDispatcher {
                 context.cancel();
     }
 
+    /**
+     * Refuses new requests and closes the {@link FetchCoordinator}, completing parked Fetch
+     * requests with the data available now. Admitted Produce requests keep running.
+     */
     public void beginShutdown() {
         stopping = true;
         fetch.close();

@@ -9,10 +9,12 @@ import java.util.Set;
 public final class FlushCoordinator implements AutoCloseable {
     private final Set<PartitionRuntime> runtimes = new HashSet<>();
 
+    /** Adds {@code runtime} to the set closed by {@link #close()}; registering twice is a no-op. */
     public synchronized void register(PartitionRuntime runtime) {
         runtimes.add(runtime);
     }
 
+    /** Closes every registered runtime without flushing it and forgets the registrations. */
     @Override
     public synchronized void close() {
         for (PartitionRuntime runtime : runtimes)
