@@ -14,12 +14,19 @@ import java.util.List;
 import java.util.Objects;
 import java.util.stream.Stream;
 
-/** Validates all data segments before repairing a torn active tail or rebuilding indexes. */
+/**
+ * Validates all data segments before repairing a torn active tail or rebuilding indexes.
+ *
+ * <p>The rules per failure case are listed in {@code docs/storage-format-v1.md}. The caller must
+ * hold the partition directory lock; {@link PartitionLog#open(Path, LogConfig)} does.
+ */
 final class LogRecovery {
   private static final System.Logger LOGGER = System.getLogger(LogRecovery.class.getName());
 
+  /** One validated segment; {@code nextOffset} is exclusive and {@code index} is rebuilt. */
   record SegmentInfo(long baseOffset, long validBytes, long nextOffset, OffsetIndex index) {}
 
+  /** Segments in offset order and the exclusive end offset of the recovered log. */
   record Result(List<SegmentInfo> segments, long nextOffset) {
     Result {
       segments = List.copyOf(segments);
@@ -34,6 +41,16 @@ final class LogRecovery {
     return recover(directory, config, io, LogOpenOptions.standalone());
   }
 
+  /**
+   * Scans every segment, then cuts a torn tail of the last segment, rewrites all indexes and
+   * forces all data files. An empty directory yields no segments and an end of {@code
+   * options.startOffset()}. The directory itself is not synced here.
+   *
+   * @throws CorruptLogException if any sealed segment is empty or incomplete, any batch is
+   *     invalid, offsets are not contiguous from {@code options.startOffset()}, or the recovered
+   *     end is below {@code options.minimumEndOffset()}, or there is no segment although {@code
+   *     options.createIfMissing()} is false; no file is modified in these cases
+   */
   static Result recover(Path directory, LogConfig config, LogIo io, LogOpenOptions options)
       throws IOException {
     Objects.requireNonNull(directory, "directory");
@@ -132,6 +149,8 @@ final class LogRecovery {
     return new Result(infos, next);
   }
 
+  // Only data files are discovered; indexes are rewritten from data. A malformed .log name is
+  // corruption rather than a file to skip.
   private static List<Long> discover(Path directory) throws IOException {
     List<Long> bases = new ArrayList<>();
     try (Stream<Path> files = Files.list(directory)) {

@@ -3,7 +3,12 @@ package vn.huyqt.logbroker.storage;
 import java.util.Arrays;
 import java.util.Objects;
 
-/** A UTF-8 header key with a nullable, defensively copied value. */
+/**
+ * A UTF-8 header key with a nullable, defensively copied value.
+ *
+ * <p>Immutable. The key must be encodable as strict UTF-8; this is checked when the record is
+ * encoded, not here. A {@code null} value is distinct from an empty array.
+ */
 public final class RecordHeader {
     private final String key;
     private final byte[] value;

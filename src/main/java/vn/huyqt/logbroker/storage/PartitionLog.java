@@ -17,7 +17,26 @@ import java.util.Objects;
 import java.util.TreeMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-/** A single-writer partition log backed by ordered data segments and rebuildable indexes. */
+/**
+ * A single-writer partition log backed by ordered data segments and rebuildable indexes.
+ *
+ * <p>An instance holds an exclusive lock on {@code <directory>/.lock} from {@link #open} until
+ * {@link #close()}. File format, durability contract and recovery rules are specified in {@code
+ * docs/storage-format-v1.md}.
+ *
+ * <p>Offsets: {@link #logStartOffset()} is the base of the first retained segment, {@link
+ * #logEndOffset()} is the exclusive end visible to readers, and {@link #durableEndOffset()} is
+ * the exclusive end covered by the last force. Only records below the durable end are expected to
+ * survive a power loss, and the durable end is not a replication high watermark.
+ *
+ * <p>Lifecycle: an I/O error after a mutation has started moves the log to a failed state in
+ * which every call except {@link #close()} throws {@link IllegalStateException} carrying the
+ * first failure; the caller must reopen to recover. Validation errors reported before any file
+ * is changed leave the log usable.
+ *
+ * <p>Thread-safe. Mutations take an exclusive lock; reads and offset queries share a read lock
+ * and may run concurrently with each other.
+ */
 public final class PartitionLog implements AutoCloseable {
   private enum State {
     OPEN,
@@ -54,7 +73,16 @@ public final class PartitionLog implements AutoCloseable {
     this.fileLock = fileLock;
   }
 
-  /** Opens and recovers a partition while holding its directory lock until close. */
+  /**
+   * Opens and recovers a partition while holding its directory lock until close.
+   *
+   * <p>Uses the standalone behavior: the directory is created if needed, the log starts at offset
+   * 0, and directory entries are not synced. After recovery the durable end equals the recovered
+   * end.
+   *
+   * @throws IOException if the directory is already locked, by this or another process
+   * @throws CorruptLogException if recovery finds data it may not repair
+   */
   public static PartitionLog open(Path directory, LogConfig config) throws IOException {
     return open(directory, config, new LogIo());
   }
@@ -63,6 +91,16 @@ public final class PartitionLog implements AutoCloseable {
     return open(directory, config, io, LogOpenOptions.standalone());
   }
 
+  /**
+   * Opens and recovers a log whose origin, committed floor and directory sync are chosen by the
+   * caller; see {@link LogOpenOptions}. An empty log gets its first segment at {@code
+   * options.startOffset()}.
+   *
+   * @throws IOException if {@code options.createIfMissing()} is false and the directory or its
+   *     data segments are missing, or if the directory is already locked
+   * @throws CorruptLogException if recovery finds data it may not repair or would end below
+   *     {@code options.minimumEndOffset()}
+   */
   public static PartitionLog open(Path directory, LogConfig config, LogOpenOptions options)
       throws IOException {
     return open(directory, config, new LogIo(), options);
@@ -142,7 +180,20 @@ public final class PartitionLog implements AutoCloseable {
     }
   }
 
-  /** Appends one batch; call {@link #flush()} to make the returned offsets durable. */
+  /**
+   * Appends one batch; call {@link #flush()} to make the returned offsets durable.
+   *
+   * <p>The batch is encoded and validated before any file is touched. Success means the write
+   * loop completed; the bytes are immediately visible to {@link #read}. If the batch does not fit
+   * in the active segment, that segment is forced first, which may advance the durable end to the
+   * previous log end.
+   *
+   * @return offsets assigned to the batch, starting at the previous log end
+   * @throws IllegalArgumentException if {@code records} is empty or cannot be encoded within
+   *     {@link LogConfig#maxBatchBytes()}; the log stays open
+   * @throws IOException if a write or force fails; the log becomes failed and the batch may still
+   *     reappear after recovery
+   */
   public AppendResult append(List<LogRecord> records) throws IOException {
     guard.writeLock().lock();
     try {
@@ -175,7 +226,21 @@ public final class PartitionLog implements AutoCloseable {
     }
   }
 
-  /** Reads whole batches from an offset; the first batch may exceed the byte budget. */
+  /**
+   * Reads whole batches from an offset; the first batch may exceed the byte budget.
+   *
+   * <p>Reads up to the log end, including data not yet flushed. The first batch returned is the
+   * one containing {@code offset}, so it may start before it; callers filter earlier records.
+   * Later batches are added only while the total encoded size stays within {@code maxBytes}, so
+   * the total never exceeds {@code max(maxBytes, maxBatchBytes)}.
+   *
+   * @param offset offset in {@code [logStartOffset, logEndOffset]}; reading at the end returns an
+   *     empty list
+   * @param maxBytes positive budget in storage-encoded bytes
+   * @throws IllegalArgumentException if {@code offset} is outside the log or {@code maxBytes} is
+   *     not positive
+   * @throws CorruptLogException if a stored batch fails validation
+   */
   public List<RecordBatch> read(long offset, int maxBytes) throws IOException {
     guard.readLock().lock();
     try {
@@ -230,7 +295,19 @@ public final class PartitionLog implements AutoCloseable {
     }
   }
 
-  /** Truncates at a batch boundary and rebuilds the affected sparse index. */
+  /**
+   * Truncates at a batch boundary and rebuilds the affected sparse index.
+   *
+   * <p>Later segments are deleted from the end, the boundary segment is cut, and all segments are
+   * forced and the directory synced before the new end is published as both log end and durable
+   * end. The operation is not atomic across a crash: reopen and retry the same offset. The
+   * committed floor in {@link LogOpenOptions} is not checked here.
+   *
+   * @param offset batch base offset or the log end (a no-op)
+   * @throws IllegalArgumentException if {@code offset} is outside the log or inside a batch; no
+   *     file has been changed
+   * @throws IOException if a file operation fails; the log becomes failed
+   */
   public void truncateTo(long offset) throws IOException {
     guard.writeLock().lock();
     try {
@@ -297,7 +374,15 @@ public final class PartitionLog implements AutoCloseable {
     }
   }
 
-  /** Forces data to storage and returns the exclusive durable end offset. */
+  /**
+   * Forces data to storage and returns the exclusive durable end offset.
+   *
+   * <p>Every segment is forced and then the directory synced; only after both succeed does the
+   * durable end move to the current log end.
+   *
+   * @throws IOException if a force or sync fails; the log becomes failed and the durable end is
+   *     unchanged
+   */
   public long flush() throws IOException {
     guard.writeLock().lock();
     try {
@@ -354,7 +439,14 @@ public final class PartitionLog implements AutoCloseable {
   }
 
   // After a mutating I/O failure, callers must reopen to recover the on-disk
-  /** Computes the first retained segment without mutating storage. */
+  /**
+   * Computes the first retained segment without mutating storage.
+   *
+   * <p>Returns the base offset of the last segment whose base is at most {@code boundary}, i.e.
+   * the segment containing {@code boundary}; the active segment's base when {@code boundary} lies
+   * beyond it; or the current start when {@code boundary} lies before it. This is the log start
+   * that {@link #deleteSegmentsBefore(long)} would produce.
+   */
   public long prefixStartAfter(long boundary) {
     guard.readLock().lock();
     try {
@@ -372,7 +464,18 @@ public final class PartitionLog implements AutoCloseable {
     }
   }
 
-  /** Caller owns durable crash-recovery intent; active segment is never deleted. */
+  /**
+   * Caller owns durable crash-recovery intent; active segment is never deleted.
+   *
+   * <p>Deletes whole segments below {@link #prefixStartAfter(long)} together with their indexes,
+   * then syncs the directory. The log does not persist its start offset: before calling, the
+   * caller must durably record the new start so that it can finish an interrupted deletion and
+   * reopen with a matching {@link LogOpenOptions#startOffset()}. Log end and durable end are
+   * unchanged.
+   *
+   * @return the new {@link #logStartOffset()}
+   * @throws IOException if a delete or sync fails; the log becomes failed
+   */
   public long deleteSegmentsBefore(long boundary) throws IOException {
     guard.writeLock().lock();
     try {
@@ -410,7 +513,14 @@ public final class PartitionLog implements AutoCloseable {
     if (state != State.OPEN) throw new IllegalStateException("Log is " + state, firstFailure);
   }
 
-  /** Flushes an open log, then releases its segments and directory lock. */
+  /**
+   * Flushes an open log, then releases its segments and directory lock.
+   *
+   * <p>A failed log is only cleaned up, without a flush attempt. Resources are released even if
+   * the flush fails, and repeated calls are no-ops.
+   *
+   * @throws IOException the flush failure, or the first close failure, with later ones suppressed
+   */
   @Override
   public void close() throws IOException {
     guard.writeLock().lock();

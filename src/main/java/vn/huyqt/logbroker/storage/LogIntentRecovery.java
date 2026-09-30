@@ -15,6 +15,20 @@ import java.util.*;
 public final class LogIntentRecovery {
   private LogIntentRecovery() {}
 
+  /**
+   * Completes a truncation to {@code target} directly on the files of a closed log.
+   *
+   * <p>Validates every batch below {@code target}, deletes later segments and their indexes from
+   * the last one backwards, truncates the segment holding the boundary, forces it and syncs the
+   * directory. Indexes are not rewritten; the normal {@link PartitionLog} open that follows
+   * rebuilds them. Repeating the call after a crash is safe.
+   *
+   * @param start base offset the first data segment must have
+   * @param committed committed floor; {@code target} may not be below it
+   * @param target exclusive end offset to keep; must be a batch boundary
+   * @throws CorruptLogException if {@code target} is below {@code start} or {@code committed},
+   *     is not a batch boundary, or the bytes before it are missing or invalid
+   */
   public static void truncate(
       Path directory,
       LogConfig config,
@@ -69,6 +83,8 @@ public final class LogIntentRecovery {
       }
     }
     if (retained == null) throw new CorruptLogException("Truncate intent prefix missing");
+    // Deleting from the end keeps a contiguous prefix if this is interrupted. Zero-padded names
+    // make string order equal offset order.
     for (var path : paths.reversed()) {
       if (path.getFileName().toString().compareTo(retained.getFileName().toString()) <= 0) break;
       Files.delete(path);

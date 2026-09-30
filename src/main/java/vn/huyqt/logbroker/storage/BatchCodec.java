@@ -9,15 +9,26 @@ import java.util.zip.CRC32C;
 /**
  * Encodes and validates version 1 batches using the bounds in
  * {@link LogConfig}.
+ *
+ * <p>The byte layout is specified in {@code docs/storage-format-v1.md}. Encoding failures are
+ * caller errors ({@link IllegalArgumentException}); decoding failures mean bad stored bytes
+ * ({@link CorruptLogException}).
  */
 final class BatchCodec {
     static final int HEADER_BYTES = 30;
+    // Header plus the smallest record: timestamp and three int32 lengths/counts.
     static final int MIN_BATCH_BYTES = 50;
     private static final byte[] MAGIC = { 'D', 'L', 'O', 'G' };
 
     private BatchCodec() {
     }
 
+    /**
+     * Encodes a complete batch, CRC included, without touching any file.
+     *
+     * @throws IllegalArgumentException if {@code records} is empty, the batch would exceed
+     *     {@code maxBatchBytes}, offsets would overflow, or a header key is not valid UTF-8
+     */
     static byte[] encode(long baseOffset, List<LogRecord> records, int maxBatchBytes) {
         Objects.requireNonNull(records, "records");
         if (maxBatchBytes < MIN_BATCH_BYTES || baseOffset < 0 || records.isEmpty()) {
@@ -40,6 +51,10 @@ final class BatchCodec {
         }
     }
 
+    /**
+     * Decodes exactly one batch. {@code bytes} must hold the whole batch and nothing else; the
+     * header, declared length, CRC32C and full consumption of the payload are all checked.
+     */
     static RecordBatch decode(byte[] bytes, int maxBatchBytes) throws CorruptLogException {
         Objects.requireNonNull(bytes, "bytes");
         if (bytes.length < HEADER_BYTES)
@@ -56,6 +71,11 @@ final class BatchCodec {
         return new RecordBatch(baseOffset, RecordPayloadCodec.read(b, count), bytes.length);
     }
 
+    /**
+     * Validates every header field fully contained in {@code prefix}, which may be shorter than
+     * the header. Recovery calls this before deciding that a tail is torn, so bytes that did reach
+     * disk but are visibly invalid are reported as corruption rather than cut.
+     */
     static void validateHeaderPrefix(byte[] prefix, int maxBatchBytes) throws CorruptLogException {
         Objects.requireNonNull(prefix, "prefix");
         if (prefix.length > HEADER_BYTES || maxBatchBytes < MIN_BATCH_BYTES) {
@@ -79,6 +99,7 @@ final class BatchCodec {
             throw new CorruptLogException("Negative offset");
         if (prefix.length >= 22) {
             int count = b.getInt(18);
+            // Every record takes at least 20 bytes, which bounds count by the declared length.
             if (count <= 0 || count > (total - HEADER_BYTES) / 20) {
                 throw new CorruptLogException("Invalid record count");
             }

@@ -6,6 +6,10 @@ import java.util.Objects;
 
 /**
  * A record with caller-supplied timestamp and defensively copied payload bytes.
+ *
+ * <p>Immutable. A {@code null} key or value is distinct from an empty array and survives
+ * encoding. The timestamp is opaque to storage and does not affect log order. Headers keep their
+ * order, including duplicate keys.
  */
 public final class LogRecord {
     private final long timestamp;

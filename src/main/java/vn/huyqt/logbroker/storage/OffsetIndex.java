@@ -16,6 +16,10 @@ import java.util.Objects;
 
 /**
  * Sparse offset-to-byte-position index derived entirely from the data segment.
+ *
+ * <p>The in-memory entries are authoritative while the log is open; the {@code .index} file is
+ * only a copy. Recovery rebuilds every index from validated data, so a missing, torn or stale
+ * index file never loses records. Not thread-safe; {@link PartitionLog} serializes access.
  */
 final class OffsetIndex {
     record Entry(long offset, long position) {
@@ -32,6 +36,12 @@ final class OffsetIndex {
         this.intervalBytes = intervalBytes;
     }
 
+    /**
+     * Offers the batch starting at {@code offset} and byte {@code position}; it is indexed only
+     * if it is the first batch or at least the interval past the last entry.
+     *
+     * @throws IllegalArgumentException if offset or position does not increase
+     */
     void consider(long offset, long position) {
         if (offset < 0 || position < 0 || offset <= lastOffset || position <= lastPosition) {
             throw new IllegalArgumentException("Index positions must increase");
@@ -45,6 +55,10 @@ final class OffsetIndex {
         lastPosition = position;
     }
 
+    /**
+     * Returns the last entry whose offset is at most {@code offset}, or {@code null}. Callers scan
+     * forward from its position to find the batch that contains {@code offset}.
+     */
     Entry floor(long offset) {
         int lo = 0, hi = entries.size() - 1, found = -1;
         while (lo <= hi) {
@@ -62,6 +76,10 @@ final class OffsetIndex {
         return List.copyOf(entries);
     }
 
+    /**
+     * Rewrites the whole index file as 16-byte big-endian entries. The file is not forced: it can
+     * always be rebuilt from the data segment.
+     */
     void write(Path path, LogIo io) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(io, "io");
