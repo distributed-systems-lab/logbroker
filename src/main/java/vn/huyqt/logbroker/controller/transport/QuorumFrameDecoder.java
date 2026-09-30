@@ -1,4 +1,5 @@
 package vn.huyqt.logbroker.controller.transport;
+
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
 import io.netty.util.ReferenceCountUtil;
@@ -6,53 +7,169 @@ import java.nio.ByteBuffer;
 import java.util.*;
 import vn.huyqt.logbroker.broker.*;
 import vn.huyqt.logbroker.controller.ControllerConfig;
+
 /** Fixed envelope staging selects the reserved control pool before allocating a frame body. */
 public final class QuorumFrameDecoder extends ChannelInboundHandlerAdapter {
-    private final ControllerConfig config;private final ResourceBudget control,shared;private final DeadlineScheduler clock;
-    private final byte[] header=new byte[69];private int headerCount,count,total;private byte[] bytes;
-    private ResourceBudget.Lease lease;private DeadlineScheduler.Ticket deadline;private boolean peerControl;
-    public QuorumFrameDecoder(ControllerConfig config,ResourceBudget control,ResourceBudget shared,DeadlineScheduler clock){this.config=config;this.control=control;this.shared=shared;this.clock=clock;}
-    @Override public void channelActive(ChannelHandlerContext context)throws Exception{if(clock!=null)deadline=clock.schedule(clock.nanoTime()+30_000_000_000L,context::close);super.channelActive(context);}
-    @Override public void channelRead(ChannelHandlerContext context,Object message) {
-        if(!(message instanceof ByteBuf input)){ReferenceCountUtil.release(message);context.close();return;}
-        try {
-            while(input.isReadable()&&context.channel().isOpen()) {
-                if(bytes==null) {
-                    if(headerCount==0&&clock!=null){if(deadline!=null)deadline.cancel();deadline=clock.schedule(clock.nanoTime()+30_000_000_000L,context::close);}
-                    int wanted=headerCount<4?4:69;
-                    int copy=Math.min(wanted-headerCount,input.readableBytes());input.readBytes(header,headerCount,copy);headerCount+=copy;
-                    if(headerCount<4)return;
-                    if(headerCount==4){int length=ByteBuffer.wrap(header).getInt();if(length<69||length>config.maxFrameBytes()){context.close();return;}total=length+4;if(!input.isReadable())return;continue;}
-                    if(headerCount<69)return;
-                    if(!validHeader()){context.close();return;}
-                    lease=(peerControl?control:shared).reserve(total).orElse(null);
-                    if(lease==null&&peerControl)lease=shared.reserve(total).orElse(null);
-                    if(lease==null){context.close();return;}
-                    bytes=new byte[total];System.arraycopy(header,0,bytes,0,69);count=69;
-                }
-                int copy=Math.min(bytes.length-count,input.readableBytes());input.readBytes(bytes,count,copy);count+=copy;
-                if(count==bytes.length) {
-                    if(deadline!=null){deadline.cancel();deadline=null;}
-                    var complete=new OwnedFrame(bytes,lease,peerControl);bytes=null;lease=null;headerCount=0;count=0;context.fireChannelRead(complete);
-                }
+  private final ControllerConfig config;
+  private final ResourceBudget control, shared;
+  private final DeadlineScheduler clock;
+  private final byte[] header = new byte[69];
+  private int headerCount, count, total;
+  private byte[] bytes;
+  private ResourceBudget.Lease lease;
+  private DeadlineScheduler.Ticket deadline;
+  private boolean peerControl;
+
+  public QuorumFrameDecoder(
+      ControllerConfig config,
+      ResourceBudget control,
+      ResourceBudget shared,
+      DeadlineScheduler clock) {
+    this.config = config;
+    this.control = control;
+    this.shared = shared;
+    this.clock = clock;
+  }
+
+  @Override
+  public void channelActive(ChannelHandlerContext context) throws Exception {
+    if (clock != null)
+      deadline = clock.schedule(clock.nanoTime() + 30_000_000_000L, context::close);
+    super.channelActive(context);
+  }
+
+  @Override
+  public void channelRead(ChannelHandlerContext context, Object message) {
+    if (!(message instanceof ByteBuf input)) {
+      ReferenceCountUtil.release(message);
+      context.close();
+      return;
+    }
+    try {
+      while (input.isReadable() && context.channel().isOpen()) {
+        if (bytes == null) {
+          if (headerCount == 0 && clock != null) {
+            if (deadline != null) deadline.cancel();
+            deadline = clock.schedule(clock.nanoTime() + 30_000_000_000L, context::close);
+          }
+          int wanted = headerCount < 4 ? 4 : 69;
+          int copy = Math.min(wanted - headerCount, input.readableBytes());
+          input.readBytes(header, headerCount, copy);
+          headerCount += copy;
+          if (headerCount < 4) return;
+          if (headerCount == 4) {
+            int length = ByteBuffer.wrap(header).getInt();
+            if (length < 69 || length > config.maxFrameBytes()) {
+              context.close();
+              return;
             }
-        } finally {input.release();}
+            total = length + 4;
+            if (!input.isReadable()) return;
+            continue;
+          }
+          if (headerCount < 69) return;
+          if (!validHeader()) {
+            context.close();
+            return;
+          }
+          lease = (peerControl ? control : shared).reserve(total).orElse(null);
+          if (lease == null && peerControl) lease = shared.reserve(total).orElse(null);
+          if (lease == null) {
+            context.close();
+            return;
+          }
+          bytes = new byte[total];
+          System.arraycopy(header, 0, bytes, 0, 69);
+          count = 69;
+        }
+        int copy = Math.min(bytes.length - count, input.readableBytes());
+        input.readBytes(bytes, count, copy);
+        count += copy;
+        if (count == bytes.length) {
+          if (deadline != null) {
+            deadline.cancel();
+            deadline = null;
+          }
+          var complete = new OwnedFrame(bytes, lease, peerControl);
+          bytes = null;
+          lease = null;
+          headerCount = 0;
+          count = 0;
+          context.fireChannelRead(complete);
+        }
+      }
+    } finally {
+      input.release();
     }
-    private boolean validHeader() {
-        var in=ByteBuffer.wrap(header);in.getInt();int op=in.getShort(),version=in.getShort(),direction=in.get();
-        UUID cluster=new UUID(in.getLong(),in.getLong());int sender=in.getInt();long request=in.getLong();byte[] hash=new byte[32];in.get(hash);
-        if(version!=1||direction<0||direction>1||request<0||!cluster.equals(config.identity().clusterId())||!Arrays.equals(hash,config.identity().voterHash())||op<101||op>109)return false;
-        if(sender==-1){if(direction!=0||op<106)return false;}
-        else if(config.identity().voters().stream().noneMatch(v->v.id()==sender)||direction==0&&op>106)return false;
-        peerControl=sender>=0&&op<=106&&op!=105&&total<=64*1024;return true;
+  }
+
+  private boolean validHeader() {
+    var in = ByteBuffer.wrap(header);
+    in.getInt();
+    int op = in.getShort(), version = in.getShort(), direction = in.get();
+    UUID cluster = new UUID(in.getLong(), in.getLong());
+    int sender = in.getInt();
+    long request = in.getLong();
+    byte[] hash = new byte[32];
+    in.get(hash);
+    if (version != 1
+        || direction < 0
+        || direction > 1
+        || request < 0
+        || !cluster.equals(config.identity().clusterId())
+        || !Arrays.equals(hash, config.identity().voterHash())
+        || op < 101
+        || op > 109) return false;
+    if (sender == -1) {
+      if (direction != 0 || op < 106) return false;
+    } else if (config.identity().voters().stream().noneMatch(v -> v.id() == sender)
+        || direction == 0 && op > 106) return false;
+    peerControl = sender >= 0 && op <= 106 && op != 105 && total <= 64 * 1024;
+    return true;
+  }
+
+  private void release() {
+    if (lease != null) lease.close();
+    lease = null;
+    bytes = null;
+    if (deadline != null) deadline.cancel();
+    deadline = null;
+    headerCount = 0;
+  }
+
+  @Override
+  public void channelInactive(ChannelHandlerContext context) throws Exception {
+    release();
+    super.channelInactive(context);
+  }
+
+  @Override
+  public void handlerRemoved(ChannelHandlerContext context) {
+    release();
+  }
+
+  public static final class OwnedFrame implements AutoCloseable {
+    private final byte[] bytes;
+    private final ResourceBudget.Lease lease;
+    private final boolean control;
+
+    private OwnedFrame(byte[] bytes, ResourceBudget.Lease lease, boolean control) {
+      this.bytes = bytes;
+      this.lease = lease;
+      this.control = control;
     }
-    private void release(){if(lease!=null)lease.close();lease=null;bytes=null;if(deadline!=null)deadline.cancel();deadline=null;headerCount=0;}
-    @Override public void channelInactive(ChannelHandlerContext context)throws Exception{release();super.channelInactive(context);}
-    @Override public void handlerRemoved(ChannelHandlerContext context){release();}
-    public static final class OwnedFrame implements AutoCloseable {
-        private final byte[] bytes;private final ResourceBudget.Lease lease;private final boolean control;
-        private OwnedFrame(byte[] bytes,ResourceBudget.Lease lease,boolean control){this.bytes=bytes;this.lease=lease;this.control=control;}
-        public byte[] bytes(){return bytes;}public boolean control(){return control;}
-        @Override public void close(){lease.close();}
+
+    public byte[] bytes() {
+      return bytes;
     }
+
+    public boolean control() {
+      return control;
+    }
+
+    @Override
+    public void close() {
+      lease.close();
+    }
+  }
 }

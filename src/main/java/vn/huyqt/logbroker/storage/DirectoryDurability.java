@@ -5,5 +5,5 @@ import java.nio.file.Path;
 
 @FunctionalInterface
 public interface DirectoryDurability {
-    void sync(Path directory) throws IOException;
+  void sync(Path directory) throws IOException;
 }
