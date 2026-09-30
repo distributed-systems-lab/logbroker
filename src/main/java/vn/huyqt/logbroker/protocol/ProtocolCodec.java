@@ -17,9 +17,20 @@ import java.util.UUID;
 import vn.huyqt.logbroker.protocol.Protocol.*;
 import vn.huyqt.logbroker.protocol.Protocol.Error;
 
-/** Bounded version 1 request/response codec independent of Netty. */
+/**
+ * Bounded version 1 request/response codec independent of Netty.
+ *
+ * <p>Frames are complete byte arrays including the leading {@code int32 frameLength}; the layout
+ * is specified in {@code docs/protocol-v1.md}. Every count and length is checked against the
+ * remaining bytes and the configured {@link ProtocolLimits} before allocation, and a decoded body
+ * must consume the frame exactly.
+ *
+ * <p>Instances hold only immutable limits and may be shared between threads.
+ */
 public final class ProtocolCodec {
     private static final short VERSION = 1;
+    // Topic names are at most 249 ASCII characters; see section 4 of
+    // docs/superpowers/specs/2026-09-25-broker-phase-2-design.md.
     private static final int MAX_STRING = 249;
     private final ProtocolLimits limits;
 
@@ -27,7 +38,13 @@ public final class ProtocolCodec {
         this.limits = Objects.requireNonNull(limits);
     }
 
-    /** Conservative decoded-memory admission before record/header allocation. */
+    /**
+     * Conservative decoded-memory admission before record/header allocation.
+     *
+     * <p>Returns twice the frame length, plus a per-record and per-header allowance for a
+     * well-formed Produce request. For a malformed non-null frame it returns the base estimate
+     * instead of throwing and leaves the error to {@link #decodeRequest}.
+     */
     public long estimatedDecodedBytes(byte[] frame) {
         long base = 2L * frame.length;
         try {
@@ -94,6 +111,13 @@ public final class ProtocolCodec {
         return true;
     }
 
+    /**
+     * Encodes a complete request frame.
+     *
+     * @throws ProtocolException if the header is invalid, the operation does not match the body
+     *     type, a string, array or batch exceeds its limit, or the frame exceeds {@link
+     *     ProtocolLimits#maxFrameBytes()}
+     */
     public byte[] encodeRequest(RequestFrame frame) throws ProtocolException {
         requireHeader(frame.operation(), frame.version(), frame.requestId());
         try {
@@ -106,6 +130,7 @@ public final class ProtocolCodec {
                     }
                     case Metadata request -> {
                         requireOperation(frame.operation(), 2);
+                        // Equals the default catalog cap of 128 topics.
                         putArrayCount(out, request.names().size(), 128);
                         for (String name : request.names())
                             putString(out, name, MAX_STRING);
@@ -139,6 +164,15 @@ public final class ProtocolCodec {
         }
     }
 
+    /**
+     * Decodes and validates a complete request frame, including semantic bounds such as the
+     * Produce timeout, Fetch limits and duplicate partitions.
+     *
+     * @throws ProtocolException carrying the code to report: {@link ErrorCode#UNSUPPORTED_VERSION}
+     *     or {@link ErrorCode#UNSUPPORTED_OPERATION} for a valid envelope with an unknown version
+     *     or operation, {@link ErrorCode#BATCH_TOO_LARGE} for an oversized batch, otherwise
+     *     {@link ErrorCode#INVALID_REQUEST}
+     */
     public RequestFrame decodeRequest(byte[] frame) throws ProtocolException {
         ByteBuffer source = header(frame);
         short operation = source.getShort();
@@ -164,6 +198,7 @@ public final class ProtocolCodec {
                 if (ack > 1)
                     throw invalid("Invalid acknowledgment mode");
                 int timeout = getInt(source);
+                // Equals the maximum broker processing timeout (30 s) in the Phase 2 design.
                 if (timeout <= 0 || timeout > 30_000)
                     throw invalid("Invalid Produce timeout");
                 int count = getCount(source, limits.maxPartitionEntries(), 16 + 4 + 34);
@@ -181,6 +216,7 @@ public final class ProtocolCodec {
             }
             case 4 -> {
                 int max = getInt(source), min = getInt(source), wait = getInt(source);
+                // Phase 2 design caps: Fetch batch budget 4 MiB, maxWaitMs 5 s.
                 if (max <= 0 || max > 4 * 1024 * 1024 || min < 0 || min > max
                         || wait < 0 || wait > 5_000)
                     throw invalid("Invalid Fetch limits");
@@ -207,7 +243,15 @@ public final class ProtocolCodec {
         return new RequestFrame(operation, version, requestId, body);
     }
 
+    /**
+     * Encodes a complete response frame. If the top-level error is not {@code NONE}, only the
+     * error is written, whatever the body type.
+     *
+     * @throws ProtocolException if the header or body violates the codec's limits, or a {@link
+     *     Failure} carries {@code NONE}
+     */
     public byte[] encodeResponse(ResponseFrame frame) throws ProtocolException {
+        // Failures may answer an unknown operation or version, which is echoed unchanged.
         if (!(frame.body() instanceof Failure)) {
             requireHeader(frame.operation(), frame.version(), frame.requestId());
         }
@@ -262,6 +306,7 @@ public final class ProtocolCodec {
                             putError(out, result.error());
                             out.writeLong(result.logStartOffset());
                             out.writeLong(result.logEndOffset());
+                            // 42 bytes is the smallest Fetch batch: base offset plus 34-byte batch.
                             putArrayCount(out, result.batches().size(), limits.maxFrameBytes() / 42);
                             for (FetchBatch batch : result.batches()) {
                                 out.writeLong(batch.baseOffset());
@@ -277,6 +322,11 @@ public final class ProtocolCodec {
         }
     }
 
+    /**
+     * Decodes a complete response frame. A nonzero top-level error decodes as {@link Failure}.
+     *
+     * @throws ProtocolException if the frame is malformed or exceeds the limits
+     */
     public ResponseFrame decodeResponse(byte[] frame) throws ProtocolException {
         ByteBuffer source = header(frame);
         short operation = source.getShort();
@@ -284,6 +334,8 @@ public final class ProtocolCodec {
         long requestId = source.getLong();
         if (requestId < 0)
             throw invalid("Invalid response header");
+        // Operation and version are checked only for success bodies: an error reply may echo an
+        // unsupported operation or version.
         Error error = getError(source);
         if (error.code() != ErrorCode.NONE) {
             requireConsumed(source);
@@ -469,6 +521,8 @@ public final class ProtocolCodec {
         return new Error(ErrorCode.fromNumber(getShort(source)), getString(source, 512));
     }
 
+    // Mirrors the size checks of WireBatchCodec.decode so an oversized batch is rejected before
+    // its bytes are copied.
     private byte[] getWireBatch(ByteBuffer source) throws ProtocolException {
         if (source.remaining() < 14)
             throw invalid("Incomplete wire batch header");
@@ -483,6 +537,8 @@ public final class ProtocolCodec {
         return bytes;
     }
 
+    // minBytes is the smallest encoding of one element, so a count that cannot fit in the
+    // remaining bytes is rejected before a list of that size is allocated.
     private static int getCount(ByteBuffer source, int max, int minBytes) throws ProtocolException {
         int count = getInt(source);
         if (count < 0 || count > max || count > source.remaining() / minBytes)
