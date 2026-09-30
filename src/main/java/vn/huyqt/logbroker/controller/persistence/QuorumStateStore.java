@@ -10,7 +10,13 @@ import java.util.*;
 import vn.huyqt.logbroker.controller.ClusterIdentity;
 import vn.huyqt.logbroker.storage.*;
 
-/** Owns root lock and persisted voting identity independently of log generations. */
+/**
+ * Owns root lock and persisted voting identity independently of log generations.
+ *
+ * <p>An open store holds an exclusive lock on {@code .lock} until {@link #close}, so at most one
+ * process can use a controller root. The epoch and vote survive restart and a vote, once cast,
+ * cannot change within its epoch. Not thread-safe.
+ */
 public final class QuorumStateStore implements AutoCloseable {
   private final Path root;
   private final ClusterIdentity identity;
@@ -33,6 +39,16 @@ public final class QuorumStateStore implements AutoCloseable {
     this.lock = lock;
   }
 
+  /**
+   * Initializes an empty controller root: lock file, an empty initial generation, the snapshot
+   * directory, a journal with epoch 0 / no vote, and finally {@code identity.bin}.
+   *
+   * <p>{@code identity.bin} is written last and {@link #open} requires it, so a crash part-way
+   * through leaves a root that cannot be opened. It is still non-empty, so it must be cleared
+   * before it can be formatted again.
+   *
+   * @throws IOException if {@code root} is non-empty or does not support strict durability
+   */
   public static void format(Path root, ClusterIdentity identity, DurableFiles files)
       throws IOException {
     if (Files.exists(root))
@@ -72,6 +88,15 @@ public final class QuorumStateStore implements AutoCloseable {
       files.syncDirectory(root.toAbsolutePath().getParent());
   }
 
+  /**
+   * Opens a formatted root, takes its lock and replays the latest epoch and vote.
+   *
+   * <p>{@code identity} must match the formatted identity byte for byte, including the voter set;
+   * a controller cannot silently join a different cluster or membership.
+   *
+   * @throws IOException if the root is unformatted, locked by another owner, bound to a different
+   *     identity, or its hard-state history is invalid
+   */
   public static QuorumStateStore open(Path root, ClusterIdentity identity, DurableFiles files)
       throws IOException {
     if (!Files.isRegularFile(root.resolve("identity.bin"))
@@ -114,6 +139,8 @@ public final class QuorumStateStore implements AutoCloseable {
     }
   }
 
+  // Epochs never go backwards, votes name a configured voter (or -1 for none), and a vote already
+  // cast in the current epoch cannot be replaced. Shared by recovery and persistVote.
   private void validateVote(long next, int vote) {
     if (next < epoch
         || next < 0
@@ -123,6 +150,14 @@ public final class QuorumStateStore implements AutoCloseable {
       throw new IllegalStateException("Invalid vote transition");
   }
 
+  /**
+   * Durably records the epoch and vote before the in-memory state changes. Must complete before
+   * the node acts on the vote, for example by granting it to a peer.
+   *
+   * @param next epoch to record; must not be lower than the current epoch
+   * @param vote voter ID, or {@code -1} for no vote
+   * @throws IllegalStateException if the transition is invalid (see class documentation)
+   */
   public void persistVote(long next, int vote) throws IOException {
     validateVote(next, vote);
     if (next == epoch && vote == votedFor) return;

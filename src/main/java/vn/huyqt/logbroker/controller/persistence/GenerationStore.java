@@ -12,8 +12,18 @@ import vn.huyqt.logbroker.storage.*;
 /**
  * Journal references decide the active generation; directory discovery cannot invent committed
  * state.
+ *
+ * <p>A generation is one metadata log directory under {@code generations/<uuid>/log}, optionally
+ * based on a snapshot. After format, new generations are only created by snapshot install.
+ * Suffix truncation and prefix retention happen within the active generation and follow an
+ * intent/done protocol in the {@link StateJournal}, so {@link #open} can complete an operation
+ * that a crash interrupted.
+ *
+ * <p>Mutating methods are not thread-safe and must be serialized by the caller. Only {@link
+ * #generation()} may be read from other threads.
  */
 public final class GenerationStore implements AutoCloseable {
+  /** Thrown when the install fence closes before the new generation is published. */
   public static final class InstallCancelled extends IOException {
     public InstallCancelled() {
       super("Snapshot install fence expired");
@@ -34,6 +44,13 @@ public final class GenerationStore implements AutoCloseable {
     this.config = config;
   }
 
+  /**
+   * Replays the journal to find the active generation, completes any pending truncate or prefix
+   * intent, and opens that generation's log.
+   *
+   * @throws IOException if the journal is inconsistent or the committed offset is not a retained
+   *     batch boundary
+   */
   public static GenerationStore open(QuorumStateStore state, DurableFiles files, LogConfig config)
       throws IOException {
     var store = new GenerationStore(state, files, config);
@@ -62,6 +79,8 @@ public final class GenerationStore implements AutoCloseable {
             if (nextStart < 0
                 || snapshot != null && snapshot.endOffset() < nextStart
                 || in.hasRemaining()) throw new IOException("Invalid generation record");
+            // A different UUID switches generations: intents from the old one no longer apply.
+            // The same UUID means prefix retention moved the recovery base forward.
             if (!next.equals(generation)) {
               committed = snapshot == null ? nextStart : snapshot.endOffset();
               truncate = null;
@@ -75,6 +94,8 @@ public final class GenerationStore implements AutoCloseable {
             start = nextStart;
             baseSnapshot = snapshot;
           }
+          // Boundary records carry their generation UUID; records for other generations are
+          // stale and ignored.
           case StateJournal.COMMIT -> {
             UUID id = new UUID(in.getLong(), in.getLong());
             long end = in.getLong();
@@ -93,6 +114,7 @@ public final class GenerationStore implements AutoCloseable {
               truncateSequence = frame.sequence();
             }
           }
+          // DONE records reference their intent by journal sequence, not by value.
           case StateJournal.TRUNCATE_DONE -> {
             if (in.getLong() == truncateSequence) truncate = null;
             if (in.hasRemaining()) throw new IOException("Invalid truncate completion");
@@ -119,6 +141,8 @@ public final class GenerationStore implements AutoCloseable {
     }
     if (generation == null) throw new IOException("No published generation");
     Path directory = directory();
+    // Finish an interrupted prefix removal. Deleting segments whose base is below the intent is
+    // idempotent, so it is safe to repeat after a crash.
     if (prefix != null) {
       if (prefix > committed) throw new IOException("Prefix intent exceeds commit");
       try (var paths = Files.list(directory)) {
@@ -133,6 +157,7 @@ public final class GenerationStore implements AutoCloseable {
           .journal()
           .append(StateJournal.PREFIX_DONE, ByteBuffer.allocate(8).putLong(prefixSequence).array());
     }
+    // Finish an interrupted suffix truncation before the log is opened normally.
     if (truncate != null) {
       LogIntentRecovery.truncate(
           directory, config, start, committed, truncate, files::syncDirectory);
@@ -156,6 +181,13 @@ public final class GenerationStore implements AutoCloseable {
     }
   }
 
+  /**
+   * Durably records {@code end} as the committed offset of the active generation. A repeated
+   * checkpoint of the current offset is a no-op.
+   *
+   * @throws IllegalArgumentException if {@code end} moves backwards, exceeds the durable log end,
+   *     or is not a batch boundary
+   */
   public void checkpointCommit(long end) throws IOException {
     if (end < committed || end > log.durableEnd())
       throw new IllegalArgumentException("Invalid committed boundary");
@@ -165,6 +197,14 @@ public final class GenerationStore implements AutoCloseable {
     committed = end;
   }
 
+  /**
+   * Removes the uncommitted log suffix from {@code end}, for example after a new leader's log
+   * diverges from this one. The intent is journaled first so a crash mid-truncation is completed on
+   * recovery.
+   *
+   * @throws IllegalArgumentException if {@code end} is below the committed offset or not a batch
+   *     boundary
+   */
   public void truncate(long end) throws IOException {
     if (end < committed) throw new IllegalArgumentException("Truncate crosses commit");
     log.epochs().positionAt(end);
@@ -175,6 +215,14 @@ public final class GenerationStore implements AutoCloseable {
         .append(StateJournal.TRUNCATE_DONE, ByteBuffer.allocate(8).putLong(intent).array());
   }
 
+  /**
+   * Makes the older of the two retained snapshots the recovery base and deletes sealed log
+   * segments that lie entirely before it. The segment containing the snapshot boundary is kept.
+   *
+   * @param olderSnapshotEnd end offset of the older retained snapshot; must be committed
+   * @throws IllegalArgumentException if exactly two snapshots are not retained, the offset does
+   *     not match the older one, or its epoch disagrees with the log
+   */
   public void retainPrefix(long olderSnapshotEnd) throws IOException {
     var snapshots =
         new SnapshotStore(state.root(), state.identity(), files, state, 64 * 1024 * 1024);
@@ -201,6 +249,12 @@ public final class GenerationStore implements AutoCloseable {
         .append(StateJournal.PREFIX_DONE, ByteBuffer.allocate(8).putLong(intent).array());
   }
 
+  /**
+   * Encodes a {@link StateJournal#GENERATION} payload.
+   *
+   * @param start physical base offset of the first retained segment, not the logical origin
+   * @param snapshot recovery base snapshot, or {@code null} for a log that starts at {@code start}
+   */
   public static byte[] encodeGeneration(UUID id, long start, SnapshotId snapshot) {
     var out =
         ByteBuffer.allocate(snapshot == null ? 25 : 57)
@@ -212,6 +266,10 @@ public final class GenerationStore implements AutoCloseable {
     return out.array();
   }
 
+  /**
+   * Returns the snapshot referenced by the latest GENERATION record, or {@code null} if it has
+   * none. {@link SnapshotStore} treats it as referenced so the recovery base is never deleted.
+   */
   public static SnapshotId snapshotReference(QuorumStateStore state) throws IOException {
     SnapshotId result = null;
     for (var frame : state.journal().frames())
@@ -233,6 +291,12 @@ public final class GenerationStore implements AutoCloseable {
     return result;
   }
 
+  /**
+   * Rebuilds the metadata image from the base snapshot plus committed log batches. Uncommitted
+   * batches are never applied.
+   *
+   * @throws IOException if the log is missing committed data
+   */
   public MetadataImage recoveredImage() throws IOException {
     var metadata = new MetadataStateMachine();
     if (baseSnapshot != null)
@@ -258,6 +322,11 @@ public final class GenerationStore implements AutoCloseable {
     return baseSnapshot;
   }
 
+  /**
+   * Installs {@code id} with no cancellation fence.
+   *
+   * @see #install(SnapshotId, MetadataImage, java.util.function.BooleanSupplier)
+   */
   public void install(SnapshotId id, MetadataImage image) throws IOException {
     install(id, image, () -> true);
   }
@@ -294,6 +363,21 @@ public final class GenerationStore implements AutoCloseable {
     }
   }
 
+  /**
+   * Replaces the active generation with a new empty log that starts at the end of snapshot {@code
+   * id}.
+   *
+   * <p>The new log is prepared and forced first. The GENERATION journal record is the only
+   * publication step; until it is written, recovery ignores the prepared directory. {@code allowed}
+   * is checked before and after the old log is closed. If it fails after the close, the old log is
+   * reopened so the store stays usable.
+   *
+   * @param image must equal the image stored in snapshot {@code id}
+   * @param allowed install fence, for example "this transfer still belongs to the current epoch"
+   * @throws InstallCancelled if {@code allowed} returns false before publication
+   * @throws IOException if the snapshot does not advance the committed prefix or contradicts the
+   *     known committed epoch
+   */
   public void install(
       SnapshotId id, MetadataImage image, java.util.function.BooleanSupplier allowed)
       throws IOException {
@@ -357,6 +441,7 @@ public final class GenerationStore implements AutoCloseable {
         .array();
   }
 
+  /** Log directory of the active generation. */
   public Path directory() {
     return state.root().resolve("generations").resolve(generation.toString()).resolve("log");
   }
