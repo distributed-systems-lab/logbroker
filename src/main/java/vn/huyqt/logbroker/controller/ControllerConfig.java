@@ -6,6 +6,29 @@ import vn.huyqt.logbroker.storage.LogConfig;
 
 /**
  * Immutable controller limits, validated together so progress cannot require an oversized frame.
+ *
+ * <p>The compact constructor rejects any combination that violates the relations below with
+ * {@link IllegalArgumentException}, so every instance is valid. Byte sizes are in bytes; {@link
+ * #maxFrameBytes()} excludes the 4-byte length prefix. Defaults come from {@link #builder}; the
+ * property names and the operator view of these limits are in {@code
+ * docs/controller-configuration.md}.
+ *
+ * <ul>
+ *   <li>All durations are positive, and {@code fetchIdleWait < rpcTimeout < electionMin <
+ *       electionMax}.
+ *   <li>{@code maxFrameBytes} is in 1024..8 MiB.
+ *   <li>{@code fetchMaxBytes} is at least the log max batch size and at most {@code maxFrameBytes
+ *       - 1024}; the log max batch size is at least 336.
+ *   <li>{@code snapshotChunkBytes} is in 1..256 KiB and at most {@code maxFrameBytes - 1024}.
+ *   <li>{@code snapshotMaxBytes} is at most 64 MiB and at least {@code 512 + 281 * maxTopics}.
+ *   <li>{@code snapshotTriggerBytes} is positive.
+ *   <li>{@code maxPendingRequests} is in 1..1024.
+ *   <li>{@code diskQueueCapacity} is in 32..256 and {@code eventQueueCapacity} is above {@code
+ *       diskQueueCapacity + 512} and at most 4096.
+ *   <li>{@code inboundBytes} and {@code outboundBytes} are at least {@code maxFrameBytes} and at
+ *       most 64 MiB; {@code outboundBytes} is also at least 32 times the log max batch size.
+ *   <li>{@code maxTopics} is in 1..128 and {@code maxPartitions} in {@code maxTopics}..1024.
+ * </ul>
  */
 public record ControllerConfig(
     ClusterIdentity identity,
@@ -91,6 +114,7 @@ public record ControllerConfig(
         || chunk < 1
         || chunk > 256 * 1024
         || chunk > frame - 1024
+        // The snapshot envelope must hold a catalog with the maximum number of topics.
         || snapshot < 512L + (long) topics * 281
         || snapshot > 64 * 1024 * 1024
         || log.maxBatchBytes() < 336
@@ -99,6 +123,8 @@ public record ControllerConfig(
         || pending > 1024
         || disks < 32
         || disks > 256
+        // ControllerNode reserves 512 event slots for control and one per disk completion; the
+        // remainder, which must be non-empty, is shared by admin and snapshot events.
         || events <= disks + 512
         || events > 4096
         || inbound < frame
@@ -112,18 +138,32 @@ public record ControllerConfig(
         || partitions > 1024) throw new IllegalArgumentException("Inconsistent controller limits");
   }
 
+  /** Does nothing; every instance was already validated by the canonical constructor. */
   public void validate() {
     /* The compact constructor establishes the invariant. */
   }
 
+  /** Returns the documented defaults for {@code identity}; see {@link Builder}. */
   public static ControllerConfig defaults(ClusterIdentity identity) {
     return builder(identity).build();
   }
 
+  /** Returns a builder preloaded with the defaults listed on {@link Builder}. */
   public static Builder builder(ClusterIdentity identity) {
     return new Builder(identity);
   }
 
+  /**
+   * Mutable builder whose setters do not validate; {@link #build()} applies the relations
+   * documented on {@link ControllerConfig} and throws {@link IllegalArgumentException} if they do
+   * not hold.
+   *
+   * <p>Defaults: {@link LogConfig#defaults()}; fetch idle wait 100 ms; RPC timeout 1 s; election
+   * timeout 1500..3000 ms; leader contact timeout 3 s; admin and shutdown timeouts 30 s; max frame
+   * 8 MiB; fetch max 4 MiB; snapshot chunk 256 KiB; snapshot max 64 MiB; snapshot trigger 16 MiB;
+   * 1024 pending requests; event queue 4096; disk queue 256; inbound and outbound budgets 64 MiB
+   * each; 128 topics; 1024 partitions.
+   */
   public static final class Builder {
     private final ClusterIdentity identity;
     private LogConfig logConfig = LogConfig.defaults();
@@ -211,11 +251,16 @@ public record ControllerConfig(
       return this;
     }
 
+    /** Storage bytes of batches appended since the latest snapshot that trigger a new one. */
     public Builder snapshotTriggerBytes(long value) {
       snapshotTriggerBytes = value;
       return this;
     }
 
+    /**
+     * Admin invocations admitted concurrently by the node's {@link ControllerService}. Quorum
+     * admission is further capped by the disk queue; see {@code docs/controller-configuration.md}.
+     */
     public Builder maxPendingRequests(int value) {
       maxPendingRequests = value;
       return this;
@@ -231,6 +276,10 @@ public record ControllerConfig(
       return this;
     }
 
+    /**
+     * Node transport budget for inbound frames; one eighth, capped at 8 MiB, is reserved for peer
+     * control traffic. {@link #outboundBytes} is split the same way.
+     */
     public Builder inboundBytes(long value) {
       inboundBytes = value;
       return this;
@@ -246,6 +295,7 @@ public record ControllerConfig(
       return this;
     }
 
+    /** Total partitions across all topics. */
     public Builder maxPartitions(int value) {
       maxPartitions = value;
       return this;

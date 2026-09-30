@@ -18,7 +18,18 @@ import vn.huyqt.logbroker.controller.runtime.*;
 import vn.huyqt.logbroker.controller.snapshot.*;
 import vn.huyqt.logbroker.controller.transport.*;
 
-/** Recovery precedes publication of a listener. Root ownership outlives every disk task. */
+/**
+ * Recovery precedes publication of a listener. Root ownership outlives every disk task.
+ *
+ * <p>Wires one controller: durable stores, the {@link QuorumStateMachine} core, the {@link
+ * ControllerLoop} that owns it, the ordered disk executor, the {@link ControllerService} admission
+ * front and the Netty transport. Consensus state changes only on the loop thread; inbound frames,
+ * disk completions and timer ticks reach it as {@link QuorumEvent}s.
+ *
+ * <p>Lifecycle: {@link #open} recovers, {@link #start()} binds the listener once, and {@link
+ * #close()} drains and releases the root. See {@code docs/controller-operation.md} for the
+ * operator contract.
+ */
 public final class ControllerNode implements AutoCloseable {
   private final ControllerConfig config;
   private final QuorumStateStore state;
@@ -107,6 +118,14 @@ public final class ControllerNode implements AutoCloseable {
       process(new SnapshotAvailable(snapshots.retained().getFirst()), null);
   }
 
+  /**
+   * Recovers a formatted root: opens the quorum state (taking the root lock), the active
+   * generation and the snapshot store, and rebuilds the committed metadata image. Nothing is bound
+   * or sent until {@link #start()}. On failure every store opened so far is closed.
+   *
+   * @throws IOException if the root is not formatted for {@code config}'s identity, is locked, or
+   *     its durable state is inconsistent
+   */
   public static ControllerNode open(Path root, ControllerConfig config, DurableFiles files)
       throws IOException {
     QuorumStateStore state = null;
@@ -114,16 +133,22 @@ public final class ControllerNode implements AutoCloseable {
     try {
       state = QuorumStateStore.open(root, config.identity(), files);
       generation = GenerationStore.open(state, files, config.logConfig());
+      // A crash can leave log entries from an epoch newer than the durable quorum state. Persist
+      // that epoch before communicating so the node never runs behind its own log.
       long logEpoch = generation.epochIndex().positionAt(generation.log().end()).lastEpoch();
       if (logEpoch > state.epoch()) state.persistVote(logEpoch, -1);
       var image = generation.recoveredImage();
       var snapshots =
           new SnapshotStore(root, config.identity(), files, state, config.snapshotMaxBytes());
       var base = generation.baseSnapshot();
+      // GenerationStore.install publishes the generation before SnapshotStore.publishInstalled
+      // records the snapshot set; a crash in between leaves the base outside the retained set.
       if (base != null
           && (snapshots.retained().isEmpty()
               || snapshots.retained().getLast().endOffset() < base.endOffset()))
         snapshots.publishInstalled(base);
+      // Recount storage bytes appended after the newest retained snapshot so the snapshot
+      // trigger keeps its progress across restarts.
       long
           from =
               snapshots.retained().isEmpty()
@@ -156,6 +181,13 @@ public final class ControllerNode implements AutoCloseable {
     }
   }
 
+  /**
+   * Binds this node's configured voter endpoint and schedules the 20 ms {@link Tick} that drives
+   * the core's timers. May be called once, and not after {@link #close()} began.
+   *
+   * @return the bound address
+   * @throws IllegalStateException if already started or stopping
+   */
   public synchronized InetSocketAddress start() throws IOException {
     var voter = config.identity().voter(config.identity().nodeId());
     return start(new InetSocketAddress(voter.host(), voter.port()));
@@ -185,6 +217,10 @@ public final class ControllerNode implements AutoCloseable {
     return service;
   }
 
+  /**
+   * Returns the core's most recently published local status, read without entering the loop.
+   * Peer progress in it is what this node last observed, not a cluster-wide snapshot.
+   */
   public CompletableFuture<QuorumStatus> status() {
     return CompletableFuture.completedFuture(core.status());
   }
@@ -202,6 +238,8 @@ public final class ControllerNode implements AutoCloseable {
               });
   }
 
+  // Admin (sender -1) and FetchSnapshot frames use the shared queue so they cannot exhaust the
+  // capacity reserved for vote, epoch and fetch traffic.
   private void receive(QuorumTransport.Inbound inbound) {
     var frame = inbound.frame();
     var priority =
@@ -216,6 +254,8 @@ public final class ControllerNode implements AutoCloseable {
     }
   }
 
+  // A rejected internal event would be lost, so rejection fails the node at the next dispatch
+  // instead of letting it continue without that event.
   private void submitInternal(QuorumEvent event) {
     if (!loop.submit(event, ControllerLoop.Priority.CONTROL))
       pendingFatal = "Internal controller event admission exhausted";
@@ -246,12 +286,15 @@ public final class ControllerNode implements AutoCloseable {
           if (event instanceof DiskDone done) {
             if (done.result() instanceof DiskResult.Appended appended)
               appendedBytes += size(appended.batch());
+            // Retention results for a generation already replaced by a snapshot install are stale.
             if (done.result() instanceof DiskResult.PrefixRetained retained
                 && done.token().generation().equals(core.status().generation()))
               process(new LogRetained(retained.index(), retained.base()), source);
             coordinator.onCompletion(done);
           }
           process(event, source);
+          // An installed snapshot starts a new generation, so the trigger count and the
+          // coordinator, which is bound to one generation, start over.
           if (event instanceof DiskDone done && done.result() instanceof DiskResult.Installed) {
             appendedBytes = 0;
             coordinator.close();
@@ -282,6 +325,8 @@ public final class ControllerNode implements AutoCloseable {
       return;
     }
     var frame = inbound.frame();
+    // Network admin requests go through the service so they share its pending bound. The inbound
+    // reference is held until the reply write finishes.
     if (frame.senderId() == -1) {
       adminSources.put(inbound.route(), inbound);
       int timeout =
@@ -348,6 +393,8 @@ public final class ControllerNode implements AutoCloseable {
     for (var effect : effects) {
       if (effect instanceof QuorumEffect.DiskEffect work && source != null)
         diskSources.put(work.token(), source.retain());
+      // Reserve shared outbound memory before loading log bytes, held until the read completes;
+      // if none is available the read completes as overloaded rather than allocating.
       if (effect instanceof QuorumEffect.ReadLog read) {
         int budget = Math.min(read.budget(), config.logConfig().maxBatchBytes());
         var memory = transport.reserveReadMemory(budget);
@@ -396,6 +443,10 @@ public final class ControllerNode implements AutoCloseable {
             snapshots::retained);
   }
 
+  /**
+   * Storage bytes of {@code batch}: the 30-byte storage batch header plus the record payload, each
+   * entry being one keyless record. This is the unit counted against the snapshot trigger.
+   */
   static long size(QuorumBatch batch) {
     return 30L
         + vn.huyqt.logbroker.storage.RecordPayloadCodec.encodedSize(
@@ -424,6 +475,18 @@ public final class ControllerNode implements AutoCloseable {
     }
   }
 
+  /**
+   * Stops admission, fails pending admin invocations, submits {@link Stop} to the core, drains
+   * accepted disk work, then closes the transport and the stores and releases the root lock, all
+   * within the configured shutdown timeout.
+   *
+   * <p>If the deadline passes before disk work has drained, this throws and keeps the root locked,
+   * because files must not be closed while the disk worker may still modify them. Close may then
+   * be retried; it reuses the stop already submitted. Once the stores are closed, further calls do
+   * nothing, even if waiting for the response threads then timed out.
+   *
+   * @throws IOException if shutdown did not complete within the deadline or was interrupted
+   */
   @Override
   public synchronized void close() throws IOException {
     if (closed) return;

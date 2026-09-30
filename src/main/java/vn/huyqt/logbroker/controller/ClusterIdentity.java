@@ -5,8 +5,22 @@ import java.nio.charset.StandardCharsets;
 import java.security.*;
 import java.util.*;
 
-/** Fixed membership and node identity; the hash deliberately excludes local node ID. */
+/**
+ * Fixed membership and node identity; the hash deliberately excludes local node ID.
+ *
+ * <p>Phase 3 membership is exactly three voters with distinct IDs and distinct endpoints, and
+ * {@link #nodeId()} must be one of them. Voters are stored sorted by ID, so the canonical encoding
+ * and {@link #voterHash()} do not depend on the order in which the voter list was written. All
+ * three nodes therefore share one hash, which every frame carries (see {@code
+ * docs/controller-protocol-v1.md}). The identity is a configuration check, not authentication.
+ * Construction throws {@link IllegalArgumentException} for the zero cluster UUID or any other
+ * membership shape.
+ */
 public record ClusterIdentity(UUID clusterId, int nodeId, List<Voter> voters) {
+  /**
+   * One voter endpoint: a non-negative ID, a non-blank host of at most 255 UTF-8 bytes and a port
+   * in 1..65535.
+   */
   public record Voter(int id, String host, int port) {
     public Voter {
       Objects.requireNonNull(host);
@@ -31,6 +45,11 @@ public record ClusterIdentity(UUID clusterId, int nodeId, List<Voter> voters) {
       throw new IllegalArgumentException("Expected three distinct voters including this node");
   }
 
+  /**
+   * Returns the canonical membership encoding hashed by {@link #voterHash()}: voter count i32, then
+   * per voter in ascending ID order its ID i32, host byte length i32, UTF-8 host and port i32, all
+   * big-endian. The local node ID is not included.
+   */
   public byte[] canonicalVoters() {
     try {
       var bytes = new ByteArrayOutputStream();
@@ -49,6 +68,7 @@ public record ClusterIdentity(UUID clusterId, int nodeId, List<Voter> voters) {
     }
   }
 
+  /** Returns the SHA-256 of {@link #canonicalVoters()}; a new 32-byte array on every call. */
   public byte[] voterHash() {
     try {
       return MessageDigest.getInstance("SHA-256").digest(canonicalVoters());
@@ -57,6 +77,11 @@ public record ClusterIdentity(UUID clusterId, int nodeId, List<Voter> voters) {
     }
   }
 
+  /**
+   * Returns the voter with {@code id}.
+   *
+   * @throws IllegalArgumentException if {@code id} is not a member
+   */
   public Voter voter(int id) {
     return voters.stream()
         .filter(v -> v.id() == id)

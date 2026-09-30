@@ -7,9 +7,15 @@ import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import vn.huyqt.logbroker.controller.persistence.DurableFiles;
 
+/**
+ * Process entry point: {@code --config FILE} starts one controller from a properties file and runs
+ * it until JVM shutdown. The data root must already be formatted with {@code ControllerCli
+ * format}; see {@code docs/controller-configuration.md} for properties and the example cluster.
+ */
 public final class ControllerMain {
   private ControllerMain() {}
 
+  /** Parsed properties: the data root and the validated controller configuration. */
   public record Settings(Path data, ControllerConfig config) {}
 
   public static void main(String[] args) {
@@ -17,6 +23,14 @@ public final class ControllerMain {
     if (code != 0) System.exit(code);
   }
 
+  /**
+   * Opens and starts the node, prints a {@code STARTED} line, then blocks until the shutdown hook
+   * has closed the node or the calling thread is interrupted. The node is closed again on the way
+   * out; a second close after a successful one does nothing.
+   *
+   * @return 0 after an orderly stop, 1 after any startup or shutdown error (reported on {@code
+   *     err})
+   */
   public static int run(String[] args, PrintStream out, PrintStream err) {
     try {
       var options = ControllerOptions.parse(args, 0, Set.of("config"));
@@ -53,6 +67,8 @@ public final class ControllerMain {
         try {
           Runtime.getRuntime().removeShutdownHook(hook);
         } catch (IllegalStateException shuttingDown) {
+          // The JVM is already shutting down, so the hook cannot be removed; close below is then a
+          // no-op, or a retry if the hook's close failed.
         }
         node.close();
       }
@@ -63,6 +79,14 @@ public final class ControllerMain {
     }
   }
 
+  /**
+   * Reads a controller properties file. {@code cluster.id}, {@code node.id}, {@code voters} and
+   * {@code data.dir} are required; other keys override builder defaults, and {@code *.ms} keys are
+   * milliseconds. A relative {@code data.dir} is resolved against the working directory.
+   *
+   * @throws IllegalArgumentException if a required key is missing, a key is unknown, a value does
+   *     not parse, or the resulting configuration is invalid
+   */
   public static Settings settings(Path path) throws IOException {
     var properties = new Properties();
     try (var input = Files.newBufferedReader(path)) {

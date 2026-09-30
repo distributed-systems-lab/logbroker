@@ -6,6 +6,14 @@ import java.util.*;
 public final class ControllerOptions {
   private ControllerOptions() {}
 
+  /**
+   * Parses {@code --key value} pairs from {@code args[start..]}.
+   *
+   * @param allowed option names without the {@code --} prefix
+   * @return options keyed without the prefix, in argument order
+   * @throws IllegalArgumentException for an unknown, duplicated or valueless option, including a
+   *     value that itself starts with {@code --}
+   */
   public static Map<String, String> parse(String[] args, int start, Set<String> allowed) {
     var values = new LinkedHashMap<String, String>();
     for (int i = start; i < args.length; i += 2) {
@@ -21,12 +29,25 @@ public final class ControllerOptions {
     return values;
   }
 
+  /**
+   * Returns the value for {@code key}.
+   *
+   * @throws IllegalArgumentException if the option is absent or blank
+   */
   public static String required(Map<String, String> options, String key) {
     var value = options.get(key);
     if (value == null || value.isBlank()) throw new IllegalArgumentException("Missing --" + key);
     return value;
   }
 
+  /**
+   * Builds an identity from a cluster UUID and a comma-separated {@code id@host:port} voter list.
+   * The port is taken after the last colon, so an IPv6 host may be written in brackets, which are
+   * stripped.
+   *
+   * @throws IllegalArgumentException if a token is malformed, a number or the UUID does not parse,
+   *     or the voters do not form a valid {@link ClusterIdentity}
+   */
   public static ClusterIdentity identity(String cluster, int node, String text) {
     var voters = new ArrayList<ClusterIdentity.Voter>();
     for (String token : text.split(",", -1)) {
