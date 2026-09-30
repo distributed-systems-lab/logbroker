@@ -3,6 +3,14 @@ package vn.huyqt.logbroker.controller.metadata;
 import java.util.*;
 import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
 
+/**
+ * Immutable committed metadata as of the exclusive log offset {@code appliedOffset}.
+ *
+ * <p>Topics are kept sorted by name, so the image and its encoding do not depend on insertion
+ * order. The constructor enforces the v1 catalog limits (128 topics, 1,024 partitions in total)
+ * and unique names and IDs; snapshot sizing in {@code docs/controller-storage-v1.md} relies on
+ * them.
+ */
 public record MetadataImage(long appliedOffset, List<TopicCreated> topics) {
   public MetadataImage {
     if (appliedOffset < 0) throw new IllegalArgumentException("Negative applied offset");

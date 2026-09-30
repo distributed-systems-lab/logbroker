@@ -5,6 +5,11 @@ import java.util.ArrayList;
 import vn.huyqt.logbroker.broker.metadata.MetadataEventCodec;
 import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
 
+/**
+ * Binary form of a {@link MetadataImage}: applied offset i64, topic count i32, then each topic as
+ * a length-prefixed {@link MetadataEventCodec} event, big-endian. This is the image payload
+ * carried inside snapshot files.
+ */
 public final class MetadataImageCodec {
   private MetadataImageCodec() {}
 
@@ -25,17 +30,26 @@ public final class MetadataImageCodec {
     }
   }
 
+  /**
+   * Decodes an image, consuming every byte. Counts and lengths are checked against the remaining
+   * input before anything is allocated for them.
+   *
+   * @throws IOException if the encoding is malformed or the image violates {@link MetadataImage}
+   *     limits
+   */
   public static MetadataImage decode(byte[] bytes) throws IOException {
     if (bytes == null || bytes.length < 12 || bytes.length > 64 * 1024 * 1024)
       throw new IOException("Invalid image size");
     try (var in = new DataInputStream(new ByteArrayInputStream(bytes))) {
       long offset = in.readLong();
       int count = in.readInt();
+      // 31 bytes is the smallest topic element: a 4-byte length plus a 27-byte event.
       if (count < 0 || count > 128 || count > in.available() / 31)
         throw new IOException("Invalid topic count");
       var topics = new ArrayList<TopicCreated>(count);
       for (int i = 0; i < count; i++) {
         int n = in.readInt();
+        // Event size is 26 bytes plus the 1..249-byte topic name.
         if (n < 27 || n > 275 || n > in.available()) throw new IOException("Invalid event length");
         topics.add(MetadataEventCodec.decode(in.readNBytes(n)));
       }
