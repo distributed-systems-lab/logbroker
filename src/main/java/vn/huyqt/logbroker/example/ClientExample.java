@@ -15,10 +15,16 @@ import vn.huyqt.logbroker.protocol.ProtocolLimits;
 import vn.huyqt.logbroker.storage.LogRecord;
 import vn.huyqt.logbroker.transport.netty.NettyClientTransport;
 
-/** One durable Produce followed by an explicit-offset Fetch. */
+/**
+ * One durable Produce followed by an explicit-offset Fetch.
+ *
+ * <p>Runs against a broker started with {@code BrokerMain}; see {@code README.md} for the
+ * commands. Prints {@code SUCCESS records=1} when the fetched record equals the produced one.
+ */
 public final class ClientExample {
     private ClientExample() {}
 
+    /** Expects {@code <host> <port> <topic>}. */
     public static void main(String[] args) throws Exception {
         if (args.length != 3) throw new IllegalArgumentException(
                 "Usage: ClientExample <host> <port> <topic>");
@@ -26,6 +32,15 @@ public final class ClientExample {
         System.out.println("SUCCESS records=" + count);
     }
 
+    /**
+     * Creates {@code topic} with two partitions, produces one record to partition 0 with
+     * {@code FLUSHED}, and fetches it back from the returned offset. Each step waits at most 10
+     * seconds. An existing topic with two partitions is reused.
+     *
+     * @return the number of records fetched, which is 1 on success
+     * @throws IllegalStateException if CreateTopic returns an error, which includes the topic
+     *     already existing with a different partition count, or the fetched record differs
+     */
     public static int run(String host, int port, String topic) throws Exception {
         var config = ClientConfig.defaults(new InetSocketAddress(host, port));
         try (var clock = DeadlineScheduler.system();
