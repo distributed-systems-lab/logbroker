@@ -6,7 +6,17 @@ import java.util.concurrent.*;
 import vn.huyqt.logbroker.controller.consensus.QuorumEvent;
 import vn.huyqt.logbroker.controller.consensus.QuorumEvent.*;
 
-/** Mutations stay FIFO; independent snapshot serialization uses a bounded lower-priority queue. */
+/**
+ * Mutations stay FIFO; independent snapshot serialization uses a bounded lower-priority queue.
+ *
+ * <p>A single {@code controller-disk} thread runs all controller disk work, so storage objects
+ * touched only from submitted tasks need no further locking. Every accepted task first reserves a
+ * completion slot on the {@link ControllerLoop}; its result, or failure, is delivered to the loop
+ * as {@code DiskDone} or {@code DiskFailed} through that slot. The low-priority queue gets a turn
+ * after eight consecutive normal tasks; see {@code docs/controller-storage-v1.md}.
+ *
+ * <p>Submission is thread-safe; queue state is guarded by this instance's monitor.
+ */
 public final class OrderedDiskExecutor implements AutoCloseable {
   private record Work(
       DiskToken token, Callable<DiskResult> callable, ControllerLoop.CompletionTicket ticket) {}
@@ -26,15 +36,36 @@ public final class OrderedDiskExecutor implements AutoCloseable {
     worker.start();
   }
 
+  /**
+   * Queues normal FIFO work, such as votes, flushes, truncation and leader-change appends. It may
+   * use the completion slots that {@link #submitOrdinary} and {@link #submitLowPriority} leave in
+   * reserve.
+   *
+   * @return false if the executor is stopping, the queue is full, or no completion slot is free;
+   *     the work is then not run
+   */
   public boolean submit(DiskToken token, Callable<DiskResult> work) {
     return admit(token, work, false);
   }
 
+  /**
+   * Queues ordinary append work in FIFO order with other normal work, but refuses it once reserved
+   * loop completions reach {@code capacity - min(16, capacity / 2)}, keeping the rest for {@link
+   * #submit}; see {@code docs/controller-configuration.md}.
+   *
+   * @return false if the work was not queued
+   */
   public synchronized boolean submitOrdinary(DiskToken token, Callable<DiskResult> work) {
     if (loop.reservedCompletions() >= capacity - Math.min(16, capacity / 2)) return false;
     return admit(token, work, false);
   }
 
+  /**
+   * Queues independent work, such as snapshot creation, on the low-priority queue. It is not
+   * ordered with normal work and is subject to the same slot reserve as {@link #submitOrdinary}.
+   *
+   * @return false if the work was not queued
+   */
   public boolean submitLowPriority(DiskToken token, Callable<DiskResult> work) {
     return admit(token, work, true);
   }
@@ -44,6 +75,7 @@ public final class OrderedDiskExecutor implements AutoCloseable {
     if (lowPriority && loop.reservedCompletions() >= capacity - Math.min(16, capacity / 2))
       return false;
     if (stopping || normal.size() + low.size() >= capacity) return false;
+    // Reserve the loop slot before admitting, so a completed disk operation is never dropped.
     var ticket = loop.reserveCompletion();
     if (ticket == null) return false;
     (lowPriority ? low : normal).addLast(new Work(token, work, ticket));
@@ -70,6 +102,7 @@ public final class OrderedDiskExecutor implements AutoCloseable {
       Work work;
       while ((work = next()) != null) {
         QuorumEvent event;
+        // An exception is reported as DiskFailed so the reserved slot is still completed.
         try {
           event = new DiskDone(work.token(), work.callable().call());
         } catch (Exception e) {
@@ -89,6 +122,11 @@ public final class OrderedDiskExecutor implements AutoCloseable {
     }
   }
 
+  /**
+   * Waits until every accepted task has run and handed its completion to the loop.
+   *
+   * @return whether the executor became idle within {@code timeout}
+   */
   public synchronized boolean awaitIdle(Duration timeout) throws InterruptedException {
     long end = System.nanoTime() + timeout.toNanos(), remaining;
     while (active != 0 && (remaining = end - System.nanoTime()) > 0)
@@ -96,6 +134,11 @@ public final class OrderedDiskExecutor implements AutoCloseable {
     return active == 0;
   }
 
+  /**
+   * Refuses new work, lets the worker finish everything already queued, and waits for it to exit.
+   *
+   * @return whether the worker exited within {@code timeout}; if not, it keeps running
+   */
   public boolean stop(Duration timeout) throws InterruptedException {
     synchronized (this) {
       stopping = true;
@@ -105,6 +148,12 @@ public final class OrderedDiskExecutor implements AutoCloseable {
     return !worker.isAlive();
   }
 
+  /**
+   * Stops with a 30-second deadline.
+   *
+   * @throws IllegalStateException if the worker is still running afterwards or the wait is
+   *     interrupted
+   */
   @Override
   public void close() {
     try {

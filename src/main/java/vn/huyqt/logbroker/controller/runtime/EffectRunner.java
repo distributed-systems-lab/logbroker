@@ -9,7 +9,16 @@ import vn.huyqt.logbroker.controller.metadata.MetadataStateMachine;
 import vn.huyqt.logbroker.controller.persistence.*;
 import vn.huyqt.logbroker.controller.snapshot.SnapshotStore;
 
-/** Executes disk work off-loop, but applies committed metadata on the state-owning loop. */
+/**
+ * Executes disk work off-loop, but applies committed metadata on the state-owning loop.
+ *
+ * <p>Translates {@link QuorumEffect}s from the consensus state machine into actions: disk effects
+ * run on the {@link OrderedDiskExecutor} against the {@link GenerationStore}, {@link
+ * QuorumStateStore} and {@link SnapshotStore}; {@code Apply} and {@code Restore} update the {@link
+ * MetadataStateMachine} synchronously and report {@code Applied}; everything else goes to the
+ * external consumer. {@link #run} must be called on the controller loop; disk bodies run on the
+ * disk worker.
+ */
 public final class EffectRunner {
   private final QuorumStateStore state;
   private final GenerationStore generation;
@@ -20,6 +29,11 @@ public final class EffectRunner {
   private SnapshotStore snapshots;
   private java.util.function.Predicate<DiskToken> installFence = ignored -> false;
 
+  /**
+   * Sets the predicate that decides, on the disk worker, whether an {@code InstallSnapshot} may
+   * still publish. It is checked before install starts and again inside {@link
+   * GenerationStore#install}. Until set, every install is discarded. Call before running effects.
+   */
   public void installFence(java.util.function.Predicate<DiskToken> fence) {
     installFence = fence;
   }
@@ -39,13 +53,21 @@ public final class EffectRunner {
     this.external = external;
   }
 
+  /** Connects the snapshot store used by snapshot effects. Call before running effects. */
   public void snapshots(SnapshotStore snapshots) {
     this.snapshots = snapshots;
   }
 
+  /**
+   * Runs effects in order. A disk effect that the executor refuses is answered at once with an
+   * {@code Overloaded} completion instead of being dropped. A metadata apply or restore failure is
+   * reported to the external consumer as {@code Fail}.
+   */
   public void run(List<QuorumEffect> effects) {
     for (var effect : effects) {
       if (effect instanceof QuorumEffect.DiskEffect work) {
+        // Appends that do not start with LeaderChange are ordinary and may be refused under
+        // pressure; snapshot creation is independent of log order and runs at low priority.
         boolean ordinary =
             work instanceof QuorumEffect.Append append
                 && !(append.entries().getFirst()
@@ -58,6 +80,8 @@ public final class EffectRunner {
                     : disk.submit(work.token(), () -> execute(work));
         if (!accepted) events.accept(new DiskDone(work.token(), new DiskResult.Overloaded()));
       } else if (effect instanceof QuorumEffect.Apply apply) {
+        // Apply carries its generation; one from a replaced generation is skipped. See
+        // docs/controller-storage-v1.md.
         if (apply.generation() != null && !apply.generation().equals(generation.generation()))
           continue;
         try {
@@ -81,6 +105,8 @@ public final class EffectRunner {
     }
   }
 
+  // Runs on the disk worker. Work stamped with an old generation is discarded; votes are global
+  // hard state and are persisted regardless of generation.
   private DiskResult execute(QuorumEffect.DiskEffect effect) throws IOException {
     if (!(effect instanceof QuorumEffect.PersistVote)
         && !effect.token().generation().equals(generation.generation()))
@@ -119,6 +145,7 @@ public final class EffectRunner {
         } catch (GenerationStore.InstallCancelled cancelled) {
           yield new DiskResult.Discarded();
         }
+        // Install published a new SNAPSHOT_SET through its own SnapshotStore; resync this one.
         snapshots.refreshRetained();
         generation.releaseObsoleteGenerations();
         yield new DiskResult.Installed(
