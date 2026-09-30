@@ -8,8 +8,22 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 
+/**
+ * Network boundary between controllers, and between admin clients and a controller.
+ *
+ * <p>Delivers validated inbound frames to a receiver and sends requests and replies. Replies are
+ * addressed by an opaque {@link ReplyRoute} that is bound to one connection incarnation, so a
+ * reply can never reach a later connection that reuses the request ID. Ownership and limits are
+ * specified in {@code docs/controller-protocol-v1.md}.
+ */
 public interface QuorumTransport {
-  /** Receiver owns one reference; disk consumers retain it until their completion. */
+  /**
+   * Receiver owns one reference; disk consumers retain it until their completion.
+   *
+   * <p>A decoded inbound frame together with the resources charged for it. The release action
+   * runs when the last reference is closed, returning those resources to the transport.
+   * Reference counting is thread-safe.
+   */
   final class Inbound implements AutoCloseable {
     private final ReplyRoute route;
     private final Frame frame;
@@ -41,19 +55,27 @@ public interface QuorumTransport {
       return frame;
     }
 
+    /** Returns whether the originating connection is still open. */
     public boolean isActive() {
       return active.getAsBoolean();
     }
 
+    /** Sets the action {@link #reject} runs; the Netty transport closes the connection. */
     public Inbound rejectWith(Runnable action) {
       reject = action;
       return this;
     }
 
+    /** Signals that the frame will not be processed. Does not release this reference. */
     public void reject() {
       reject.run();
     }
 
+    /**
+     * Adds a reference that must be closed separately.
+     *
+     * @throws IllegalStateException if every reference has already been released
+     */
     public Inbound retain() {
       int count;
       do {
@@ -63,6 +85,11 @@ public interface QuorumTransport {
       return this;
     }
 
+    /**
+     * Releases one reference; the last one runs the release action.
+     *
+     * @throws IllegalStateException if more references are closed than were held
+     */
     @Override
     public void close() {
       int left = references.decrementAndGet();
@@ -71,17 +98,37 @@ public interface QuorumTransport {
     }
   }
 
+  /** Failure attributed to one connection. */
   record ConnectionFailure(long connectionId, int peerId, Throwable failure) {}
 
+  /**
+   * Binds the listener and starts delivering inbound frames. The receiver must close each {@link
+   * Inbound} it is given.
+   *
+   * @param failure receives connection-level failures
+   * @return the bound address
+   * @throws IOException if the listener cannot be bound
+   */
   InetSocketAddress start(
       InetSocketAddress bind, Consumer<Inbound> receiver, Consumer<Throwable> failure)
       throws IOException;
 
+  /**
+   * Sends a request frame to a voter. The future completes when the frame is written, not when a
+   * reply arrives; replies are delivered to the receiver.
+   */
   CompletableFuture<Void> send(int peerId, Frame frame);
 
+  /**
+   * Sends a response on the connection that carried the request.
+   *
+   * @return a future that fails if the route's connection is closed or does not match the frame
+   */
   CompletableFuture<Void> reply(ReplyRoute route, Frame frame);
 
+  /** Closes the listener; existing connections stay open. */
   void stopAccepting();
 
+  /** Stops accepting, closes all connections and releases transport threads. */
   CompletableFuture<Void> closeAsync();
 }

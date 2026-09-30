@@ -8,7 +8,20 @@ import java.util.*;
 import vn.huyqt.logbroker.broker.*;
 import vn.huyqt.logbroker.controller.ControllerConfig;
 
-/** Fixed envelope staging selects the reserved control pool before allocating a frame body. */
+/**
+ * Fixed envelope staging selects the reserved control pool before allocating a frame body.
+ *
+ * <p>Reassembles length-prefixed controller frames and emits each as an {@link OwnedFrame}
+ * holding the raw bytes and their budget lease. The length prefix and fixed envelope, 69 bytes
+ * together, are staged in a fixed buffer and validated (length, version, direction, cluster ID,
+ * voter set hash, operation and sender) before the frame buffer is allocated. A small peer control
+ * frame is charged to the control budget, falling back to the shared budget; every other frame
+ * uses the shared budget. Invalid frames and budget exhaustion close the connection, as does a
+ * frame not completed within 30 seconds of its first byte, or no first byte within 30 seconds of
+ * activation. Frame layout and limits are in {@code docs/controller-protocol-v1.md}.
+ *
+ * <p>One instance per channel; Netty calls it only from that channel's event loop.
+ */
 public final class QuorumFrameDecoder extends ChannelInboundHandlerAdapter {
   private final ControllerConfig config;
   private final ResourceBudget control, shared;
@@ -20,6 +33,11 @@ public final class QuorumFrameDecoder extends ChannelInboundHandlerAdapter {
   private DeadlineScheduler.Ticket deadline;
   private boolean peerControl;
 
+  /**
+   * @param control budget reserved for small peer control frames
+   * @param shared budget for all other frames, and for control frames when {@code control} is full
+   * @param clock deadline source for partial frames; null disables the deadline
+   */
   public QuorumFrameDecoder(
       ControllerConfig config,
       ResourceBudget control,
@@ -103,6 +121,9 @@ public final class QuorumFrameDecoder extends ChannelInboundHandlerAdapter {
     }
   }
 
+  // Admin (sender -1) may only send requests for DescribeQuorum and the admin operations. A voter
+  // may not send admin-operation requests. Only peer control operations up to 64 KiB, excluding
+  // FetchSnapshot, may use the control pool; snapshot frames always use the shared pool.
   private boolean validHeader() {
     var in = ByteBuffer.wrap(header);
     in.getInt();
@@ -148,6 +169,10 @@ public final class QuorumFrameDecoder extends ChannelInboundHandlerAdapter {
     release();
   }
 
+  /**
+   * One complete raw frame, including its length prefix, and the budget lease charged for it. The
+   * lease is held until {@link #close}.
+   */
   public static final class OwnedFrame implements AutoCloseable {
     private final byte[] bytes;
     private final ResourceBudget.Lease lease;

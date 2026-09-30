@@ -17,8 +17,22 @@ import vn.huyqt.logbroker.controller.*;
 import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 
-/** Netty owns sockets only. Validation, DTO ownership and core dispatch are bounded separately. */
+/**
+ * Netty owns sockets only. Validation, DTO ownership and core dispatch are bounded separately.
+ *
+ * <p>One listener accepts both peer and admin connections; outbound requests to each voter use one
+ * cached client connection. Netty event loops only move bytes: frame decoding and encoding run on
+ * a bounded two-thread validation pool, serialized per connection, and decoded frames are handed
+ * to the receiver as {@link QuorumTransport.Inbound} references. Inbound and outbound bytes are
+ * charged to budgets split into a peer control share and a shared remainder, so snapshot and admin
+ * traffic cannot exhaust the capacity used by votes and fetches. Connection, in-flight and
+ * validation limits are listed in {@code docs/controller-protocol-v1.md} and {@code
+ * docs/controller-configuration.md}.
+ *
+ * <p>Public methods are thread-safe.
+ */
 public final class NettyQuorumTransport implements QuorumTransport {
+  /** A connection failure reported to the failure consumer, tagged with the connection and peer. */
   public static final class TransportException extends IOException {
     private final long connectionId;
     private final int peer;
@@ -45,6 +59,7 @@ public final class NettyQuorumTransport implements QuorumTransport {
       outboundControl,
       outboundShared,
       connectionBudget = new ResourceBudget(64);
+  // Classified peer connections are never evicted to admit another connection; at most eight.
   private final ResourceBudget peerConnections = new ResourceBudget(8);
   private final Validation validation = new Validation();
   private final AtomicLong connectionIds = new AtomicLong();
@@ -57,9 +72,11 @@ public final class NettyQuorumTransport implements QuorumTransport {
   private volatile boolean closed;
   private CompletableFuture<Void> closing;
 
+  /** Creates an unstarted transport; nothing is bound until {@link #start}. */
   public NettyQuorumTransport(ControllerConfig config, DeadlineScheduler clock) {
     this.config = config;
     this.clock = clock;
+    // One eighth of each direction, capped at 8 MiB, is reserved for small peer control frames.
     long inControl = Math.min(8L * 1024 * 1024, config.inboundBytes() / 8),
         outControl = Math.min(8L * 1024 * 1024, config.outboundBytes() / 8);
     inboundControl = new ResourceBudget(inControl);
@@ -68,6 +85,12 @@ public final class NettyQuorumTransport implements QuorumTransport {
     outboundShared = new ResourceBudget(config.outboundBytes() - outControl);
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * @throws IllegalStateException if already started or closed
+   * @throws IOException if binding fails; the transport is then closed
+   */
   @Override
   public synchronized InetSocketAddress start(
       InetSocketAddress bind, Consumer<Inbound> receiver, Consumer<Throwable> failure)
@@ -107,6 +130,13 @@ public final class NettyQuorumTransport implements QuorumTransport {
     };
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * <p>Connects on first use and reuses the connection afterwards. A failed send drops the cached
+   * connection so the next send reconnects. At most 32 requests may await replies per connection;
+   * an unanswered request frees its slot after the RPC timeout without failing the future.
+   */
   @Override
   public CompletableFuture<Void> send(int peerId, Frame frame) {
     if (closed || loops == null || frame.response())
@@ -162,6 +192,13 @@ public final class NettyQuorumTransport implements QuorumTransport {
             });
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * <p>Fails if the connection has closed, the frame is not a response, or no request with that ID
+   * and operation is outstanding on it. The request's {@link QuorumTransport.Inbound} reference is
+   * released once the write completes, whether or not it succeeded.
+   */
   @Override
   public CompletableFuture<Void> reply(ReplyRoute route, Frame frame) {
     var connection = routes.get(route.connectionId());
@@ -175,6 +212,12 @@ public final class NettyQuorumTransport implements QuorumTransport {
     if (listener != null) listener.close();
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * <p>Idempotent: later calls return the same future. The validation pool is given up to 30
+   * seconds to finish queued work.
+   */
   @Override
   public synchronized CompletableFuture<Void> closeAsync() {
     if (closing != null) return closing;
@@ -195,10 +238,12 @@ public final class NettyQuorumTransport implements QuorumTransport {
     return closing;
   }
 
+  /** Bytes currently charged to the inbound budgets, raw and decoded. */
   public long inboundUsed() {
     return inboundControl.used() + inboundShared.used();
   }
 
+  /** Bytes currently charged to the outbound budgets, including read-memory reservations. */
   public long outboundUsed() {
     return outboundControl.used() + outboundShared.used();
   }
@@ -210,6 +255,7 @@ public final class NettyQuorumTransport implements QuorumTransport {
     return outboundShared.reserve(12L * bytes + 1024).orElse(null);
   }
 
+  // Test seam: submits directly to the validation pool.
   boolean validationTask(boolean control, Runnable action) {
     return validation.execute(control, action);
   }
@@ -218,16 +264,20 @@ public final class NettyQuorumTransport implements QuorumTransport {
     return connectionBudget.used();
   }
 
+  // Control traffic may overflow into the shared pool; other traffic never uses the control pool.
   private ResourceBudget.Lease reserve(
       ResourceBudget control, ResourceBudget shared, long amount, boolean peerControl) {
     var lease = (peerControl ? control : shared).reserve(amount).orElse(null);
     return lease == null && peerControl ? shared.reserve(amount).orElse(null) : lease;
   }
 
+  // Same classification as QuorumFrameDecoder: small peer frames other than FetchSnapshot.
   private boolean control(Frame frame, int length, boolean peer) {
     return peer && frame.operation() != 105 && frame.operation() <= 106 && length <= 64 * 1024;
   }
 
+  // At the connection cap, evict the oldest connection not classified as a peer (unidentified or
+  // admin); classified peer connections are never evicted. See docs/controller-configuration.md.
   private synchronized ResourceBudget.Lease admitConnection() {
     var lease = connectionBudget.reserve(1).orElse(null);
     if (lease != null) return lease;
@@ -244,15 +294,24 @@ public final class NettyQuorumTransport implements QuorumTransport {
     return connectionBudget.reserve(1).orElse(null);
   }
 
+  /**
+   * Per-channel state. {@code id} is the connection incarnation used in {@link ReplyRoute}s.
+   * Outbound connections ({@code expectedPeer >= 0}) accept only correlated responses from that
+   * peer; accepted connections accept only requests, and fix their identity (a voter ID or -1 for
+   * admin) at the first frame. Unidentified accepted connections are closed after the RPC timeout.
+   */
   private final class Connection extends ChannelInboundHandlerAdapter {
     private final long id = connectionIds.incrementAndGet();
     private final int expectedPeer;
+    // -2 until an accepted connection identifies itself; -1 for admin, otherwise a voter ID.
     private volatile int peer = -2;
     private volatile boolean evicted;
     private ChannelHandlerContext context;
     private ResourceBudget.Lease connectionLease, peerLease;
     private DeadlineScheduler.Ticket handshake;
     private final ArrayDeque<QuorumFrameDecoder.OwnedFrame> received = new ArrayDeque<>();
+    // An incoming slot is held from receipt until the last Inbound reference closes, so the
+    // 32-message bound covers frames still owned by the core or disk work.
     private final Semaphore incomingSlots = new Semaphore(32), outgoingSlots = new Semaphore(32);
     private final Map<Long, Inbound> requests = new ConcurrentHashMap<>();
     private final Map<Long, Rpc> rpcs = new ConcurrentHashMap<>();
@@ -303,6 +362,8 @@ public final class NettyQuorumTransport implements QuorumTransport {
       scheduleDecode();
     }
 
+    // At most one decode per connection is queued or running, preserving frame order. If the
+    // validation pool refuses it, the connection is closed rather than buffering further.
     private synchronized void scheduleDecode() {
       if (decoding || received.isEmpty() || !context.channel().isActive()) return;
       var raw = received.removeFirst();
@@ -330,6 +391,7 @@ public final class NettyQuorumTransport implements QuorumTransport {
       ResourceBudget.Lease decoded = null;
       boolean transferred = false;
       try {
+        // Charge the decoded size estimated by preflight before allocating any DTOs.
         long charge = QuorumCodec.preflight(raw.bytes(), config);
         decoded = reserve(inboundControl, inboundShared, charge, raw.control());
         if (decoded == null) {
@@ -345,6 +407,8 @@ public final class NettyQuorumTransport implements QuorumTransport {
               return;
             }
             var rpc = rpcs.get(frame.requestId());
+            // A response with no matching outstanding RPC, such as one arriving after its timeout,
+            // is dropped without closing the connection.
             if (rpc == null || rpc.operation() != frame.operation()) return;
             if (rpcs.remove(frame.requestId(), rpc)) {
               rpc.timeout().cancel();
@@ -384,6 +448,7 @@ public final class NettyQuorumTransport implements QuorumTransport {
                       },
                       () -> context.channel().isActive())
                   .rejectWith(() -> context.close());
+          // Routing holds its own reference until the reply is written or the connection closes.
           if (!frame.response()) requests.put(frame.requestId(), inbound.retain());
           transferred = true;
           try {
@@ -457,6 +522,9 @@ public final class NettyQuorumTransport implements QuorumTransport {
       if (size > config.maxFrameBytes() + 4L)
         return CompletableFuture.failedFuture(new IOException("Outbound frame exceeds limit"));
       boolean isControl = control(frame, (int) size, peer >= 0);
+      // The lease is taken before queuing for encode and held until the write future completes
+      // (or released at once if the frame never reaches Netty), so queued and in-flight outbound
+      // bytes are both bounded.
       var lease = reserve(outboundControl, outboundShared, charge, isControl);
       if (lease == null)
         return CompletableFuture.failedFuture(
@@ -550,6 +618,7 @@ public final class NettyQuorumTransport implements QuorumTransport {
             new PriorityBlockingQueue<>(),
             r -> new Thread(r, "quorum-validation"));
 
+    // Control jobs run before others; within each class, jobs run in submission order.
     private final class Job implements Runnable, Comparable<Job> {
       final boolean control;
       final long order = sequence.incrementAndGet();
