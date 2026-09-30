@@ -17,8 +17,19 @@ import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.Frame;
 import vn.huyqt.logbroker.controller.transport.QuorumFrameDecoder;
 
-/** Shared factory budgets and workers; each attempt owns one channel and at most one RPC. */
+/**
+ * Shared factory budgets and workers; each attempt owns one channel and at most one RPC.
+ *
+ * <p>Inbound frames are framed by {@link QuorumFrameDecoder}, then preflighted and decoded with
+ * {@link QuorumCodec} on a decode worker, under the limits of {@link ControllerConfig#defaults}
+ * for the target identity. A decode failure closes the channel and reports through the failure
+ * callback.
+ */
 public final class NettyControllerClientTransport implements ControllerClientTransport {
+  /**
+   * Owns what all attempts share: two I/O threads, two decode threads with a 1024-task queue, and
+   * 64 MiB inbound and outbound byte budgets. Closing it closes every transport it created.
+   */
   public static final class Factory implements ControllerClientTransport.Factory {
     private final ControllerConfig config;
     private final DeadlineScheduler clock;
@@ -37,6 +48,11 @@ public final class NettyControllerClientTransport implements ControllerClientTra
     private final Set<NettyControllerClientTransport> transports = ConcurrentHashMap.newKeySet();
     private volatile boolean closed;
 
+    /**
+     * Starts the shared threads immediately; {@link #close()} stops them.
+     *
+     * @param clock caller-owned; used for the decoder's partial-frame deadline
+     */
     public Factory(ClusterIdentity identity, DeadlineScheduler clock) {
       config = ControllerConfig.defaults(identity);
       this.clock = clock;
@@ -66,6 +82,7 @@ public final class NettyControllerClientTransport implements ControllerClientTra
     this.factory = factory;
   }
 
+  /** {@inheritDoc} Uses a 1-second TCP connect timeout. */
   public synchronized CompletableFuture<Void> connect(
       InetSocketAddress address, Consumer<Frame> receive, Consumer<Throwable> failure) {
     if (closed) return CompletableFuture.failedFuture(new IOException("Transport closed"));
@@ -108,6 +125,8 @@ public final class NettyControllerClientTransport implements ControllerClientTra
                               factory.decode.execute(
                                   () -> {
                                     try (raw) {
+                                      // Preflight bounds the decoded size, so the budget is
+                                      // reserved before any payload is materialized.
                                       long bytes =
                                           QuorumCodec.preflight(raw.bytes(), factory.config);
                                       try (var lease =
@@ -152,6 +171,10 @@ public final class NettyControllerClientTransport implements ControllerClientTra
     return ready;
   }
 
+  /**
+   * {@inheritDoc} Fails without writing if the shared outbound budget has no room or the encoded
+   * frame exceeds 4 KiB.
+   */
   public CompletableFuture<Void> send(Frame frame) {
     var current = channel;
     if (closed || current == null || !current.isActive())

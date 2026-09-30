@@ -16,6 +16,23 @@ import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 /**
  * One connection and correlation per attempt; one scheduled action per invocation. The injected
  * scheduler remains caller-owned; the transport factory is client-owned.
+ *
+ * <p>Each invocation has a 30-second absolute deadline and each attempt at most 1 second. Failed
+ * attempts are retried with exponential backoff from 50 ms, capped at 1 s, with deterministic
+ * jitter. Unpinned calls ({@link #createTopic}, {@link #metadata()}) go to the leader hint from
+ * the previous reply, else the next bootstrap address, and are also retried on {@code
+ * NOT_LEADER}, {@code STALE_EPOCH}, {@code OVERLOADED}, {@code NODE_UNAVAILABLE} and {@code
+ * REQUEST_TIMED_OUT} replies. Calls pinned to one node are retried only on transport failures.
+ * Other error replies, and replies with the wrong cluster, voter hash, operation or sender, fail
+ * the call without retry.
+ *
+ * <p>Futures fail with {@link ControllerClientException}; its {@link
+ * ControllerClientException.Outcome} stays {@code UNKNOWN} once any attempt may have been sent,
+ * even if a later attempt is rejected (see {@code docs/controller-configuration.md}). At most 1024
+ * invocations are active; further calls fail with {@code OVERLOADED}.
+ *
+ * <p>Thread-safe. Futures of admitted invocations are completed on the client's own response
+ * threads. Cancelling a returned future abandons the invocation and frees its slot.
  */
 public final class ControllerClient implements AutoCloseable {
   private final ClusterIdentity identity;
@@ -28,6 +45,8 @@ public final class ControllerClient implements AutoCloseable {
   private long ids;
   private int nextBootstrap;
   private boolean closed;
+  // A capacity permit is released only by its completion task, so the queue never holds more
+  // than 1024 tasks and cannot reject one.
   private final ThreadPoolExecutor responses =
       new ThreadPoolExecutor(
           2,
@@ -37,6 +56,14 @@ public final class ControllerClient implements AutoCloseable {
           new ArrayBlockingQueue<>(1024),
           r -> new Thread(r, "controller-client-response"));
 
+  /**
+   * Creates a client; no connection is made until the first invocation.
+   *
+   * @param identity target cluster and voters; its local node ID is not used
+   * @param bootstrap addresses tried in rotation when no leader hint is known
+   * @param factory closed by {@link #close()}
+   * @throws IllegalArgumentException if {@code bootstrap} is empty
+   */
   public ControllerClient(
       ClusterIdentity identity,
       List<InetSocketAddress> bootstrap,
@@ -49,7 +76,15 @@ public final class ControllerClient implements AutoCloseable {
     this.factory = Objects.requireNonNull(factory);
   }
 
+  /**
+   * Creates a topic on the leader and returns its ID. Retries resend the same name and partition
+   * count, which the controller treats idempotently: an existing or pending topic with the same
+   * arguments yields its existing ID.
+   *
+   * @throws IllegalArgumentException synchronously if the name or partition count is invalid
+   */
   public CompletableFuture<UUID> createTopic(String name, int partitions) {
+    // Validate with the metadata event rules before anything is sent; the ID is a placeholder.
     new TopicCreated(new UUID(0, 1), name, partitions);
     return invoke(
         -1,
@@ -57,6 +92,10 @@ public final class ControllerClient implements AutoCloseable {
         reply -> ((CreateTopicReply) reply).topicId());
   }
 
+  /**
+   * Reads linearizable metadata from the leader. Safe to retry. A reply that is not marked {@code
+   * LINEARIZABLE} fails the call with {@code INVALID_REQUEST}.
+   */
   public CompletableFuture<MetadataView> metadata() {
     return invoke(
         -1,
@@ -69,12 +108,22 @@ public final class ControllerClient implements AutoCloseable {
         });
   }
 
+  /**
+   * Reads node {@code nodeId}'s applied catalog, which may be stale. Only that node is contacted.
+   *
+   * @throws IllegalArgumentException synchronously if {@code nodeId} is not a voter
+   */
   public CompletableFuture<MetadataView> localMetadata(int nodeId) {
     identity.voter(nodeId);
     return invoke(
         nodeId, ignored -> new ReadLocalMetadata(), reply -> ((MetadataReply) reply).view());
   }
 
+  /**
+   * Returns node {@code nodeId}'s own view of the quorum. Only that node is contacted.
+   *
+   * @throws IllegalArgumentException synchronously if {@code nodeId} is not a voter
+   */
   public CompletableFuture<QuorumStatus> describe(int nodeId) {
     identity.voter(nodeId);
     return invoke(
@@ -140,6 +189,8 @@ public final class ControllerClient implements AutoCloseable {
                     retry(call, requestId);
                     return;
                   }
+                  // The wire timeout is the invocation's remaining time, so a controller does not
+                  // keep waiting for a caller that has already given up.
                   int remaining =
                       (int)
                           Math.max(
@@ -155,6 +206,8 @@ public final class ControllerClient implements AutoCloseable {
                           identity.voterHash(),
                           request);
                   call.operation = frame.operation();
+                  // Marked before the write and never cleared: a failed write or a later
+                  // rejection does not prove that this attempt was not received.
                   call.everPossiblySent = true;
                   try {
                     wire.send(frame)
@@ -176,6 +229,7 @@ public final class ControllerClient implements AutoCloseable {
     return active.containsKey(call.id) && call.requestId == requestId && call.wire != null;
   }
 
+  // Frames from an abandoned attempt are dropped. Identity mismatches fail closed, without retry.
   private synchronized void receive(Call<?> call, long requestId, Frame frame) {
     if (!current(call, requestId) || frame.requestId() != requestId) return;
     if (!frame.clusterId().equals(identity.clusterId())) {
@@ -273,6 +327,11 @@ public final class ControllerClient implements AutoCloseable {
         });
   }
 
+  /**
+   * Fails active invocations with {@code NODE_UNAVAILABLE} (outcome {@code UNKNOWN} if they may
+   * have been sent), closes the transport factory and stops the response threads. The scheduler
+   * is not closed. Idempotent.
+   */
   @Override
   public synchronized void close() {
     if (closed) return;

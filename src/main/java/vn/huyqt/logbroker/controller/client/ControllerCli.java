@@ -9,6 +9,14 @@ import vn.huyqt.logbroker.broker.DeadlineScheduler;
 import vn.huyqt.logbroker.controller.*;
 import vn.huyqt.logbroker.controller.persistence.*;
 
+/**
+ * Operator CLI: {@code generate-cluster-id}, local {@code format}, and the admin commands {@code
+ * create-topic}, {@code metadata}, {@code local-metadata} and {@code describe-quorum}. Usage and
+ * output lines are shown in {@code docs/controller-configuration.md}.
+ *
+ * <p>Admin commands build a fresh {@link ControllerClient} per run. Without {@code --bootstrap}
+ * they bootstrap from the voter endpoints.
+ */
 public final class ControllerCli {
   private ControllerCli() {}
 
@@ -16,6 +24,11 @@ public final class ControllerCli {
     System.exit(run(args, System.out, System.err));
   }
 
+  /**
+   * Runs one command.
+   *
+   * @return 0 on success, 1 on any error (printed on {@code err}), 2 for usage without a command
+   */
   public static int run(String[] args, PrintStream out, PrintStream err) {
     try {
       if (args.length == 0) return usage(err);
@@ -64,6 +77,7 @@ public final class ControllerCli {
       throws Exception {
     String voters = ControllerOptions.required(options, "voters"),
         cluster = ControllerOptions.required(options, "cluster");
+    // ClusterIdentity needs a member node ID; the client never uses it, so any voter will do.
     int first = Integer.parseInt(voters.substring(0, voters.indexOf('@')));
     var identity = ControllerOptions.identity(cluster, first, voters);
     var bootstrap = new ArrayList<InetSocketAddress>();
@@ -85,6 +99,8 @@ public final class ControllerCli {
                 bootstrap,
                 clock,
                 new NettyControllerClientTransport.Factory(identity, clock))) {
+      // Each get waits one second past the client's 30-second invocation deadline so the
+      // client's own failure, not a local TimeoutException, is what gets reported.
       switch (command) {
         case "create-topic" ->
             out.println(
