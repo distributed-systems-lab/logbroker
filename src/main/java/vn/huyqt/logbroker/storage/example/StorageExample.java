@@ -9,9 +9,16 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
+/**
+ * Command-line walkthrough of the storage API: append, read, flush, then reopen to show that
+ * recovery restores the log end.
+ */
 public final class StorageExample {
     private StorageExample() {}
 
+    /**
+     * Runs the walkthrough in {@code args[0]}, which must be missing or an empty directory.
+     */
     public static void main(String[] args) throws Exception {
         if (args == null || args.length != 1) {
             throw new IllegalArgumentException("Expected one empty storage directory");
