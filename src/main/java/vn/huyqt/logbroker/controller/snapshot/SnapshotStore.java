@@ -13,7 +13,19 @@ import vn.huyqt.logbroker.controller.metadata.*;
 import vn.huyqt.logbroker.controller.persistence.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumError;
 
-/** Immutable snapshots are visible only through a forced journal publication. */
+/**
+ * Immutable snapshots are visible only through a forced journal publication.
+ *
+ * <p>Owns {@code snapshots/} under a controller root: locally created snapshots, the single
+ * in-progress download from a leader, and read pins for uploads to followers. A snapshot file is
+ * forced and its directory entry synced before a {@code SNAPSHOT_SET} frame in the {@link
+ * StateJournal} names it; the retained set is rebuilt from the last such frame on open. Size
+ * bounds, retention and download rules are specified in {@code docs/controller-storage-v1.md}.
+ *
+ * <p>Download, upload and pin state is guarded by this instance's monitor. {@link #create},
+ * {@link #publishInstalled} and {@link #refreshRetained} are not synchronized and must be
+ * serialized by the caller. {@link #retained()} is volatile and may be read from any thread.
+ */
 public final class SnapshotStore implements AutoCloseable {
   private final Path directory;
   private final ClusterIdentity identity;
@@ -26,6 +38,10 @@ public final class SnapshotStore implements AutoCloseable {
   private FileChannel download;
   private long downloaded;
 
+  /**
+   * An upload request that cannot be served; {@link #error()} is the protocol error to return to
+   * the requesting peer instead of failing the node.
+   */
   public static final class Unavailable extends IOException {
     private final QuorumError error;
 
@@ -39,8 +55,10 @@ public final class SnapshotStore implements AutoCloseable {
     }
   }
 
+  /** One slice of a pinned snapshot file served to a peer. */
   public record UploadChunk(SnapshotId id, long position, long totalLength, byte[] bytes) {}
 
+  // One upload session per peer; the pin keeps the file from being released while it is read.
   private final class Upload {
     final SnapshotId id;
     final Pin pin;
@@ -55,6 +73,16 @@ public final class SnapshotStore implements AutoCloseable {
 
   private final Map<Integer, Upload> uploads = new HashMap<>();
 
+  /**
+   * Opens the snapshot directory of {@code root} and recovers the retained set from the last
+   * {@code SNAPSHOT_SET} journal frame. Every retained snapshot is fully decoded and validated.
+   *
+   * @param maxBytes configured upper bound on a snapshot file, in bytes
+   * @throws IllegalArgumentException if {@code maxBytes} cannot hold a minimal snapshot or exceeds
+   *     64 MiB
+   * @throws IOException if the directory is missing, a {@code SNAPSHOT_SET} frame is malformed, or
+   *     a retained snapshot is missing or invalid
+   */
   public SnapshotStore(
       Path root, ClusterIdentity identity, DurableFiles files, QuorumStateStore state, int maxBytes)
       throws IOException {
@@ -63,10 +91,12 @@ public final class SnapshotStore implements AutoCloseable {
     this.files = files;
     this.state = state;
     this.maxBytes = maxBytes;
+    // 114 bytes is the fixed 102-byte envelope plus the 12-byte minimum payload decode accepts.
     if (maxBytes < 114 || maxBytes > 64 * 1024 * 1024)
       throw new IllegalArgumentException("Invalid snapshot limit");
     if (!Files.isDirectory(directory))
       throw new IOException("Published snapshot directory missing");
+    // Each SNAPSHOT_SET replaces the previous one, so the last frame is authoritative.
     for (var frame : state.journal().frames())
       if (frame.type() == StateJournal.SNAPSHOT_SET) {
         var in = ByteBuffer.wrap(frame.payload());
@@ -86,6 +116,18 @@ public final class SnapshotStore implements AutoCloseable {
     for (var id : retained) load(id);
   }
 
+  /**
+   * Writes {@code image} as a new immutable snapshot and publishes it as the newest retained one.
+   *
+   * <p>The file is written and forced under a {@code .partial} name, atomically renamed, and the
+   * directory synced before the {@code SNAPSHOT_SET} frame is appended, so the journal never names
+   * a file that is not durable. The previous newest snapshot stays retained as a fallback.
+   *
+   * @param lastEpoch epoch of the last log entry before {@code image.appliedOffset()}
+   * @return the published identity
+   * @throws IOException if the image boundary is below the newest retained snapshot, the encoding
+   *     exceeds the configured limit, or any write, force or journal append fails
+   */
   public SnapshotId create(MetadataImage image, long lastEpoch) throws IOException {
     if (!retained.isEmpty() && image.appliedOffset() < retained.getFirst().endOffset())
       throw new IOException("Snapshot boundary regression");
@@ -110,6 +152,15 @@ public final class SnapshotStore implements AutoCloseable {
     retained = List.copyOf(next);
   }
 
+  /**
+   * Makes an already stored snapshot the only retained one.
+   *
+   * <p>Used after a snapshot install, and at startup when the retained set lags the active
+   * generation's base snapshot. The file is validated before the {@code SNAPSHOT_SET} frame is
+   * appended.
+   *
+   * @throws IOException if the snapshot file is missing or invalid, or the journal append fails
+   */
   public void publishInstalled(SnapshotId id) throws IOException {
     load(id);
     var out = ByteBuffer.allocate(36).putInt(1);
@@ -118,6 +169,10 @@ public final class SnapshotStore implements AutoCloseable {
     retained = List.of(id);
   }
 
+  /**
+   * Starts a download of {@code id} into a fresh {@code .download.partial} file, cancelling any
+   * download already in progress. At most one download exists per store.
+   */
   public synchronized void beginDownload(SnapshotId id) throws IOException {
     cancelDownload();
     Path path = partial(id);
@@ -131,6 +186,15 @@ public final class SnapshotStore implements AutoCloseable {
     return directory.resolve(id.contentId() + ".download.partial");
   }
 
+  /**
+   * Writes one chunk of the current download. Chunks must arrive contiguously; a chunk that lies
+   * entirely within the already written prefix is accepted only if its bytes match exactly, and is
+   * not written again. Chunk data is not forced here; {@link #finishDownload} forces the file.
+   *
+   * @throws IOException if {@code id} is not the current download, the chunk is empty, larger than
+   *     256 KiB, leaves a gap, partially overlaps written bytes, differs from a written duplicate,
+   *     or would exceed the snapshot size bound
+   */
   public synchronized void writeChunk(SnapshotId id, long position, byte[] bytes)
       throws IOException {
     if (!id.equals(downloading)
@@ -164,6 +228,18 @@ public final class SnapshotStore implements AutoCloseable {
     downloaded += bytes.length;
   }
 
+  /**
+   * Validates and stores the completed download as an immutable snapshot file.
+   *
+   * <p>The partial file is forced and fully decoded, which checks cluster, voter set, identity and
+   * checksum, before it is renamed into place and the directory synced. If a file with the same
+   * content ID already exists, its bytes must be identical. This does not publish the snapshot in
+   * the journal; installation does that.
+   *
+   * @return the decoded image
+   * @throws IOException if {@code totalLength} does not match the bytes written or the content is
+   *     invalid; the partial file is left for {@link #cancelDownload} to remove
+   */
   public synchronized MetadataImage finishDownload(SnapshotId id, long totalLength)
       throws IOException {
     if (!id.equals(downloading)
@@ -192,6 +268,7 @@ public final class SnapshotStore implements AutoCloseable {
     return downloaded;
   }
 
+  /** Abandons the current download, if any, and deletes its partial file. Idempotent. */
   public synchronized void cancelDownload() throws IOException {
     if (download != null) {
       download.close();
@@ -202,6 +279,19 @@ public final class SnapshotStore implements AutoCloseable {
     downloaded = 0;
   }
 
+  /**
+   * Reads one chunk of a snapshot for {@code peer}, keeping the file pinned across requests.
+   *
+   * <p>Each peer has at most one upload session; asking for a different snapshot replaces it. At
+   * most two sessions exist at once, sessions idle for 30 seconds are closed, and a session ends
+   * after its final chunk is read. Only retained snapshots and the active generation's base
+   * snapshot can be served.
+   *
+   * @param maxBytes chunk size limit requested by the peer, at most 256 KiB
+   * @throws Unavailable with {@code SNAPSHOT_NOT_FOUND}, {@code OVERLOADED} or {@code
+   *     INVALID_REQUEST} when the request cannot be served
+   * @throws IOException if the snapshot file cannot be read or fails validation
+   */
   public synchronized UploadChunk readUpload(int peer, SnapshotId id, long position, int maxBytes)
       throws IOException {
     long now = System.nanoTime();
@@ -237,6 +327,10 @@ public final class SnapshotStore implements AutoCloseable {
     return uploads.size();
   }
 
+  /**
+   * Reloads the retained set from the journal. Needed after another {@code SnapshotStore} instance
+   * on the same root, such as the one used by snapshot install, appended a {@code SNAPSHOT_SET}.
+   */
   public void refreshRetained() throws IOException {
     retained =
         new SnapshotStore(directory.getParent(), identity, files, state, maxBytes).retained();
@@ -249,6 +343,13 @@ public final class SnapshotStore implements AutoCloseable {
     uploads.clear();
   }
 
+  /**
+   * Encodes the snapshot file bytes for {@code id}. The header layout is listed in Task 5 of
+   * {@code docs/superpowers/plans/2026-09-28-metadata-quorum-phase-3.md}.
+   *
+   * @throws IOException if the image boundary differs from {@code id.endOffset()} or the encoding
+   *     exceeds the configured limit
+   */
   public byte[] encode(SnapshotId id, MetadataImage image) throws IOException {
     if (image.appliedOffset() != id.endOffset())
       throw new IOException("Snapshot image boundary mismatch");
@@ -269,6 +370,12 @@ public final class SnapshotStore implements AutoCloseable {
     return bytes;
   }
 
+  /**
+   * Decodes and fully validates snapshot file bytes: length bounds, header, cluster ID, voter set
+   * hash, identity, payload size, checksum and image boundary.
+   *
+   * @throws IOException if any check fails, including malformed content
+   */
   public MetadataImage decode(SnapshotId expected, byte[] bytes) throws IOException {
     if (bytes.length < 114 || bytes.length > Math.min(maxBytes, 512 + 128 * 281))
       throw new IOException("Invalid snapshot length");
@@ -301,6 +408,11 @@ public final class SnapshotStore implements AutoCloseable {
     }
   }
 
+  /**
+   * Reads and validates the stored file for {@code id}.
+   *
+   * @throws IOException if the file is missing, too large, or fails {@link #decode}
+   */
   public MetadataImage load(SnapshotId id) throws IOException {
     long length = Files.size(path(id));
     if (length > Math.min(maxBytes, 512 + 128 * 281))
@@ -308,6 +420,7 @@ public final class SnapshotStore implements AutoCloseable {
     return decode(id, Files.readAllBytes(path(id)));
   }
 
+  /** Published snapshots, newest first; at most two. */
   public List<SnapshotId> retained() {
     return retained;
   }
@@ -316,6 +429,10 @@ public final class SnapshotStore implements AutoCloseable {
     return directory.resolve(id.contentId() + ".snapshot");
   }
 
+  /**
+   * Validates {@code id} and opens it for reading. {@link #releaseObsolete} does not delete a
+   * snapshot while any pin on it is open.
+   */
   public synchronized Pin pin(SnapshotId id) throws IOException {
     load(id);
     FileChannel channel = FileChannel.open(path(id), READ);
@@ -324,6 +441,11 @@ public final class SnapshotStore implements AutoCloseable {
   }
 
   // A retained, generation-base, or pinned snapshot may still be read by recovery or an upload.
+  /**
+   * Deletes {@code .snapshot} files that are not retained, not the active generation's base
+   * snapshot, and not pinned, then syncs the directory if anything was deleted. Files with other
+   * names are left alone.
+   */
   public synchronized void releaseObsolete() throws IOException {
     var referenced = new HashSet<UUID>();
     for (var id : retained) referenced.add(id.contentId());
@@ -350,6 +472,7 @@ public final class SnapshotStore implements AutoCloseable {
     if (deleted) files.syncDirectory(directory);
   }
 
+  /** An open read handle that protects one snapshot file from deletion until closed. */
   public final class Pin implements AutoCloseable {
     private final SnapshotId id;
     private final FileChannel channel;
@@ -364,6 +487,12 @@ public final class SnapshotStore implements AutoCloseable {
       return channel.size();
     }
 
+    /**
+     * Reads up to {@code maxBytes} starting at {@code position}; shorter only at end of file.
+     *
+     * @throws IllegalArgumentException if the pin is closed, {@code maxBytes} is outside 1..256
+     *     KiB, or {@code position} is outside the file
+     */
     public byte[] read(long position, int maxBytes) throws IOException {
       if (closed
           || position < 0
