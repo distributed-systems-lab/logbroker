@@ -6,7 +6,29 @@ import java.util.Objects;
 import vn.huyqt.logbroker.protocol.ProtocolLimits;
 import vn.huyqt.logbroker.storage.LogConfig;
 
-/** Immutable lab limits for a single broker. */
+/**
+ * Immutable lab limits for a single broker.
+ *
+ * <p>Property names, units and defaults are listed in {@code docs/broker-configuration.md}. The
+ * compact constructor rejects the whole configuration with {@link IllegalArgumentException} when
+ * any capacity or duration is not positive (only {@code port} may be {@code 0}, meaning
+ * ephemeral), when {@code maxOutboundTotal} is below {@code maxOutboundPerConnection}, when
+ * {@code maxFetchBytes} does not leave 1 MiB of the frame cap for envelope and partition
+ * metadata, or when the protocol storage batch cap exceeds {@link LogConfig#maxBatchBytes()}.
+ *
+ * @param flushInterval maximum age of the oldest unflushed batch before a partition flush is
+ *     scheduled
+ * @param flushBytes unflushed encoded storage bytes per partition that trigger a flush
+ * @param maxFetchBytes upper bound for a Fetch request's {@code maxBytes}, in wire batch bytes
+ * @param dataWorkers threads shared by all partition lanes
+ * @param validationWorkers threads the transport uses for request decoding and response encoding
+ * @param maxTasksPerPartition queued user tasks per partition lane; control tasks are not counted
+ * @param maxRequestContexts live requests broker-wide; the same value separately caps parked
+ *     long-poll Fetch waiters
+ * @param maxFlushedWaiters broker-wide {@code FLUSHED} produce entries awaiting durability
+ * @param maxPartitions total partitions across all topics
+ * @param shutdownTimeout deadline used by {@link Broker#close()} and by component shutdown
+ */
 public record BrokerConfig(Path dataDirectory, String host, int port,
                            Duration flushInterval, long flushBytes,
                            int maxFetchBytes, ProtocolLimits protocolLimits,
@@ -34,6 +56,10 @@ public record BrokerConfig(Path dataDirectory, String host, int port,
             throw new IllegalArgumentException("Invalid broker configuration");
     }
 
+    /**
+     * Returns the Phase 2 defaults from {@code docs/broker-configuration.md}, bound to
+     * {@code 127.0.0.1:9092}.
+     */
     public static BrokerConfig defaults(Path dataDirectory) {
         return new BrokerConfig(dataDirectory, "127.0.0.1", 9092,
                 Duration.ofMillis(10), 1024 * 1024, 4 * 1024 * 1024,

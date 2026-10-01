@@ -11,17 +11,27 @@ import java.util.concurrent.CountDownLatch;
 import vn.huyqt.logbroker.protocol.ProtocolLimits;
 import vn.huyqt.logbroker.storage.LogConfig;
 
-/** CLI entry point for one local broker. */
+/**
+ * CLI entry point for one local broker.
+ *
+ * <p>Options and properties are described in {@code docs/broker-configuration.md}.
+ */
 public final class BrokerMain {
-    private BrokerMain() {}
+    private BrokerMain() {
+    }
 
+    /**
+     * Starts a broker, prints {@code READY <port>} on standard output once the listener is bound,
+     * and blocks until the process exits. A JVM shutdown hook closes the broker.
+     */
     public static void main(String[] args) throws Exception {
         BrokerConfig config = parse(args);
         var logger = System.getLogger(BrokerMain.class.getName());
         Broker broker = Broker.start(config);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            try { broker.close(); }
-            catch (RuntimeException error) {
+            try {
+                broker.close();
+            } catch (RuntimeException error) {
                 logger.log(System.Logger.Level.ERROR, "Broker shutdown failed", error);
             }
         }, "broker-shutdown-hook"));
@@ -30,14 +40,18 @@ public final class BrokerMain {
         new CountDownLatch(1).await();
     }
 
+    // Fail closed: unknown or duplicate options and unknown property keys abort startup instead
+    // of being ignored. --host and --port override the property file.
     static BrokerConfig parse(String[] args) throws IOException {
         Path data = null, propertyFile = null;
         String host = null;
         Integer port = null;
         var seen = new HashSet<String>();
-        if (args.length % 2 != 0) throw new IllegalArgumentException("Options need values");
+        if (args.length % 2 != 0)
+            throw new IllegalArgumentException("Options need values");
         for (int i = 0; i < args.length; i += 2) {
-            if (!seen.add(args[i])) throw new IllegalArgumentException("Duplicate option " + args[i]);
+            if (!seen.add(args[i]))
+                throw new IllegalArgumentException("Duplicate option " + args[i]);
             switch (args[i]) {
                 case "--data" -> data = Path.of(args[i + 1]);
                 case "--config" -> propertyFile = Path.of(args[i + 1]);
@@ -46,12 +60,14 @@ public final class BrokerMain {
                 default -> throw new IllegalArgumentException("Unknown option " + args[i]);
             }
         }
-        if (data == null) throw new IllegalArgumentException("--data is required");
+        if (data == null)
+            throw new IllegalArgumentException("--data is required");
         var defaults = BrokerConfig.defaults(data);
         var properties = new Properties();
-        if (propertyFile != null) try (var input = Files.newInputStream(propertyFile)) {
-            properties.load(input);
-        }
+        if (propertyFile != null)
+            try (var input = Files.newInputStream(propertyFile)) {
+                properties.load(input);
+            }
         Set<String> allowed = Set.of("host", "port", "flushIntervalMs", "flushBytes",
                 "maxFetchBytes", "maxFrameBytes", "maxWireBatchBytes",
                 "maxStorageBatchBytes", "maxPartitionEntries", "maxRecordsPerBatch",
@@ -61,7 +77,8 @@ public final class BrokerMain {
                 "maxOutboundPerConnection", "maxOutboundTotal", "maxRequestContexts",
                 "maxFlushedWaiters", "maxTopics", "maxPartitions", "shutdownTimeoutMs");
         for (String key : properties.stringPropertyNames())
-            if (!allowed.contains(key)) throw new IllegalArgumentException("Unknown property " + key);
+            if (!allowed.contains(key))
+                throw new IllegalArgumentException("Unknown property " + key);
         var protocol = defaults.protocolLimits();
         protocol = new ProtocolLimits(integer(properties, "maxFrameBytes", protocol.maxFrameBytes()),
                 integer(properties, "maxWireBatchBytes", protocol.maxWireBatchBytes()),

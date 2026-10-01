@@ -1,5 +1,7 @@
 # Storage format v1 — persistent partition log
 
+Phase 3 adds an explicit `LogOpenOptions` overload for controller logs: nonzero start offset, committed recovery floor, optional creation and injected directory durability. Existing standalone open retains its Phase 1/2 behavior and binary format. Reads/truncation below the retained start are rejected. Prefix deletion removes whole sealed segments only and requires the caller's persisted recovery intent; it never deletes the active segment. Recovery checks the committed floor before repairing a torn tail. Strict controller flush publishes durable offsets only after forcing both data and directory entries.
+
 Phase 1 lưu một partition trong một thư mục. Đây là định dạng riêng của dự án, không tương thích binary với Kafka. Mọi số nhiều byte dùng big-endian. Offset và timestamp là signed 64-bit.
 
 ## File và cấu hình

@@ -21,13 +21,19 @@ import vn.huyqt.logbroker.protocol.ProtocolCodec;
 import vn.huyqt.logbroker.protocol.ProtocolLimits;
 import vn.huyqt.logbroker.transport.ClientTransport;
 
-/** Netty framing is confined to this transport adapter. */
+/**
+ * Netty framing is confined to this transport adapter.
+ *
+ * <p>Owns a single-threaded event loop group for its lifetime; after {@link #close()} the
+ * transport cannot connect again. Inbound frames are bounded by {@link BoundedFrameDecoder}
+ * against a budget of 32 maximum-size frames, with no per-frame deadline. Replies are decoded
+ * and handed to the response callback on the event loop.
+ */
 public final class NettyClientTransport implements ClientTransport {
     private final ProtocolLimits limits;
     private final ProtocolCodec codec;
     private final ResourceBudget inbound;
-    private final MultiThreadIoEventLoopGroup loops =
-            new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+    private final MultiThreadIoEventLoopGroup loops = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
     private volatile Channel channel;
     private volatile boolean closed;
 
@@ -37,32 +43,48 @@ public final class NettyClientTransport implements ClientTransport {
         inbound = new ResourceBudget(32L * (limits.maxFrameBytes() + 4L));
     }
 
-    @Override public synchronized CompletableFuture<Void> connect(InetSocketAddress address,
+    @Override
+    public synchronized CompletableFuture<Void> connect(InetSocketAddress address,
             Consumer<Protocol.ResponseFrame> response, Consumer<Throwable> failure) {
-        if (closed) return CompletableFuture.failedFuture(new IOException("Transport closed"));
+        if (closed)
+            return CompletableFuture.failedFuture(new IOException("Transport closed"));
         var ready = new CompletableFuture<Void>();
+        // Only one connection at a time; the old channel's callbacks still fire for its close.
         var old = channel;
-        if (old != null) old.close();
+        if (old != null)
+            old.close();
         var bootstrap = new Bootstrap().group(loops).channel(NioSocketChannel.class)
                 .handler(new ChannelInitializer<SocketChannel>() {
-                    @Override protected void initChannel(SocketChannel socket) {
+                    @Override
+                    protected void initChannel(SocketChannel socket) {
                         socket.pipeline().addLast(new BoundedFrameDecoder(limits, inbound));
                         socket.pipeline().addLast(new ChannelInboundHandlerAdapter() {
-                            @Override public void channelRead(ChannelHandlerContext context,
-                                                              Object message) {
+                            @Override
+                            public void channelRead(ChannelHandlerContext context,
+                                    Object message) {
                                 if (!(message instanceof BoundedFrameDecoder.OwnedFrame frame)) {
-                                    context.close(); return;
+                                    context.close();
+                                    return;
                                 }
-                                try (frame) { response.accept(codec.decodeResponse(frame.bytes())); }
-                                catch (Throwable error) { failure.accept(error); context.close(); }
+                                // Closing the frame returns its inbound reservation. A decode
+                                // or callback failure is reported and closes the connection
+                                // instead of skipping the frame.
+                                try (frame) {
+                                    response.accept(codec.decodeResponse(frame.bytes()));
+                                } catch (Throwable error) {
+                                    failure.accept(error);
+                                    context.close();
+                                }
                             }
 
-                            @Override public void channelInactive(ChannelHandlerContext context) {
+                            @Override
+                            public void channelInactive(ChannelHandlerContext context) {
                                 failure.accept(new IOException("Broker connection closed"));
                             }
 
-                            @Override public void exceptionCaught(ChannelHandlerContext context,
-                                                                  Throwable error) {
+                            @Override
+                            public void exceptionCaught(ChannelHandlerContext context,
+                                    Throwable error) {
                                 failure.accept(error);
                                 context.close();
                             }
@@ -73,30 +95,47 @@ public final class NettyClientTransport implements ClientTransport {
             if (result.isSuccess()) {
                 channel = ((io.netty.channel.ChannelFuture) result).channel();
                 ready.complete(null);
-            } else ready.completeExceptionally(result.cause());
+            } else
+                ready.completeExceptionally(result.cause());
         });
         return ready;
     }
 
-    @Override public CompletableFuture<Void> send(Protocol.RequestFrame request) {
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Does not wait for a pending {@link #connect}; it fails if the connection is not active
+     * yet. Thread-safe without locking because the current channel is read from a volatile.
+     */
+    @Override
+    public CompletableFuture<Void> send(Protocol.RequestFrame request) {
         final byte[] bytes;
-        try { bytes = codec.encodeRequest(request); }
-        catch (Exception error) { return CompletableFuture.failedFuture(error); }
+        try {
+            bytes = codec.encodeRequest(request);
+        } catch (Exception error) {
+            return CompletableFuture.failedFuture(error);
+        }
         var current = channel;
         if (current == null || !current.isActive())
             return CompletableFuture.failedFuture(new IOException("Broker not connected"));
         var written = new CompletableFuture<Void>();
         current.writeAndFlush(Unpooled.wrappedBuffer(bytes)).addListener(result -> {
-            if (result.isSuccess()) written.complete(null);
-            else written.completeExceptionally(result.cause());
+            if (result.isSuccess())
+                written.complete(null);
+            else
+                written.completeExceptionally(result.cause());
         });
         return written;
     }
 
-    @Override public synchronized void close() {
-        if (closed) return;
+    /** Closes the channel and starts event loop shutdown without waiting for it. Idempotent. */
+    @Override
+    public synchronized void close() {
+        if (closed)
+            return;
         closed = true;
-        if (channel != null) channel.close();
+        if (channel != null)
+            channel.close();
         loops.shutdownGracefully();
     }
 }

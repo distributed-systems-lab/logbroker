@@ -6,14 +6,29 @@ import java.util.List;
 import java.util.Objects;
 import java.util.zip.CRC32C;
 
-/** Encodes and validates version 1 batches using the bounds in {@link LogConfig}. */
+/**
+ * Encodes and validates version 1 batches using the bounds in
+ * {@link LogConfig}.
+ *
+ * <p>The byte layout is specified in {@code docs/storage-format-v1.md}. Encoding failures are
+ * caller errors ({@link IllegalArgumentException}); decoding failures mean bad stored bytes
+ * ({@link CorruptLogException}).
+ */
 final class BatchCodec {
     static final int HEADER_BYTES = 30;
+    // Header plus the smallest record: timestamp and three int32 lengths/counts.
     static final int MIN_BATCH_BYTES = 50;
-    private static final byte[] MAGIC = {'D', 'L', 'O', 'G'};
+    private static final byte[] MAGIC = { 'D', 'L', 'O', 'G' };
 
-    private BatchCodec() {}
+    private BatchCodec() {
+    }
 
+    /**
+     * Encodes a complete batch, CRC included, without touching any file.
+     *
+     * @throws IllegalArgumentException if {@code records} is empty, the batch would exceed
+     *     {@code maxBatchBytes}, offsets would overflow, or a header key is not valid UTF-8
+     */
     static byte[] encode(long baseOffset, List<LogRecord> records, int maxBatchBytes) {
         Objects.requireNonNull(records, "records");
         if (maxBatchBytes < MIN_BATCH_BYTES || baseOffset < 0 || records.isEmpty()) {
@@ -22,7 +37,8 @@ final class BatchCodec {
         try {
             Math.addExact(baseOffset, records.size());
             long size = Math.addExact(HEADER_BYTES, RecordPayloadCodec.encodedSize(records));
-            if (size > maxBatchBytes) throw new IllegalArgumentException("Batch too large");
+            if (size > maxBatchBytes)
+                throw new IllegalArgumentException("Batch too large");
             byte[] bytes = new byte[(int) size];
             ByteBuffer b = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
             b.put(MAGIC).putShort((short) 1).putInt(bytes.length);
@@ -35,26 +51,39 @@ final class BatchCodec {
         }
     }
 
+    /**
+     * Decodes exactly one batch. {@code bytes} must hold the whole batch and nothing else; the
+     * header, declared length, CRC32C and full consumption of the payload are all checked.
+     */
     static RecordBatch decode(byte[] bytes, int maxBatchBytes) throws CorruptLogException {
         Objects.requireNonNull(bytes, "bytes");
-        if (bytes.length < HEADER_BYTES) throw new CorruptLogException("Incomplete batch header");
+        if (bytes.length < HEADER_BYTES)
+            throw new CorruptLogException("Incomplete batch header");
         validateHeaderPrefix(java.util.Arrays.copyOf(bytes, HEADER_BYTES), maxBatchBytes);
         ByteBuffer b = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
-        if (b.getInt(6) != bytes.length) throw new CorruptLogException("Batch length mismatch");
-        if (b.getInt(26) != crc(bytes)) throw new CorruptLogException("Batch CRC32C mismatch");
+        if (b.getInt(6) != bytes.length)
+            throw new CorruptLogException("Batch length mismatch");
+        if (b.getInt(26) != crc(bytes))
+            throw new CorruptLogException("Batch CRC32C mismatch");
         long baseOffset = b.getLong(10);
         int count = b.getInt(18);
         b.position(HEADER_BYTES);
         return new RecordBatch(baseOffset, RecordPayloadCodec.read(b, count), bytes.length);
     }
 
+    /**
+     * Validates every header field fully contained in {@code prefix}, which may be shorter than
+     * the header. Recovery calls this before deciding that a tail is torn, so bytes that did reach
+     * disk but are visibly invalid are reported as corruption rather than cut.
+     */
     static void validateHeaderPrefix(byte[] prefix, int maxBatchBytes) throws CorruptLogException {
         Objects.requireNonNull(prefix, "prefix");
         if (prefix.length > HEADER_BYTES || maxBatchBytes < MIN_BATCH_BYTES) {
             throw new CorruptLogException("Invalid header prefix size");
         }
         for (int i = 0; i < Math.min(4, prefix.length); i++) {
-            if (prefix[i] != MAGIC[i]) throw new CorruptLogException("Invalid batch magic");
+            if (prefix[i] != MAGIC[i])
+                throw new CorruptLogException("Invalid batch magic");
         }
         ByteBuffer b = ByteBuffer.wrap(prefix).order(ByteOrder.BIG_ENDIAN);
         if (prefix.length >= 6 && b.getShort(4) != 1)
@@ -70,6 +99,7 @@ final class BatchCodec {
             throw new CorruptLogException("Negative offset");
         if (prefix.length >= 22) {
             int count = b.getInt(18);
+            // Every record takes at least 20 bytes, which bounds count by the declared length.
             if (count <= 0 || count > (total - HEADER_BYTES) / 20) {
                 throw new CorruptLogException("Invalid record count");
             }

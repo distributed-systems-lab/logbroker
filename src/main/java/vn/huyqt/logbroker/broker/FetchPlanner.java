@@ -15,7 +15,14 @@ import vn.huyqt.logbroker.protocol.Protocol.FetchResult;
 import vn.huyqt.logbroker.protocol.Protocol.TopicPartition;
 import vn.huyqt.logbroker.protocol.WireBatchCodec;
 
-/** Assembles independent partition results under one wire-byte budget. */
+/**
+ * Assembles independent partition results under one wire-byte budget.
+ *
+ * <p>Budget rules follow section 7 of
+ * {@code docs/superpowers/specs/2026-09-25-broker-phase-2-design.md}. The planner holds no
+ * state between calls and never waits for new data; long polling is done by
+ * {@link FetchCoordinator}.
+ */
 public final class FetchPlanner {
     private final Function<TopicPartition, PartitionRuntime> lookup;
     private final BrokerConfig config;
@@ -29,6 +36,16 @@ public final class FetchPlanner {
         this.config = Objects.requireNonNull(config);
     }
 
+    /**
+     * Reads the request's partitions once, in request order, each on its own lane.
+     *
+     * <p>Each partition receives what is left of {@code maxBytes} after the earlier ones. Only
+     * the first data batch of the whole response may exceed the remaining budget. A partition
+     * that gets no budget returns an empty successful result, which does not mean its log is
+     * exhausted. Per-partition errors, including {@code UNKNOWN_PARTITION} for a partition the
+     * lookup does not resolve, do not affect other partitions. An invalid request budget yields
+     * a top-level {@code INVALID_REQUEST}.
+     */
     public CompletableFuture<FetchReply> read(Fetch request) {
         if (request.entries().isEmpty() || request.entries().size() > config.protocolLimits().maxPartitionEntries()
                 || request.maxBytes() <= 0 || request.maxBytes() > config.maxFetchBytes()
@@ -37,6 +54,8 @@ public final class FetchPlanner {
                     new Error(ErrorCode.INVALID_REQUEST, "Invalid Fetch budget"), List.of()));
         }
         var state = new State(request.maxBytes());
+        // Partitions are read one after another because each read needs the budget left by the
+        // previous ones; State is only touched by the chained stages.
         CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
         for (FetchEntry entry : request.entries()) {
             chain = chain.thenCompose(ignored -> {
@@ -64,6 +83,9 @@ public final class FetchPlanner {
         int remaining;
         boolean anyData;
         final List<FetchResult> results = new ArrayList<>();
-        State(int remaining) { this.remaining = remaining; }
+
+        State(int remaining) {
+            this.remaining = remaining;
+        }
     }
 }

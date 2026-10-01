@@ -11,11 +11,26 @@ import vn.huyqt.logbroker.protocol.Protocol.Error;
 import vn.huyqt.logbroker.protocol.Protocol.PartitionInfo;
 import vn.huyqt.logbroker.protocol.Protocol.TopicInfo;
 
-/** Applies ordered durable metadata events independently of their source. */
+/**
+ * Applies ordered durable metadata events independently of their source.
+ *
+ * <p>The catalog is kept separate from the local append and flush so that a later phase can
+ * feed it committed quorum metadata instead; see section 4 of
+ * {@code docs/superpowers/specs/2026-09-25-broker-phase-2-design.md}. All methods are
+ * synchronized.
+ */
 public final class TopicCatalog {
+    /**
+     * A topic creation event.
+     *
+     * <p>The constructor throws {@link IllegalArgumentException} unless the name is 1 to 249
+     * ASCII letters, digits, {@code .}, {@code _} or {@code -} and is neither {@code .} nor
+     * {@code ..}, the UUID is non-zero, and the partition count is positive.
+     */
     public record TopicCreated(UUID id, String name, int partitions) {
         public TopicCreated {
-            Objects.requireNonNull(id); Objects.requireNonNull(name);
+            Objects.requireNonNull(id);
+            Objects.requireNonNull(name);
             if (id.equals(new UUID(0, 0)) || !name.matches("[A-Za-z0-9._-]{1,249}")
                     || name.equals(".") || name.equals("..") || partitions <= 0)
                 throw new IllegalArgumentException("Invalid topic event");
@@ -25,22 +40,38 @@ public final class TopicCatalog {
     private final Map<String, TopicCreated> byName = new HashMap<>();
     private final Map<UUID, TopicCreated> byId = new HashMap<>();
 
+    /**
+     * Applies {@code event}. Re-applying an identical event is a no-op.
+     *
+     * @throws IOException if another topic already uses the event's name or ID
+     */
     public synchronized void apply(TopicCreated event) throws IOException {
         TopicCreated nameMatch = byName.get(event.name());
         TopicCreated idMatch = byId.get(event.id());
-        if (event.equals(nameMatch) && event.equals(idMatch)) return;
+        if (event.equals(nameMatch) && event.equals(idMatch))
+            return;
         if (nameMatch != null || idMatch != null)
             throw new IOException("Conflicting metadata event: " + event.name());
         byName.put(event.name(), event);
         byId.put(event.id(), event);
     }
 
-    public synchronized TopicCreated find(String name) { return byName.get(name); }
-    public synchronized int topicCount() { return byName.size(); }
+    public synchronized TopicCreated find(String name) {
+        return byName.get(name);
+    }
+
+    public synchronized int topicCount() {
+        return byName.size();
+    }
+
     public synchronized int partitionCount() {
         return byName.values().stream().mapToInt(TopicCreated::partitions).sum();
     }
 
+    /**
+     * Returns an immutable copy of all topics sorted by name. Every partition is reported with
+     * {@code NONE}; availability comes from the partition registry, not from the catalog.
+     */
     public synchronized List<TopicInfo> snapshot() {
         List<TopicInfo> topics = new ArrayList<>();
         for (TopicCreated event : byName.values()) {

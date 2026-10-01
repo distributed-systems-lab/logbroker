@@ -1,6 +1,11 @@
 package vn.huyqt.logbroker.protocol;
 
-/** Stable numeric error codes of protocol version 1. */
+/**
+ * Stable numeric error codes of protocol version 1.
+ *
+ * <p>The numbers are part of the wire format (see {@code docs/protocol-v1.md}); clients act on
+ * the code, never on the message text.
+ */
 public enum ErrorCode {
     NONE(0), INVALID_REQUEST(1), UNSUPPORTED_OPERATION(2), UNSUPPORTED_VERSION(3),
     UNKNOWN_TOPIC(4), UNKNOWN_PARTITION(5), TOPIC_ALREADY_EXISTS(6),
@@ -10,12 +15,23 @@ public enum ErrorCode {
 
     private final short number;
 
-    ErrorCode(int number) { this.number = (short) number; }
+    ErrorCode(int number) {
+        this.number = (short) number;
+    }
 
-    public short number() { return number; }
+    public short number() {
+        return number;
+    }
 
+    /**
+     * Maps a wire number back to its code.
+     *
+     * @throws ProtocolException with {@link #INVALID_REQUEST} if the number is not defined
+     */
     public static ErrorCode fromNumber(short number) throws ProtocolException {
-        for (ErrorCode code : values()) if (code.number == number) return code;
+        for (ErrorCode code : values())
+            if (code.number == number)
+                return code;
         throw new ProtocolException(INVALID_REQUEST, "Unknown error code: " + number);
     }
 }

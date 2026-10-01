@@ -9,16 +9,30 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-/** Version 1 record payload shared by disk and network batches. */
+/**
+ * Version 1 record payload shared by disk and network batches.
+ *
+ * <p>Only the records are encoded here; storage and wire batches add their own headers. The
+ * layout is specified in {@code docs/storage-format-v1.md} and reused by {@code
+ * docs/protocol-v1.md}.
+ */
 public final class RecordPayloadCodec {
-    private RecordPayloadCodec() {}
+    private RecordPayloadCodec() {
+    }
 
+    /**
+     * Returns the exact number of bytes {@link #write} produces for {@code records}.
+     *
+     * @throws IllegalArgumentException if the size overflows {@code int} or a header key is not
+     *     valid UTF-8
+     */
     public static int encodedSize(List<LogRecord> records) {
         Objects.requireNonNull(records, "records");
         try {
             long size = 0;
             for (LogRecord record : records) {
                 Objects.requireNonNull(record, "record");
+                // Timestamp, key length, value length and header count; a null array adds none.
                 size = Math.addExact(size, 20);
                 size = Math.addExact(size, length(record.key()));
                 size = Math.addExact(size, length(record.value()));
@@ -34,6 +48,10 @@ public final class RecordPayloadCodec {
         }
     }
 
+    /**
+     * Writes {@code records} at the buffer's position. The caller sizes {@code target} with
+     * {@link #encodedSize} and enforces batch limits; nothing is validated here beyond UTF-8.
+     */
     public static void write(ByteBuffer target, List<LogRecord> records) {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(records, "records");
@@ -50,7 +68,15 @@ public final class RecordPayloadCodec {
         }
     }
 
-    /** Consumes a bounded payload containing exactly {@code count} records. */
+    /**
+     * Consumes a bounded payload containing exactly {@code count} records.
+     *
+     * <p>The buffer's limit must mark the end of the payload: trailing bytes are rejected. Every
+     * length and count is checked against the remaining bytes before anything is allocated.
+     *
+     * @throws CorruptLogException if the payload is truncated, has invalid lengths or counts,
+     *     contains a malformed UTF-8 header key, or has trailing bytes
+     */
     public static List<LogRecord> read(ByteBuffer payload, int count) throws CorruptLogException {
         Objects.requireNonNull(payload, "payload");
         if (count < 0 || count > payload.remaining() / 20) {
@@ -59,13 +85,15 @@ public final class RecordPayloadCodec {
         List<LogRecord> records = new ArrayList<>(count);
         try {
             for (int i = 0; i < count; i++) {
-                if (payload.remaining() < 20) throw new CorruptLogException("Incomplete record");
+                if (payload.remaining() < 20)
+                    throw new CorruptLogException("Incomplete record");
                 long timestamp = payload.getLong();
                 byte[] key = readNullable(payload);
                 byte[] value = readNullable(payload);
                 if (payload.remaining() < 4)
                     throw new CorruptLogException("Incomplete header count");
                 int headerCount = payload.getInt();
+                // Each header needs at least its two int32 lengths.
                 if (headerCount < 0 || headerCount > payload.remaining() / 8)
                     throw new CorruptLogException("Invalid header count");
                 List<RecordHeader> headers = new ArrayList<>(headerCount);
@@ -81,7 +109,8 @@ public final class RecordPayloadCodec {
                 }
                 records.add(new LogRecord(timestamp, key, value, headers));
             }
-            if (payload.hasRemaining()) throw new CorruptLogException("Trailing batch bytes");
+            if (payload.hasRemaining())
+                throw new CorruptLogException("Trailing batch bytes");
             return List.copyOf(records);
         } catch (IllegalArgumentException e) {
             throw new CorruptLogException("Invalid batch payload", e);
@@ -118,14 +147,18 @@ public final class RecordPayloadCodec {
     }
 
     private static void putNullable(ByteBuffer target, byte[] bytes) {
-        if (bytes == null) target.putInt(-1);
-        else target.putInt(bytes.length).put(bytes);
+        if (bytes == null)
+            target.putInt(-1);
+        else
+            target.putInt(bytes.length).put(bytes);
     }
 
     private static byte[] readNullable(ByteBuffer source) throws CorruptLogException {
-        if (source.remaining() < 4) throw new CorruptLogException("Incomplete nullable length");
+        if (source.remaining() < 4)
+            throw new CorruptLogException("Incomplete nullable length");
         int length = source.getInt();
-        if (length == -1) return null;
+        if (length == -1)
+            return null;
         if (length < 0 || length > source.remaining())
             throw new CorruptLogException("Invalid nullable length");
         byte[] bytes = new byte[length];

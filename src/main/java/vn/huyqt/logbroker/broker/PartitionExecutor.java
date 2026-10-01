@@ -14,7 +14,15 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import vn.huyqt.logbroker.protocol.Protocol.TopicPartition;
 
-/** Runs at most one task per partition while sharing a bounded worker pool. */
+/**
+ * Runs at most one task per partition while sharing a bounded worker pool.
+ *
+ * <p>Each partition has a lane: a bounded FIFO of user tasks plus at most one pending control
+ * task. Tasks of one lane never run concurrently and user tasks run in submission order, so
+ * state touched only by one lane's tasks needs no further locking. A worker
+ * runs one task and then yields the pool, so a busy partition cannot monopolize a thread. Lanes
+ * are created on first use and are not removed.
+ */
 public final class PartitionExecutor implements AutoCloseable {
     private final int partitionLimit;
     private final int queuedTaskLimit;
@@ -29,6 +37,8 @@ public final class PartitionExecutor implements AutoCloseable {
             throw new IllegalArgumentException("Invalid executor limits");
         this.partitionLimit = partitionLimit;
         this.queuedTaskLimit = queuedTaskLimit;
+        // A lane has at most one runnable in the pool at a time and there are at most
+        // partitionLimit lanes, so the pool queue sized to partitionLimit cannot overflow.
         workers = new ThreadPoolExecutor(workerCount, workerCount, 0,
                 TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(partitionLimit), task -> {
                     var thread = new Thread(task, "broker-partition");
@@ -37,23 +47,45 @@ public final class PartitionExecutor implements AutoCloseable {
                 }, new ThreadPoolExecutor.AbortPolicy());
     }
 
+    /**
+     * Queues a user task on the lane for {@code key}. The returned future completes with the
+     * task's result or with whatever it throws.
+     *
+     * @throws RejectedExecutionException if the lane already holds {@code queuedTaskLimit} user
+     *     tasks, a new lane would exceed {@code partitionLimit}, or the executor is closed; the
+     *     task is not queued
+     */
     public synchronized <V> CompletableFuture<V> submit(TopicPartition key, Callable<V> action) {
-        Objects.requireNonNull(key); Objects.requireNonNull(action);
+        Objects.requireNonNull(key);
+        Objects.requireNonNull(action);
         Lane lane = lane(key);
         if (lane.userTasks.size() >= queuedTaskLimit)
             throw new RejectedExecutionException("Partition queue full");
         CompletableFuture<V> result = new CompletableFuture<>();
         lane.userTasks.addLast(() -> {
-            try { result.complete(action.call()); }
-            catch (Throwable error) { result.completeExceptionally(error); }
+            try {
+                result.complete(action.call());
+            } catch (Throwable error) {
+                result.completeExceptionally(error);
+            }
         });
         outstanding++;
         schedule(key, lane);
         return result;
     }
 
+    /**
+     * Schedules a control task on the lane for {@code key}. Control tasks do not count against
+     * the user-task limit and run before any queued user task, but never interrupt a running
+     * one. While a control task is pending, further calls are ignored, so repeated triggers
+     * coalesce into one run.
+     *
+     * @throws RejectedExecutionException if a new lane would exceed {@code partitionLimit} or
+     *     the executor is closed
+     */
     public synchronized void control(TopicPartition key, Runnable action) {
-        Objects.requireNonNull(key); Objects.requireNonNull(action);
+        Objects.requireNonNull(key);
+        Objects.requireNonNull(action);
         Lane lane = lane(key);
         if (lane.control == null) {
             lane.control = action;
@@ -62,17 +94,24 @@ public final class PartitionExecutor implements AutoCloseable {
         }
     }
 
+    /**
+     * Returns a future that completes the next time no task is queued or running on any lane.
+     * It does not stop new submissions.
+     */
     public synchronized CompletableFuture<Void> drain() {
-        if (outstanding == 0) return CompletableFuture.completedFuture(null);
+        if (outstanding == 0)
+            return CompletableFuture.completedFuture(null);
         var result = new CompletableFuture<Void>();
         drainWaiters.add(result);
         return result;
     }
 
     private Lane lane(TopicPartition key) {
-        if (closed) throw new RejectedExecutionException("Partition executor closed");
+        if (closed)
+            throw new RejectedExecutionException("Partition executor closed");
         Lane existing = lanes.get(key);
-        if (existing != null) return existing;
+        if (existing != null)
+            return existing;
         if (lanes.size() >= partitionLimit)
             throw new RejectedExecutionException("Partition capacity reached");
         Lane created = new Lane();
@@ -81,7 +120,8 @@ public final class PartitionExecutor implements AutoCloseable {
     }
 
     private void schedule(TopicPartition key, Lane lane) {
-        if (lane.scheduled) return;
+        if (lane.scheduled)
+            return;
         lane.scheduled = true;
         workers.execute(() -> runOne(key, lane));
     }
@@ -96,8 +136,9 @@ public final class PartitionExecutor implements AutoCloseable {
                 task = lane.userTasks.removeFirst();
             }
         }
-        try { task.run(); }
-        finally {
+        try {
+            task.run();
+        } finally {
             synchronized (this) {
                 outstanding--;
                 if (lane.control != null || !lane.userTasks.isEmpty()) {
@@ -113,8 +154,18 @@ public final class PartitionExecutor implements AutoCloseable {
         }
     }
 
-    @Override public void close() {
-        synchronized (this) { closed = true; }
+    /**
+     * Rejects further submissions, lets already queued tasks finish, and stops the workers.
+     * Waits up to 30 seconds for the drain and 30 seconds for thread termination.
+     *
+     * @throws IllegalStateException if tasks do not drain or workers do not stop in time, or the
+     *     calling thread is interrupted
+     */
+    @Override
+    public void close() {
+        synchronized (this) {
+            closed = true;
+        }
         try {
             drain().get(30, TimeUnit.SECONDS);
             workers.shutdown();

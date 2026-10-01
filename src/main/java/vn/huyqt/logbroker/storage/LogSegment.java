@@ -12,7 +12,12 @@ import java.nio.file.Path;
 import java.util.Locale;
 import java.util.Objects;
 
-/** Positional file I/O for one data segment; appends complete a write loop. */
+/**
+ * Positional file I/O for one data segment; appends complete a write loop.
+ *
+ * <p>Owned by {@link PartitionLog}, which serializes access through its lock; this class has no
+ * synchronization of its own. Nothing written here is durable until {@link #force()}.
+ */
 final class LogSegment implements AutoCloseable {
     private final Path path;
     private final long baseOffset;
@@ -29,12 +34,14 @@ final class LogSegment implements AutoCloseable {
     static LogSegment open(Path path, long baseOffset, LogIo io) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(io, "io");
-        if (baseOffset < 0) throw new IllegalArgumentException("Negative base offset");
+        if (baseOffset < 0)
+            throw new IllegalArgumentException("Negative base offset");
         return new LogSegment(path, baseOffset, io, FileChannel.open(path, READ, WRITE, CREATE));
     }
 
     static Path dataPath(Path directory, long baseOffset) {
-        if (baseOffset < 0) throw new IllegalArgumentException("Negative base offset");
+        if (baseOffset < 0)
+            throw new IllegalArgumentException("Negative base offset");
         return directory.resolve(String.format(Locale.ROOT, "%020d.log", baseOffset));
     }
 
@@ -50,6 +57,13 @@ final class LogSegment implements AutoCloseable {
         return channel.size();
     }
 
+    /**
+     * Writes {@code batch} at the current end of the file, looping over short writes.
+     *
+     * @return byte position at which the batch starts
+     * @throws IOException if a write fails or makes no progress; part of the batch may already be
+     *     on disk, which recovery treats as a torn tail
+     */
     long append(byte[] batch) throws IOException {
         Objects.requireNonNull(batch, "batch");
         long position = channel.size();
@@ -61,7 +75,8 @@ final class LogSegment implements AutoCloseable {
             if (n < 0 || (n == 0 && ++zeroProgress >= 16)) {
                 throw new IOException("Write made no progress at " + path + ":" + position);
             }
-            if (n > 0) zeroProgress = 0;
+            if (n > 0)
+                zeroProgress = 0;
             try {
                 position = Math.addExact(position, n);
             } catch (ArithmeticException e) {
@@ -71,14 +86,22 @@ final class LogSegment implements AutoCloseable {
         return start;
     }
 
+    /**
+     * Reads exactly {@code length} bytes starting at {@code position}.
+     *
+     * @throws EOFException if the file ends first
+     */
     byte[] readBytes(long position, int length) throws IOException {
-        if (position < 0 || length < 0) throw new IllegalArgumentException("Invalid read range");
+        if (position < 0 || length < 0)
+            throw new IllegalArgumentException("Invalid read range");
         ByteBuffer buffer = ByteBuffer.allocate(length);
         int zeroProgress = 0;
         while (buffer.hasRemaining()) {
             int n = channel.read(buffer, position);
-            if (n < 0) throw new EOFException("EOF at " + path + ":" + position);
-            if (n == 0 && ++zeroProgress >= 16) throw new IOException("Read made no progress");
+            if (n < 0)
+                throw new EOFException("EOF at " + path + ":" + position);
+            if (n == 0 && ++zeroProgress >= 16)
+                throw new IOException("Read made no progress");
             if (n > 0) {
                 zeroProgress = 0;
                 position += n;
@@ -87,6 +110,7 @@ final class LogSegment implements AutoCloseable {
         return buffer.array();
     }
 
+    /** Forces data and file metadata; the directory entry is synced separately. */
     void force() throws IOException {
         io.force(channel);
     }

@@ -9,6 +9,7 @@ Trạng thái: Người dùng đã đồng ý lộ trình; từng phase cần th
 - Học sâu distributed systems bằng cách tự xây broker từ đầu bằng Java.
 - Giữ nguyên các nguyên lý kiến trúc Kafka thế hệ KRaft; giảm phạm vi tính năng theo từng phase.
 - Tự viết protocol và Java client; chưa yêu cầu tương thích Kafka client.
+- Cập nhật ngày 2026-09-28: mục tiêu dài hạn là tương đương chức năng Kafka, hoàn thiện dần qua các phase, vẫn dùng protocol/client riêng.
 - Tự viết storage, metadata consensus, partition replication và consumer coordination.
 - Dùng thư viện hỗ trợ qua ranh giới rõ ràng. Ban đầu dự kiến dùng Netty; có thể bổ sung Java NIO transport sau bằng cùng contract.
 - Không để kiểu dữ liệu của thư viện networking lan vào lõi storage hoặc replication.
@@ -50,6 +51,8 @@ Thiết kế chi tiết: [Phase 2 — Broker đơn và Java client](2026-09-25-b
 ### 3. Metadata quorum theo KRaft
 
 Ba controller với membership cố định; bầu leader; epoch; replicate/commit metadata log; recovery và snapshot. Có thể tái sử dụng storage nhưng tách riêng logic consensus.
+
+Thiết kế chi tiết: [Phase 3 — Metadata quorum](2026-09-28-metadata-quorum-phase-3-design.md), đã duyệt ngày 2026-09-28; đã có [implementation plan](../plans/2026-09-28-metadata-quorum-phase-3.md). Quorum độc lập với broker Phase 2; tái sử dụng storage qua QuorumLog, commit dựa trên đa số đã flush và quy tắc epoch, đọc linearizable qua log barrier, snapshot/catch-up và format tường minh. Chưa triển khai Phase 3.
 
 Điều kiện hoàn thành: metadata đã commit thống nhất; phía thiểu số không commit được thay đổi; kiểm thử mất leader, mất quorum và network partition.
 
@@ -93,9 +96,11 @@ Benchmark throughput, latency, allocation, disk/network I/O; batching và buffer
 
 Điều kiện hoàn thành: có dữ liệu so sánh để quyết định giữ/thay từng thành phần.
 
-## Ngoài phạm vi lộ trình đầu
+## Phần mở rộng sau lộ trình đầu
 
-Kafka protocol compatibility; transactions/exactly-once; log compaction; tiered storage; thay đổi động thành viên controller quorum.
+Transactions/exactly-once, log compaction, tiered storage và thay đổi động thành viên controller quorum sẽ được bổ sung bằng các phase tiếp theo để tiến tới tương đương chức năng Kafka. Các phần security, rolling upgrade và recovery khi thay thế controller mất storage cũng cần spec riêng. Danh sách này là định hướng mở rộng, chưa phải danh mục đầy đủ hoặc thiết kế đã duyệt cho từng tính năng.
+
+Kafka protocol compatibility không thuộc mục tiêu: dự án tiếp tục dùng protocol/client riêng. Các mốc mở rộng không làm tăng phạm vi triển khai Phase 3.
 
 ## Cách triển khai
 
