@@ -52,13 +52,15 @@ Thiết kế chi tiết: [Phase 2 — Broker đơn và Java client](2026-09-25-b
 
 Ba controller với membership cố định; bầu leader; epoch; replicate/commit metadata log; recovery và snapshot. Có thể tái sử dụng storage nhưng tách riêng logic consensus.
 
-Thiết kế chi tiết: [Phase 3 — Metadata quorum](2026-09-28-metadata-quorum-phase-3-design.md), đã duyệt ngày 2026-09-28; đã có [implementation plan](../plans/2026-09-28-metadata-quorum-phase-3.md). Quorum độc lập với broker Phase 2; tái sử dụng storage qua QuorumLog, commit dựa trên đa số đã flush và quy tắc epoch, đọc linearizable qua log barrier, snapshot/catch-up và format tường minh. Chưa triển khai Phase 3.
+Thiết kế chi tiết: [Phase 3 — Metadata quorum](2026-09-28-metadata-quorum-phase-3-design.md), đã duyệt ngày 2026-09-28; đã có [implementation plan](../plans/2026-09-28-metadata-quorum-phase-3.md). Quorum độc lập với broker Phase 2; tái sử dụng storage qua QuorumLog, commit dựa trên đa số đã flush và quy tắc epoch, đọc linearizable qua log barrier, snapshot/catch-up và format tường minh. Đã triển khai và kiểm chứng trên Linux/WSL ext4 ngày 2026-09-29; xem [verification](../../controller-verification.md).
 
 Điều kiện hoàn thành: metadata đã commit thống nhất; phía thiểu số không commit được thay đổi; kiểm thử mất leader, mất quorum và network partition.
 
 ### 4. Cluster và quản lý partition
 
 Broker registration, heartbeat, fencing; topic/replica assignment/partition leader metadata; broker áp dụng metadata; client routing và refresh. Bước đầu replication factor bằng một.
+
+Thiết kế chi tiết: [Phase 4 — Cluster và quản lý partition](2026-10-02-cluster-phase-4-design.md). Các phần thiết kế đã được đồng ý ngày 2026-10-02; bản spec tổng hợp đang chờ review, chưa có implementation plan và chưa triển khai. Chuyển hoàn toàn sang cluster mode với dữ liệu mới; broker observer đồng bộ log/snapshot, tự ngừng Produce/Fetch khi hết xác nhận heartbeat; assignment tự động RF=1, CreateTopic qua broker và client routing nhiều broker.
 
 Điều kiện hoàn thành: ghi/đọc đúng partition trên nhiều broker; restart không làm mất metadata đã commit. Chưa cam kết data availability khi broker chứa partition ngừng hoạt động.
 
