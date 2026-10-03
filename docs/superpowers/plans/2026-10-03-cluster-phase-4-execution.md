@@ -13,8 +13,8 @@ tasks in [the implementation plan](2026-10-03-cluster-phase-4.md) still need exe
 | 3 Broker control RPC models/codecs and role isolation | Complete | `3952e01` |
 | 4 Feature bootstrap, registration, atomic assignment | Complete | `70ae5a3` |
 | 5 Heartbeat liveness and committed fencing | Complete | `060dcd6` |
-| 6 Committed observer endpoints and budgets | Complete | See checkpoint A commit |
-| 7 Broker identity/format/config | Pending | |
+| 6 Committed observer endpoints and budgets | Complete | `9fd270b` |
+| 7 Broker identity/format/config | Complete; initialization helpers extracted in Tasks 8/11 | See Task 7 commit |
 | 8 Durable observer generations/snapshot journal | Pending | |
 | 9 Broker control client and metadata pull | Pending | |
 | 10 Lifecycle and serving gate | Pending | |
@@ -43,6 +43,8 @@ Checkpoint A (Tasks 4–6), 2026-10-03:
 - Checkpoint A WSL Ubuntu, OpenJDK 21.0.12.1, Maven 3.9.12, ext4 verified by `findmnt`:
   fresh source copy `mvn -B clean verify`, **329 tests, zero failures/errors/skips**,
   completed 19:23:26. Log: `target/phase4-wsl-checkpoint-a.log` (ignored build output).
+- Task 7 focused identity/config/format/data-config suite: 12 tests, zero failures/errors/skips,
+  completed 19:33:54 on Windows. Expected missing-type/missing-format RED runs preceded implementation.
 
 New regressions observed: a leader with durable but unapplied FeatureLevel could
 bootstrap twice; replacement registration could race pending unfence; an unfence
@@ -104,4 +106,9 @@ was stopped or user settings changed.
 - Observer disk refusal returns OVERLOADED without stepping down the leader. Shared
   bulk memory and ordinary completion admission preserve voter reserves. Uploads share
   a two-pin cap across role namespaces and expire/close on the ordered worker.
-- Next: Task 7 broker identity/format/config, then observer persistence in Task 8.
+- Task 7 format publishes identity last after a forced observer generation/log/journal and inventory
+  INIT frame. The initialization helpers are extracted into full readers in Tasks 8/11 before
+  production composition. Cluster roots/configs are refused by the transitional standalone launcher,
+  so a formatted root cannot silently run with standalone semantics. Legacy launch fixtures remain
+  until the Task 12/16 composition switch. Format tests use FaultFiles, not Windows durability claims.
+- Next: Task 8 observer persistence and reusable SnapshotJournal.
