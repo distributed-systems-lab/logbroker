@@ -169,18 +169,36 @@ public final class Producer implements AutoCloseable {
         });
     }
 
+    /**
+     * Closes the lane's open batch to new records and queues it for sending, then tries to send.
+     * Does nothing if the lane has no open batch.
+     *
+     * <p>Must be called while holding the producer's monitor. {@code topic} only selects the
+     * null-routing cursor to advance.
+     */
     private void seal(Protocol.TopicPartition tp, Lane lane, String topic) {
         var batch = lane.open;
         if (batch == null)
             return;
+        // The next record for this lane must start a new batch.
         lane.open = null;
+        // The batch is no longer open, so its linger timer must not fire for it.
         batch.linger.cancel();
         lane.ready.addLast(batch);
+        // Round-robin advances per sealed batch, not per record: all null-routed records of this
+        // batch went to the same partition, so the next null-routed batch moves to the next one.
         if (batch.usesNullRouting)
             nullCursors.merge(topic, 1, Integer::sum);
         drain(lane);
     }
 
+    /**
+     * Sends the next queued batch of the lane if no Produce is in flight for it. Called after a
+     * batch is sealed and again when the previous Produce completes, so queued batches are sent
+     * one at a time.
+     *
+     * <p>Must be called while holding the producer's monitor.
+     */
     private void drain(Lane lane) {
         // At most one Produce in flight per partition: the next batch is sent only after the
         // previous one completes, so a partition's batches are sent in seal order.
@@ -189,8 +207,10 @@ public final class Producer implements AutoCloseable {
         var batch = lane.ready.pollFirst();
         if (batch == null)
             return;
+        // Drops cancelled records and fails expired ones (NOT_SENT) before anything hits the wire.
         var records = batch.liveRecords(clock.nanoTime());
         if (records.isEmpty()) {
+            // Nothing left to send in this batch; move on to the next queued one.
             drain(lane);
             return;
         }
@@ -203,10 +223,14 @@ public final class Producer implements AutoCloseable {
                     if (error == null && reply instanceof Protocol.ProduceReply produced
                             && !produced.results().isEmpty())
                         outcome = produced.results().getFirst();
+                    // A reply without a result for our single entry leaves the outcome unknown.
                     if (error == null && outcome == null)
                         error = ClientException.unknown(new IllegalStateException("Missing Produce result"));
+                    // Completes the callers' futures outside the monitor so their callbacks do
+                    // not run while the producer is locked.
                     batch.complete(outcome, error);
                     synchronized (Producer.this) {
+                        // Free the lane and send the next queued batch, if any.
                         lane.busy = false;
                         drain(lane);
                     }
