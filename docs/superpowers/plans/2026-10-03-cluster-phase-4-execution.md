@@ -11,9 +11,9 @@ tasks in [the implementation plan](2026-10-03-cluster-phase-4.md) still need exe
 | 1 Versioned metadata records/limits/entry codec | Complete | `f782c56` |
 | 2 Atomic image apply and snapshot schema v2 | Complete | `8016a2b` |
 | 3 Broker control RPC models/codecs and role isolation | Complete | `3952e01` |
-| 4 Feature bootstrap, registration, atomic assignment | Pending | |
-| 5 Heartbeat liveness and committed fencing | Pending | |
-| 6 Committed observer endpoints and budgets | Pending | |
+| 4 Feature bootstrap, registration, atomic assignment | Complete | `70ae5a3` |
+| 5 Heartbeat liveness and committed fencing | Complete | `060dcd6` |
+| 6 Committed observer endpoints and budgets | Complete | See checkpoint A commit |
 | 7 Broker identity/format/config | Pending | |
 | 8 Durable observer generations/snapshot journal | Pending | |
 | 9 Broker control client and metadata pull | Pending | |
@@ -26,6 +26,30 @@ tasks in [the implementation plan](2026-10-03-cluster-phase-4.md) still need exe
 | 16 Operations/examples/documentation/final verification | Pending | |
 
 ## Verification evidence
+
+Checkpoint A (Tasks 4–6), 2026-10-03:
+
+- Task 4 focused admission/identity/config/consensus suite: 33 tests, zero failures/errors/skips.
+- Task 4 full Windows `mvn clean verify`: 307 tests, zero failures/errors, three process skips.
+- Task 4 WSL/ext4 `mvn -B clean verify`: 307 tests, zero failures/errors/skips,
+  completed 18:59:30 Asia/Saigon.
+- Task 5 final heartbeat/fencing/manager/config/election/replication/read suite:
+  42 tests, zero failures/errors/skips. The repository has no `OrderedDiskExecutorTest`;
+  it was accidentally included in one comma-separated selector and contributed no tests.
+- Task 6 focused observer/admission/budget/snapshot/replication suite before the final
+  retention race case: 23 tests, zero failures/errors/skips.
+- Checkpoint A Windows `mvn clean verify`: 329 tests, zero failures/errors, three process skips,
+  completed 19:21:24. A final maintenance scheduling change was then verified on WSL.
+- Checkpoint A WSL Ubuntu, OpenJDK 21.0.12.1, Maven 3.9.12, ext4 verified by `findmnt`:
+  fresh source copy `mvn -B clean verify`, **329 tests, zero failures/errors/skips**,
+  completed 19:23:26. Log: `target/phase4-wsl-checkpoint-a.log` (ignored build output).
+
+New regressions observed: a leader with durable but unapplied FeatureLevel could
+bootstrap twice; replacement registration could race pending unfence; an unfence
+could miss assignments from an unapplied preceding topic; retention could race an
+observer read. Each now has regression coverage. Recovery waits for the inherited
+prefix, same-broker commands serialize, lifecycle drains wait for prior image apply,
+and a retained-away observer prefix asks the caller to fetch a snapshot again.
 
 Native Windows 11, Oracle JDK 21.0.1, Maven 3.9.12:
 
@@ -70,9 +94,14 @@ was stopped or user settings changed.
 - Observer batches cannot exceed their advertised committed boundary. Role, sender ID,
   schema and broker incarnation are pinned to a TCP connection; broker bulk traffic uses
   shared budgets. Existing voter reserve tests and v1 protocol tests remain green.
-- Controller roots/runtime still use the legacy composition until Task 4 wires feature
-  bootstrap and the cluster control manager. V2 discovery is available, but legacy roots
-  explicitly reject full v2 metadata reads. Broker control DTOs do not themselves execute
-  registration, heartbeat or observer reads. Standalone broker replacement is still pending.
-- Next: follow Task 4's RED tests, integrate atomic command draining into the existing
-  consensus append/commit/apply path, and wire schema/limits consistently into node recovery.
+- V2 formatting is opt-in through `--metadata-version 2` and startup `metadata.version=2`;
+  the production default switch is still Task 16. V2 roots execute registration,
+  assignment, heartbeat recovery and committed observer reads. V1 roots remain fixtures
+  and explicitly reject full v2 metadata reads. Standalone broker replacement is pending.
+- Ordinary heartbeat uses zero recovery UUID; a nonzero UUID captures a fixed target
+  and coalesces the unfence/result. A ready leader starts a fresh liveness observation
+  window; no broker contact can extend voter check-quorum.
+- Observer disk refusal returns OVERLOADED without stepping down the leader. Shared
+  bulk memory and ordinary completion admission preserve voter reserves. Uploads share
+  a two-pin cap across role namespaces and expire/close on the ordered worker.
+- Next: Task 7 broker identity/format/config, then observer persistence in Task 8.
