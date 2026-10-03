@@ -10,6 +10,9 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import vn.huyqt.logbroker.protocol.ProtocolLimits;
 import vn.huyqt.logbroker.storage.LogConfig;
+import vn.huyqt.logbroker.broker.cluster.BrokerClusterConfig;
+import vn.huyqt.logbroker.broker.cluster.BrokerIdentityStore;
+import vn.huyqt.logbroker.controller.persistence.DurableFiles;
 
 /**
  * CLI entry point for one local broker.
@@ -25,7 +28,18 @@ public final class BrokerMain {
      * and blocks until the process exits. A JVM shutdown hook closes the broker.
      */
     public static void main(String[] args) throws Exception {
+        if (args.length>0 && args[0].equals("format")) {
+            var identity=format(java.util.Arrays.copyOfRange(args,1,args.length),new DurableFiles());
+            System.out.println("FORMATTED broker="+identity.brokerId()+" storageId="+identity.storageId()); return;
+        }
         BrokerConfig config = parse(args);
+        if (Files.exists(config.dataDirectory().resolve("broker-identity.bin")))
+            throw new IllegalArgumentException("Cluster root cannot be started as a standalone broker");
+        for (int i=0;i+1<args.length;i+=2) if (args[i].equals("--config")) {
+            var settings=new Properties(); try (var input=Files.newInputStream(Path.of(args[i+1]))) { settings.load(input); }
+            if (settings.stringPropertyNames().stream().anyMatch(BrokerClusterConfig.PROPERTY_KEYS::contains))
+                throw new IllegalArgumentException("Cluster startup requires a formatted cluster broker root");
+        }
         var logger = System.getLogger(BrokerMain.class.getName());
         Broker broker = Broker.start(config);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -68,14 +82,15 @@ public final class BrokerMain {
             try (var input = Files.newInputStream(propertyFile)) {
                 properties.load(input);
             }
-        Set<String> allowed = Set.of("host", "port", "flushIntervalMs", "flushBytes",
+        Set<String> allowed = new HashSet<>(Set.of("host", "port", "flushIntervalMs", "flushBytes",
                 "maxFetchBytes", "maxFrameBytes", "maxWireBatchBytes",
                 "maxStorageBatchBytes", "maxPartitionEntries", "maxRecordsPerBatch",
                 "segmentBytes", "maxBatchBytes", "indexIntervalBytes", "dataWorkers",
                 "validationWorkers", "maxConnections", "maxTasksPerPartition",
                 "maxValidationTasks", "maxQueuedRequestBytes",
                 "maxOutboundPerConnection", "maxOutboundTotal", "maxRequestContexts",
-                "maxFlushedWaiters", "maxTopics", "maxPartitions", "shutdownTimeoutMs");
+                "maxFlushedWaiters", "maxTopics", "maxPartitions", "shutdownTimeoutMs"));
+        allowed.addAll(BrokerClusterConfig.PROPERTY_KEYS);
         for (String key : properties.stringPropertyNames())
             if (!allowed.contains(key))
                 throw new IllegalArgumentException("Unknown property " + key);
@@ -111,6 +126,17 @@ public final class BrokerMain {
                 integer(properties, "maxPartitions", defaults.maxPartitions()),
                 Duration.ofMillis(number(properties, "shutdownTimeoutMs",
                         defaults.shutdownTimeout().toMillis())));
+    }
+
+    static BrokerIdentityStore.Identity format(String[] args,DurableFiles files) throws IOException {
+        var options=vn.huyqt.logbroker.controller.ControllerOptions.parse(args,0,Set.of("config","data"));
+        var path=Path.of(vn.huyqt.logbroker.controller.ControllerOptions.required(options,"config"));
+        var root=Path.of(vn.huyqt.logbroker.controller.ControllerOptions.required(options,"data"));
+        var properties=new Properties(); try (var input=Files.newInputStream(path)) { properties.load(input); }
+        var cluster=BrokerClusterConfig.fromProperties(properties);
+        // Also validate data-plane limits and unknown properties before creating any files.
+        parse(args);
+        return BrokerIdentityStore.format(root,cluster.clusterId(),cluster.brokerId(),files);
     }
 
     private static int integer(Properties properties, String key, int fallback) {

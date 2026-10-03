@@ -10,6 +10,20 @@ import org.junit.jupiter.api.io.TempDir;
 class BrokerMainTest {
     @TempDir Path directory;
 
+    @Test void explicitClusterFormatPublishesManifestAndRequiresClusterConfig() throws Exception {
+        var properties=directory.resolve("cluster.properties");
+        Files.writeString(properties,"cluster.id=00000000-0000-0000-0000-000000000001\nbroker.id=7\nadvertised.host=localhost\nadvertised.port=9092\ncontroller.bootstrap.servers=localhost:19090\n");
+        var root=directory.resolve("cluster-root");
+        var identity=BrokerMain.format(new String[]{"--config",properties.toString(),"--data",root.toString()},
+            new vn.huyqt.logbroker.controller.support.FaultFiles());
+        assertEquals(7,identity.brokerId()); assertTrue(Files.isRegularFile(root.resolve("broker-identity.bin")));
+        assertTrue(Files.isRegularFile(root.resolve("observer/observer-state.journal")));
+        assertTrue(Files.isRegularFile(root.resolve("partition-inventory.journal")));
+        assertThrows(IllegalArgumentException.class,() -> BrokerMain.main(new String[]{"--config",properties.toString(),"--data",root.toString()}));
+        assertThrows(IllegalArgumentException.class,() -> BrokerMain.format(new String[]{"--data",root.toString()},
+            new vn.huyqt.logbroker.controller.support.FaultFiles()));
+    }
+
     @Test void configFileAndCliOverridesApplyInOrder() throws Exception {
         var properties = directory.resolve("broker.properties");
         Files.writeString(properties, "port=19092\nflushIntervalMs=25\nmaxConnections=4\n");
