@@ -48,6 +48,16 @@ public sealed interface QuorumEffect {
   /** Reads whole batches from {@code offset} within {@code budget} bytes. */
   record ReadLog(DiskToken token, long offset, int budget) implements DiskEffect {}
 
+  /** Observer read stamped with its current session and frozen committed upper bound. */
+  record ReadObserver(DiskToken token, vn.huyqt.logbroker.controller.metadata.ClusterRecords.Session session,
+                      long offset, long upperBound, int budget) implements DiskEffect {}
+
+  record ReadObserverSnapshot(DiskToken token, int brokerId, SnapshotId id, long position, int maxBytes)
+      implements DiskEffect {}
+
+  /** Releases expired upload pins, or all observer pins when the controller epoch closes. */
+  record MaintainUploads(DiskToken token, boolean closeObservers) implements DiskEffect {}
+
   /** Publishes a downloaded snapshot as a new generation, if the install fence still allows. */
   record InstallSnapshot(DiskToken token, SnapshotId id, MetadataImage image)
       implements DiskEffect {}

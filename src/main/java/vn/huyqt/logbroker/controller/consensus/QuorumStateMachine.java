@@ -11,6 +11,8 @@ import vn.huyqt.logbroker.controller.log.*;
 import vn.huyqt.logbroker.controller.metadata.MetadataImage;
 import vn.huyqt.logbroker.controller.metadata.ClusterControlManager;
 import vn.huyqt.logbroker.controller.metadata.HeartbeatTracker;
+import vn.huyqt.logbroker.controller.metadata.ObserverReadService;
+import vn.huyqt.logbroker.controller.metadata.ClusterRecords.Session;
 import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.controller.snapshot.*;
@@ -67,6 +69,19 @@ public final class QuorumStateMachine {
   private final ClusterControlManager cluster;
   private final HeartbeatTracker heartbeatTracker;
   private boolean clusterAppend;
+  private static final class ObserverWait {
+    final Admin admin;
+    final BrokerControlProtocol.ObserverFetch request;
+    final long deadline;
+    boolean reading;
+    ObserverWait(Admin admin, BrokerControlProtocol.ObserverFetch request, long deadline) {
+      this.admin = admin; this.request = request; this.deadline = deadline;
+    }
+  }
+  private final Map<Integer,ObserverWait> observers = new HashMap<>();
+  private final Map<Integer,Long> observerSnapshots = new HashMap<>();
+  private final Set<DiskToken> observerWork = new HashSet<>();
+  private long nextUploadMaintenance;
 
   private record Waiter(Admin invocation, long end) {}
 
@@ -189,12 +204,17 @@ public final class QuorumStateMachine {
     now = Math.max(now, clock.getAsLong());
     effects = new ArrayList<>();
     if (event instanceof DiskDone done) {
+      boolean observerCompletion = observerWork.remove(done.token());
       var callback = diskCallbacks.remove(done.token());
       logWork.remove(done.token());
       voteWork.remove(done.token());
       // Rejected work never ran and its callback is dropped. If that callback was still live, the
       // node abandons what it was waiting for: admin waiters fail and it steps down in-epoch.
       if (done.result() instanceof DiskResult.Overloaded) {
+        if (observerCompletion) {
+          if (callback != null) callback.accept(done.result());
+          return List.copyOf(effects);
+        }
         if (transfer.onCompletion(done)) replicaBusy = false;
         if (callback != null && active()) {
           completeAll(QuorumError.OVERLOADED);
@@ -223,6 +243,7 @@ public final class QuorumStateMachine {
         callback.accept(done.result()); // Global hard state survives metadata generation changes.
       }
     } else if (event instanceof DiskFailed failed) {
+      observerWork.remove(failed.token());
       diskCallbacks.remove(failed.token());
       logWork.remove(failed.token());
       // No votes or acks after a durability failure. Vote failures always count because hard
@@ -240,6 +261,10 @@ public final class QuorumStateMachine {
     else if (active()) {
       if (event instanceof Tick tick) {
         now = Math.max(now, tick.nowNanos());
+        if (cluster != null && now >= nextUploadMaintenance) {
+          nextUploadMaintenance = now + 1_000_000_000L;
+          effects.add(new QuorumEffect.MaintainUploads(token(),false));
+        }
         expireAdmins();
         transfer.onTick(now);
         if (!transfer.active() && replicaBusy && logWork.isEmpty()) replicaBusy = false;
@@ -329,6 +354,9 @@ public final class QuorumStateMachine {
       }
     }
     if (cluster != null && active() && status.role() == QuorumStatus.Role.LEADER && status.ready()) drainCluster();
+    if (cluster != null && active() && status.role() == QuorumStatus.Role.LEADER && status.ready())
+      for (var pending : List.copyOf(observers.values()))
+        if (!pending.reading && (status.commit() > pending.request.nextOffset() || now >= pending.deadline)) serveObserver(pending);
     return List.copyOf(effects);
   }
 
@@ -791,6 +819,12 @@ public final class QuorumStateMachine {
       else adminWaiters.put(admin.invocationId(),new Waiter(admin,Long.MAX_VALUE));
       return;
     }
+    if (cluster != null && admin.request() instanceof BrokerControlProtocol.ObserverFetch observer) {
+      admitObserver(admin,observer); return;
+    }
+    if (cluster != null && admin.request() instanceof BrokerControlProtocol.ObserverSnapshot observer) {
+      admitObserverSnapshot(admin,observer); return;
+    }
     if (cluster != null && (admin.request() instanceof BrokerControlProtocol.Register
         || admin.request() instanceof BrokerControlProtocol.CreateTopic)) {
       var error = cluster.submit(admin.invocationId(), admin.request());
@@ -984,6 +1018,77 @@ public final class QuorumStateMachine {
     }
   }
 
+  private boolean currentSession(Session session) {
+    var view = session == null ? null : image.brokers().get(session.brokerId());
+    return view != null && view.registration().session().equals(session);
+  }
+  private void admitObserver(Admin admin, BrokerControlProtocol.ObserverFetch request) {
+    QuorumError error = !currentSession(request.session()) ? QuorumError.STALE_BROKER_EPOCH
+        : request.controllerEpoch() != status.epoch() ? QuorumError.STALE_EPOCH
+        : request.nextOffset() < 0 || request.nextOffset() > status.commit() || request.maxBytes() < 1
+            || request.maxBytes() > config.fetchMaxBytes() || request.maxWaitMs() < 0 || request.maxWaitMs() > 100
+            ? QuorumError.INVALID_REQUEST
+        : observers.containsKey(request.session().brokerId()) || observers.size() >= config.metadataLimits().maxBrokers()
+            ? QuorumError.OVERLOADED : QuorumError.NONE;
+    if (error != QuorumError.NONE) { complete(admin.invocationId(),new Failure(meta(error))); return; }
+    if (request.nextOffset() < index.start()) {
+      if (snapshot == null || snapshot.endOffset() > status.commit()) complete(admin.invocationId(),new Failure(meta(QuorumError.SNAPSHOT_NOT_FOUND)));
+      else complete(admin.invocationId(),new BrokerControlProtocol.ObserverFetchReply(meta(QuorumError.NONE),status.commit(),new SnapshotRequired(snapshot)));
+      return;
+    }
+    if (!matches(request.nextOffset(),request.prefixEpoch())) {
+      complete(admin.invocationId(),new Failure(new ReplyMeta(QuorumError.INVALID_REQUEST,"Inconsistent committed observer prefix",status.epoch(),status.leaderId()))); return;
+    }
+    var pending = new ObserverWait(admin,request,Math.min(admin.deadlineNanos(),now+request.maxWaitMs()*1_000_000L));
+    observers.put(request.session().brokerId(),pending);
+    adminWaiters.put(admin.invocationId(),new Waiter(admin,Long.MAX_VALUE));
+    if (status.commit() > request.nextOffset() || request.maxWaitMs()==0) serveObserver(pending);
+  }
+  private void serveObserver(ObserverWait pending) {
+    var request = pending.request;
+    if (!currentSession(request.session())) {
+      observers.remove(request.session().brokerId(),pending); adminWaiters.remove(pending.admin.invocationId());
+      complete(pending.admin.invocationId(),new Failure(meta(QuorumError.STALE_BROKER_EPOCH))); return;
+    }
+    pending.reading = true; long upper = status.commit(); var token = token(); observerWork.add(token);
+    diskCallbacks.put(token,result -> {
+      observers.remove(request.session().brokerId(),pending);
+      if (adminWaiters.remove(pending.admin.invocationId()) == null) return;
+      Reply reply;
+      if (status.role()!=QuorumStatus.Role.LEADER || status.epoch()!=token.epoch()) reply = new Failure(meta(QuorumError.NOT_LEADER));
+      else if (!currentSession(request.session())) reply = new Failure(meta(QuorumError.STALE_BROKER_EPOCH));
+      else if (result instanceof DiskResult.Overloaded) reply = new Failure(meta(QuorumError.OVERLOADED));
+      else if (result instanceof DiskResult.SnapshotRejected rejected) reply = new Failure(meta(rejected.error()));
+      else reply = new BrokerControlProtocol.ObserverFetchReply(meta(QuorumError.NONE),upper,
+          new FetchData(ObserverReadService.committedPrefix(((DiskResult.Read)result).batches(),upper)));
+      complete(pending.admin.invocationId(),reply);
+    });
+    effects.add(new QuorumEffect.ReadObserver(token,request.session(),request.nextOffset(),upper,request.maxBytes()));
+  }
+  private void admitObserverSnapshot(Admin admin, BrokerControlProtocol.ObserverSnapshot request) {
+    QuorumError error = !currentSession(request.session()) ? QuorumError.STALE_BROKER_EPOCH
+        : request.controllerEpoch()!=status.epoch() ? QuorumError.STALE_EPOCH
+        : request.id()==null || request.id().endOffset()>status.commit() || request.position()<0
+            || request.maxBytes()<1 || request.maxBytes()>config.snapshotChunkBytes() ? QuorumError.INVALID_REQUEST
+        : observerSnapshots.containsKey(request.session().brokerId()) ? QuorumError.OVERLOADED : QuorumError.NONE;
+    if (error!=QuorumError.NONE) { complete(admin.invocationId(),new Failure(meta(error))); return; }
+    var token=token(); observerWork.add(token); observerSnapshots.put(request.session().brokerId(),admin.invocationId());
+    adminWaiters.put(admin.invocationId(),new Waiter(admin,Long.MAX_VALUE));
+    diskCallbacks.put(token,result -> {
+      observerSnapshots.remove(request.session().brokerId(),admin.invocationId());
+      if (adminWaiters.remove(admin.invocationId())==null) return;
+      Reply reply;
+      if (status.role()!=QuorumStatus.Role.LEADER || status.epoch()!=token.epoch()) reply=new Failure(meta(QuorumError.NOT_LEADER));
+      else if (!currentSession(request.session())) reply=new Failure(meta(QuorumError.STALE_BROKER_EPOCH));
+      else if (result instanceof DiskResult.Overloaded) reply=new Failure(meta(QuorumError.OVERLOADED));
+      else if (result instanceof DiskResult.SnapshotRejected rejected) reply=new Failure(meta(rejected.error()));
+      else { var chunk=(DiskResult.SnapshotChunk)result;
+        reply=new BrokerControlProtocol.ObserverSnapshotReply(meta(QuorumError.NONE),chunk.id(),chunk.position(),chunk.totalLength(),chunk.bytes()); }
+      complete(admin.invocationId(),reply);
+    });
+    effects.add(new QuorumEffect.ReadObserverSnapshot(token,request.session().brokerId(),request.id(),request.position(),request.maxBytes()));
+  }
+
   private void complete(long id, Reply reply) {
     effects.add(new QuorumEffect.CompleteAdmin(id, reply));
   }
@@ -994,6 +1099,8 @@ public final class QuorumStateMachine {
       if (waiter.invocation().deadlineNanos() <= now) {
         long id = waiter.invocation().invocationId();
         adminWaiters.remove(id);
+        observers.values().removeIf(p -> p.admin.invocationId()==id);
+        observerSnapshots.values().removeIf(value -> value==id);
         if (cluster != null) cluster.cancel(id);
         waitingReads.remove(id);
         for (var pending : pendingTopics.values()) pending.waiters.remove(id);
@@ -1009,6 +1116,8 @@ public final class QuorumStateMachine {
   }
 
   private void completeAll(QuorumError error) {
+    if (cluster != null) effects.add(new QuorumEffect.MaintainUploads(token(),true));
+    observers.clear(); observerSnapshots.clear();
     if (cluster != null) { cluster.onLeadershipLost(); clusterAppend = false; }
     for (long id : List.copyOf(adminWaiters.keySet())) complete(id, new Failure(meta(error)));
     adminWaiters.clear();

@@ -15,6 +15,20 @@ import vn.huyqt.logbroker.controller.support.*;
 class SnapshotStoreTest {
   @TempDir Path root;
 
+  @Test void observerAndVoterUploadIdsAreSeparateAndPinsExpireOrCloseOnEpochChange() throws Exception {
+    var io=new FaultFiles(); var identity=ControllerTestSupport.identity(0);
+    QuorumStateStore.format(root,identity,io);
+    try (var state=QuorumStateStore.open(root,identity,io); var store=new SnapshotStore(root,identity,io,state,65536)) {
+      var id=store.create(new MetadataImage(2,List.of()),1);
+      store.readUpload(1,id,0,1); store.readObserverUpload(1,id,0,1);
+      assertEquals(2,store.activeUploads());
+      var refused=assertThrows(SnapshotStore.Unavailable.class,() -> store.readObserverUpload(2,id,0,1));
+      assertEquals(vn.huyqt.logbroker.controller.protocol.QuorumError.OVERLOADED,refused.error());
+      store.expireUploads(System.nanoTime(),true); assertEquals(1,store.activeUploads());
+      store.expireUploads(System.nanoTime()+31_000_000_000L,false); assertEquals(0,store.activeUploads());
+    }
+  }
+
   @Test
   void versionTwoFeatureImagePublishesAndReopens() throws Exception {
     var io = new FaultFiles();

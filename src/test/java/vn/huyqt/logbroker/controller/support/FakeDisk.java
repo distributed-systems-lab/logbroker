@@ -136,6 +136,14 @@ public final class FakeDisk {
         committed = p.end();
         yield new DiskResult.Checkpointed(committed);
       }
+      case QuorumEffect.ReadObserver p -> p.offset() < start
+          ? new DiskResult.SnapshotRejected(vn.huyqt.logbroker.controller.protocol.QuorumError.SNAPSHOT_NOT_FOUND)
+          : new DiskResult.Read(
+          vn.huyqt.logbroker.controller.metadata.ObserverReadService.committedPrefix(
+              ((DiskResult.Read)execute(new QuorumEffect.ReadLog(p.token(),p.offset(),p.budget()))).batches(),p.upperBound()));
+      case QuorumEffect.ReadObserverSnapshot p -> execute(new QuorumEffect.ReadSnapshotChunk(
+          p.token(),p.brokerId(),p.id(),p.position(),p.maxBytes()));
+      case QuorumEffect.MaintainUploads ignored -> new DiskResult.Discarded();
       case QuorumEffect.ReadLog p -> {
         var result = new ArrayList<QuorumBatch>();
         long bytes = 0;

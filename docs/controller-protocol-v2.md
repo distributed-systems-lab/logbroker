@@ -1,5 +1,17 @@
 # Controller control protocol v2
 
+Observers may fetch while their current session is fenced. Requests must name the
+current controller epoch and an exact committed prefix boundary/epoch. A mismatched
+prefix is INVALID_REQUEST and must never be repaired by truncating applied history.
+Each broker has at most one fetch and one chunk read outstanding. Fetch waits are
+bounded by 100 ms; a disk read uses a frozen commit offset and includes only complete
+batches ending at or below it. If retention races an admitted read, SNAPSHOT_NOT_FOUND
+asks the broker to fetch again and receive the current snapshot ID.
+Bulk reads reserve shared memory before disk dispatch, leave voter completion slots
+in reserve, and do not step down a leader when refused under pressure. Snapshot uploads
+share the two-pin cap across roles, with separate broker/voter ID namespaces; pins
+expire after 30 seconds and observer pins close when the controller epoch ends.
+
 Heartbeat `recoveryId=00000000-0000-0000-0000-000000000000` denotes ordinary
 contact and cannot request unfence. A nonzero ID starts a recovery handshake with
 a fixed target taken from the applied committed image. Retries share the pending

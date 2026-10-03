@@ -333,6 +333,9 @@ public final class ControllerNode implements AutoCloseable {
       int timeout =
           frame.message() instanceof CreateTopic c
               ? c.timeoutMs()
+              : frame.message() instanceof BrokerControlProtocol.Register r ? r.timeoutMs()
+              : frame.message() instanceof BrokerControlProtocol.Heartbeat h ? h.timeoutMs()
+              : frame.message() instanceof BrokerControlProtocol.CreateTopic c ? c.timeoutMs()
               : frame.message() instanceof ReadMetadata r
                   ? r.timeoutMs()
                   : (int) config.adminTimeout().toMillis();
@@ -418,6 +421,23 @@ public final class ControllerNode implements AutoCloseable {
         readMemory.put(read.token(), memory);
         runner.run(List.of(new QuorumEffect.ReadLog(read.token(), read.offset(), budget)));
         continue;
+      }
+      if (effect instanceof QuorumEffect.ReadObserver read) {
+        int budget = Math.min(read.budget(),config.logConfig().maxBatchBytes());
+        var memory = transport.reserveReadMemory(config.logConfig().maxBatchBytes());
+        if (memory == null) {
+          submitInternal(new DiskDone(read.token(),new DiskResult.Overloaded())); continue;
+        }
+        readMemory.put(read.token(),memory);
+        runner.run(List.of(new QuorumEffect.ReadObserver(read.token(),read.session(),read.offset(),read.upperBound(),budget)));
+        continue;
+      }
+      if (effect instanceof QuorumEffect.ReadObserverSnapshot read) {
+        var memory = transport.reserveReadMemory(read.maxBytes());
+        if (memory == null) {
+          submitInternal(new DiskDone(read.token(),new DiskResult.Overloaded())); continue;
+        }
+        readMemory.put(read.token(),memory);
       }
       runner.run(List.of(effect));
     }

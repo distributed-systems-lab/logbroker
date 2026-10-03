@@ -72,7 +72,7 @@ public final class SnapshotStore implements AutoCloseable {
     }
   }
 
-  private final Map<Integer, Upload> uploads = new HashMap<>();
+  private final Map<Long, Upload> uploads = new HashMap<>();
 
   /**
    * Opens the snapshot directory of {@code root} and recovers the retained set from the last
@@ -302,11 +302,19 @@ public final class SnapshotStore implements AutoCloseable {
    */
   public synchronized UploadChunk readUpload(int peer, SnapshotId id, long position, int maxBytes)
       throws IOException {
+    return readUploadKey(peer,id,position,maxBytes);
+  }
+
+  /** Shares the two-pin cap with voters, while keeping broker/voter IDs in separate namespaces. */
+  public synchronized UploadChunk readObserverUpload(int broker, SnapshotId id, long position, int maxBytes)
+      throws IOException {
+    return readUploadKey((1L << 32) | broker,id,position,maxBytes);
+  }
+
+  private UploadChunk readUploadKey(long peer, SnapshotId id, long position, int maxBytes)
+      throws IOException {
     long now = System.nanoTime();
-    for (int key : List.copyOf(uploads.keySet()))
-      if (now - uploads.get(key).accessed >= 30_000_000_000L) {
-        uploads.remove(key).pin.close();
-      }
+    expireUploads(now,false);
     var upload = uploads.get(peer);
     if (upload != null && !upload.id.equals(id)) {
       uploads.remove(peer).pin.close();
@@ -335,13 +343,20 @@ public final class SnapshotStore implements AutoCloseable {
     return uploads.size();
   }
 
+  /** Called on the ordered worker so file close never blocks the event loop. */
+  public synchronized void expireUploads(long now, boolean closeObservers) throws IOException {
+    for (long key : List.copyOf(uploads.keySet()))
+      if (closeObservers && key >= (1L << 32) || now - uploads.get(key).accessed >= 30_000_000_000L)
+        uploads.remove(key).pin.close();
+  }
+
   /**
    * Reloads the retained set from the journal. Needed after another {@code SnapshotStore} instance
    * on the same root, such as the one used by snapshot install, appended a {@code SNAPSHOT_SET}.
    */
   public void refreshRetained() throws IOException {
     retained =
-        new SnapshotStore(directory.getParent(), identity, files, state, maxBytes).retained();
+        new SnapshotStore(directory.getParent(), identity, files, state, maxBytes, metadataLimits).retained();
   }
 
   @Override

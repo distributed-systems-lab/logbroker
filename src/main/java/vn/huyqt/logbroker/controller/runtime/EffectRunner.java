@@ -69,7 +69,9 @@ public final class EffectRunner {
         // Lifecycle and feature initialization share the reserved consensus completion slots.
         // Topic/admin appends may be refused under pressure; snapshots run at low priority.
         boolean ordinary =
-            work instanceof QuorumEffect.Append append
+            work instanceof QuorumEffect.MaintainUploads
+                || work instanceof QuorumEffect.ReadObserver || work instanceof QuorumEffect.ReadObserverSnapshot
+                || work instanceof QuorumEffect.Append append
                 && !(append.entries().getFirst()
                     instanceof vn.huyqt.logbroker.controller.log.QuorumEntry.LeaderChange)
                 && !(append.entries().getFirst() instanceof vn.huyqt.logbroker.controller.log.QuorumEntry.BrokerState)
@@ -110,7 +112,7 @@ public final class EffectRunner {
   // Runs on the disk worker. Work stamped with an old generation is discarded; votes are global
   // hard state and are persisted regardless of generation.
   private DiskResult execute(QuorumEffect.DiskEffect effect) throws IOException {
-    if (!(effect instanceof QuorumEffect.PersistVote)
+    if (!(effect instanceof QuorumEffect.PersistVote) && !(effect instanceof QuorumEffect.MaintainUploads)
         && !effect.token().generation().equals(generation.generation()))
       return new DiskResult.Discarded();
     return switch (effect) {
@@ -139,6 +141,21 @@ public final class EffectRunner {
       }
       case QuorumEffect.ReadLog read ->
           new DiskResult.Read(generation.log().read(read.offset(), read.budget()));
+      case QuorumEffect.ReadObserver read -> read.offset() < generation.log().start()
+          ? new DiskResult.SnapshotRejected(vn.huyqt.logbroker.controller.protocol.QuorumError.SNAPSHOT_NOT_FOUND)
+          : new DiskResult.Read(vn.huyqt.logbroker.controller.metadata.ObserverReadService.committedPrefix(
+              generation.log().read(read.offset(),read.budget()),read.upperBound()));
+      case QuorumEffect.ReadObserverSnapshot read -> {
+        try {
+          var chunk = snapshots.readObserverUpload(read.brokerId(),read.id(),read.position(),read.maxBytes());
+          yield new DiskResult.SnapshotChunk(chunk.id(),chunk.position(),chunk.totalLength(),chunk.bytes());
+        } catch (SnapshotStore.Unavailable unavailable) {
+          yield new DiskResult.SnapshotRejected(unavailable.error());
+        }
+      }
+      case QuorumEffect.MaintainUploads maintenance -> {
+        snapshots.expireUploads(System.nanoTime(),maintenance.closeObservers()); yield new DiskResult.Discarded();
+      }
       case QuorumEffect.InstallSnapshot install -> {
         if (!installFence.test(install.token())) yield new DiskResult.Discarded();
         try {
