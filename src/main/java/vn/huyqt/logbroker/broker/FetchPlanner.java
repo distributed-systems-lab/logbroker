@@ -14,6 +14,7 @@ import vn.huyqt.logbroker.protocol.Protocol.FetchReply;
 import vn.huyqt.logbroker.protocol.Protocol.FetchResult;
 import vn.huyqt.logbroker.protocol.Protocol.TopicPartition;
 import vn.huyqt.logbroker.protocol.WireBatchCodec;
+import vn.huyqt.logbroker.protocol.ClusterProtocol;
 
 /**
  * Assembles independent partition results under one wire-byte budget.
@@ -77,6 +78,36 @@ public final class FetchPlanner {
             });
         }
         return chain.thenApply(ignored -> new FetchReply(Error.none(), state.results));
+    }
+
+    /** V2 budget is shared across entries; only the explicitly delegated first batch may exceed it. */
+    public CompletableFuture<ClusterProtocol.FetchReply> read(ClusterProtocol.Fetch request,
+            Function<ClusterProtocol.Route, ErrorCode> admission) {
+        if (request.maxBytes() > config.maxFetchBytes() || request.entries().size() > config.protocolLimits().maxPartitionEntries())
+            return CompletableFuture.completedFuture(new ClusterProtocol.FetchReply(
+                    new Error(ErrorCode.INVALID_REQUEST, "Fetch exceeds configured bounds"), List.of()));
+        var results = new ArrayList<ClusterProtocol.FetchResult>();
+        int[] remaining = {request.maxBytes()}; boolean[] anyData = {false};
+        CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
+        for (var entry : request.entries()) chain = chain.thenCompose(unused -> {
+            var route = entry.route(); ErrorCode error = admission.apply(route);
+            PartitionRuntime runtime = lookup.apply(route.partition());
+            if (error == ErrorCode.NONE && runtime == null) error = ErrorCode.PARTITION_UNAVAILABLE;
+            if (error != ErrorCode.NONE) {
+                results.add(new ClusterProtocol.FetchResult(route.partition(), new Error(error, "Partition admission refused"),
+                        -1, -1, -1, List.of()));
+                return CompletableFuture.completedFuture(null);
+            }
+            return runtime.read(new FetchEntry(route.partition(), entry.offset(), entry.maxBytes()), remaining[0],
+                    request.allowOversizedFirstBatch() && !anyData[0], () -> admission.apply(route) == ErrorCode.NONE)
+                    .thenAccept(result -> {
+                        results.add(result);
+                        for (var batch : result.batches()) {
+                            remaining[0] = Math.max(0, remaining[0] - WireBatchCodec.fetchSize(batch.batch())); anyData[0] = true;
+                        }
+                    });
+        });
+        return chain.thenApply(unused -> new ClusterProtocol.FetchReply(Error.none(), results));
     }
 
     private static final class State {

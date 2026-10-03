@@ -77,7 +77,8 @@ public final class NettyServerTransport implements ServerTransport {
             ResourceBudget inputBudget) {
         this.config = config;
         this.clock = clock;
-        codec = new ProtocolCodec(config.protocolLimits());
+        codec = new ProtocolCodec(config.protocolLimits(), new vn.huyqt.logbroker.controller.metadata.MetadataLimits(
+                32, config.maxTopics(), config.maxPartitions(), 64 * 1024 * 1024));
         connectionBudget = new ResourceBudget(config.maxConnections());
         this.inputBudget = inputBudget;
         outboundBudget = new ResourceBudget(config.maxOutboundTotal());
@@ -290,7 +291,7 @@ public final class NettyServerTransport implements ServerTransport {
                 }
                 // Broker processing deadline starts after the request is received and admitted.
                 long deadline = clock.nanoTime() + Duration.ofSeconds(30).toNanos();
-                var requestContext = new RequestContext(id, request.requestId(), deadline);
+                var requestContext = new RequestContext(id, request.requestId(), deadline, request.version());
                 dispatcher.handle(requestContext, request.body()).whenComplete((reply, error) -> {
                     activeIds.remove(request.requestId());
                     contextLease.close();

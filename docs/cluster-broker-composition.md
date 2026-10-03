@@ -19,8 +19,8 @@ and closes storage, then releases the root lock. A drain failure retains ownersh
 because an outstanding worker may still use the files. Startup bind failure closes
 opened resources before releasing the root.
 
-This records Task 12 composition, not full Phase 4 acceptance. Data wire v2 and
-guarded I/O are Task 13; cluster clients and real cluster process acceptance follow
-in Tasks 14–16. The cluster listener currently rejects v1 requests. Historical v1
+This records cluster composition, not full Phase 4 acceptance. See
+[data protocol v2](protocol-v2.md) for guarded I/O. Cluster clients and real cluster
+process acceptance follow in Tasks 14–16. The cluster listener rejects v1 requests. Historical v1
 tests use test-only `LegacyBrokerFixture`, `LegacyMetadataFixture` and
 `LegacyBrokerMain`; these are not production startup paths.

@@ -73,7 +73,9 @@ public final class BrokerClient implements AutoCloseable {
             return CompletableFuture.failedFuture(ClientException.notSent("Request ID exhausted"));
         }
         long id = nextId++;
-        var frame = new Protocol.RequestFrame(operation(body), (short) 1, id, body);
+        short version = body instanceof Protocol.CreateTopic || body instanceof Protocol.Metadata
+                || body instanceof Protocol.Produce || body instanceof Protocol.Fetch ? (short) 1 : (short) 2;
+        var frame = new Protocol.RequestFrame(operation(body), version, id, body);
         final int bytes;
         try {
             bytes = codec.encodeRequest(frame).length;
@@ -210,6 +212,10 @@ public final class BrokerClient implements AutoCloseable {
             case Protocol.Metadata ignored -> 2;
             case Protocol.Produce ignored -> 3;
             case Protocol.Fetch ignored -> 4;
+            case vn.huyqt.logbroker.protocol.ClusterProtocol.CreateTopic ignored -> 1;
+            case vn.huyqt.logbroker.protocol.ClusterProtocol.Metadata ignored -> 2;
+            case vn.huyqt.logbroker.protocol.ClusterProtocol.Produce ignored -> 3;
+            case vn.huyqt.logbroker.protocol.ClusterProtocol.Fetch ignored -> 4;
         };
     }
 

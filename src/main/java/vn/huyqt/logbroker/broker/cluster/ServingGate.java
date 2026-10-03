@@ -8,29 +8,51 @@ public final class ServingGate implements AutoCloseable {
     private Session session;
     private long revision=-1, blockedOffset=-1;
     private boolean allowed,closed;
+    private final java.util.concurrent.CopyOnWriteArrayList<Runnable> listeners = new java.util.concurrent.CopyOnWriteArrayList<>();
     public ServingGate(Session session) { this.session=Objects.requireNonNull(session); }
     /** Binds a newly committed registration and invalidates the old session's permission. */
-    public synchronized void bind(Session next) {
+    public void bind(Session next) {
+        synchronized (this) {
         if(closed) throw new IllegalStateException("Serving gate closed");
         Objects.requireNonNull(next);
         if(next.brokerId()!=session.brokerId() || !next.storageId().equals(session.storageId())
             || next.brokerEpoch()<session.brokerEpoch()) throw new IllegalArgumentException("Invalid replacement session");
         if(next.equals(session)) return;
         session=next; revision=blockedOffset=-1; allowed=false;
+        }
+        changed();
     }
-    public synchronized void apply(long imageOffset,long lifecycleRevision,boolean fenced) {
+    public void apply(long imageOffset,long lifecycleRevision,boolean fenced) {
+        boolean notify;
+        synchronized (this) {
         if(closed || lifecycleRevision<session.brokerEpoch() || imageOffset<lifecycleRevision || lifecycleRevision<revision) return;
         revision=lifecycleRevision;
+        boolean previous = allowed;
         if(fenced) { blockedOffset=Math.max(blockedOffset,lifecycleRevision); allowed=false; }
         else allowed=lifecycleRevision>blockedOffset;
+        notify = previous != allowed;
+        }
+        if (notify) changed();
     }
     /** Ignores a rejection older than an already applied newer decision. */
-    public synchronized void reject(long stateOffset) {
+    public void reject(long stateOffset) {
+        boolean notify;
+        synchronized (this) {
         if(closed || stateOffset<revision || stateOffset<session.brokerEpoch()) return;
-        blockedOffset=Math.max(blockedOffset,stateOffset); allowed=false;
+        notify = allowed; blockedOffset=Math.max(blockedOffset,stateOffset); allowed=false;
+        }
+        if (notify) changed();
     }
     public synchronized boolean canServe() { return !closed && allowed; }
     public synchronized Session session() { return session; }
     public synchronized long blockedOffset() { return blockedOffset; }
-    @Override public synchronized void close() { closed=true; allowed=false; }
+    /** Runs callbacks outside the gate monitor so partition workers can recheck permission safely. */
+    public vn.huyqt.logbroker.broker.DeadlineScheduler.Ticket onChange(Runnable action) {
+        Objects.requireNonNull(action); listeners.add(action); return () -> listeners.remove(action);
+    }
+    private void changed() { for (var listener : listeners) listener.run(); }
+    @Override public void close() {
+        synchronized (this) { if (closed) return; closed=true; allowed=false; }
+        changed();
+    }
 }

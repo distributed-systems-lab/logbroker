@@ -12,6 +12,11 @@ import vn.huyqt.logbroker.broker.metadata.BrokerMetadata;
 import vn.huyqt.logbroker.protocol.ErrorCode;
 import vn.huyqt.logbroker.protocol.Protocol.*;
 import vn.huyqt.logbroker.protocol.Protocol.Error;
+import java.util.UUID;
+import vn.huyqt.logbroker.protocol.ClusterProtocol;
+import vn.huyqt.logbroker.broker.cluster.ServingGate;
+import vn.huyqt.logbroker.controller.metadata.MetadataImage;
+import vn.huyqt.logbroker.controller.client.ControllerClientException;
 
 /**
  * Dispatches requests and preserves independent partition outcomes.
@@ -29,6 +34,8 @@ public final class RequestDispatcher {
 
     private final MetadataHandler metadata;
     private final BrokerMetadata clusterMetadata;
+    private final UUID clusterId;
+    private final ServingGate gate;
     private final Function<TopicPartition, PartitionRuntime> runtimes;
     private final FetchCoordinator fetch;
     private final DeadlineScheduler clock;
@@ -40,15 +47,17 @@ public final class RequestDispatcher {
             FetchCoordinator fetch, DeadlineScheduler clock) {
         this.metadata = Objects.requireNonNull(metadata);
         this.clusterMetadata = null;
+        this.clusterId = null; this.gate = null;
         this.runtimes = Objects.requireNonNull(runtimes);
         this.fetch = Objects.requireNonNull(fetch);
         this.clock = Objects.requireNonNull(clock);
     }
 
-    /** Cluster composition; the v2 branches are provided by the cluster data protocol. */
+    /** Cluster admission rechecks committed route epochs and serving permission on partition lanes. */
     public RequestDispatcher(BrokerMetadata metadata,Function<TopicPartition,PartitionRuntime> runtimes,
-        FetchCoordinator fetch,DeadlineScheduler clock) {
+        FetchCoordinator fetch,DeadlineScheduler clock, UUID clusterId, ServingGate gate) {
         this.metadata=null; this.clusterMetadata=Objects.requireNonNull(metadata);
+        this.clusterId=Objects.requireNonNull(clusterId); this.gate=Objects.requireNonNull(gate);
         this.runtimes=Objects.requireNonNull(runtimes); this.fetch=Objects.requireNonNull(fetch); this.clock=Objects.requireNonNull(clock);
     }
 
@@ -61,7 +70,11 @@ public final class RequestDispatcher {
     public CompletableFuture<Response> handle(RequestContext context, Request request) {
         Objects.requireNonNull(context);
         Objects.requireNonNull(request);
-        if(clusterMetadata!=null)
+        boolean legacy = request instanceof CreateTopic || request instanceof Metadata
+                || request instanceof Produce || request instanceof Fetch;
+        if (legacy != (context.version() == 1))
+            return CompletableFuture.completedFuture(new Failure(new Error(ErrorCode.UNSUPPORTED_VERSION, "Version/body mismatch")));
+        if (clusterMetadata != null && context.version() != 2 || clusterMetadata == null && context.version() != 1)
             return CompletableFuture.completedFuture(new Failure(new Error(ErrorCode.UNSUPPORTED_VERSION,"Cluster broker requires data protocol v2")));
         if (stopping)
             return CompletableFuture.completedFuture(new Failure(
@@ -77,6 +90,12 @@ public final class RequestDispatcher {
             case Metadata query -> CompletableFuture.completedFuture(metadata.metadata(query.names()));
             case Produce produce -> produce(context, produce);
             case Fetch query -> fetch.fetch(context, query).thenApply(reply -> reply);
+            case ClusterProtocol.CreateTopic create -> clusterCreate(context, create);
+            case ClusterProtocol.Metadata query -> CompletableFuture.completedFuture(clusterMetadata(query));
+            case ClusterProtocol.Produce produce -> clusterProduce(context, produce);
+            case ClusterProtocol.Fetch query -> clusterId.equals(query.clusterId())
+                    ? fetch.fetch(context, query, this::admission, gate::onChange).thenApply(reply -> reply)
+                    : CompletableFuture.completedFuture(clusterMismatch());
         };
         DeadlineScheduler.Ticket onCancel = context.onCancel(
                 () -> result.completeExceptionally(new CancellationException("Connection closed")));
@@ -90,6 +109,89 @@ public final class RequestDispatcher {
             }
         });
         return result;
+    }
+
+    private Failure clusterMismatch() {
+        return new Failure(new Error(ErrorCode.CLUSTER_MISMATCH, "Foreign cluster identity"));
+    }
+    private CompletableFuture<Response> clusterCreate(RequestContext context, ClusterProtocol.CreateTopic request) {
+        if (!clusterId.equals(request.clusterId())) return CompletableFuture.completedFuture(clusterMismatch());
+        long deadline = Math.min(context.deadlineNanos(), clock.nanoTime()
+                + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(request.timeoutMs()));
+        return clusterMetadata.create(request.name(), request.partitions(), deadline).<Response>handle((created, failure) -> {
+            if (failure == null) return new ClusterProtocol.CreateTopicReply(Error.none(), created.topicId(), created.committedOffset());
+            while (failure instanceof java.util.concurrent.CompletionException && failure.getCause() != null) failure = failure.getCause();
+            ErrorCode code = ErrorCode.INVALID_REQUEST;
+            if (failure instanceof ControllerClientException control) {
+                code = switch (control.error()) {
+                    case TOPIC_ALREADY_EXISTS -> ErrorCode.TOPIC_ALREADY_EXISTS;
+                    case NO_ELIGIBLE_BROKER -> ErrorCode.NO_ELIGIBLE_BROKER;
+                    case CLUSTER_MISMATCH -> ErrorCode.CLUSTER_MISMATCH;
+                    case OVERLOADED -> ErrorCode.OVERLOADED;
+                    default -> ErrorCode.REQUEST_TIMED_OUT;
+                };
+            }
+            return new Failure(new Error(code, "Controller topic command failed"));
+        });
+    }
+    private Response clusterMetadata(ClusterProtocol.Metadata request) {
+        if (!request.clusterId().equals(ClusterProtocol.UNPINNED) && !clusterId.equals(request.clusterId())) return clusterMismatch();
+        var image = clusterMetadata.image();
+        var brokers = image.brokers().entrySet().stream().map(entry -> {
+            var view = entry.getValue(); var registration = view.registration();
+            return new ClusterProtocol.BrokerInfo(entry.getKey(), registration.endpoint(), registration.session().brokerEpoch(), view.fenced());
+        }).toList();
+        var topics = new ArrayList<ClusterProtocol.TopicInfo>();
+        for (var topic : image.topics()) {
+            if (!request.names().isEmpty() && !request.names().contains(topic.name())) continue;
+            var partitions = new ArrayList<ClusterProtocol.PartitionInfo>();
+            for (int i = 0; i < topic.partitions(); i++) {
+                var record = image.partitions().get(new MetadataImage.PartitionKey(topic.id(), i));
+                var owner = image.brokers().get(record.leaderId());
+                Error error = owner.fenced() ? new Error(ErrorCode.FENCED_BROKER, "Owner fenced") : Error.none();
+                if (record.leaderId() == gate.session().brokerId() && runtimes.apply(new TopicPartition(topic.id(), i)) == null)
+                    error = new Error(ErrorCode.PARTITION_UNAVAILABLE, "Local partition not ready");
+                partitions.add(new ClusterProtocol.PartitionInfo(i, error, record.replicas(), record.leaderId(), record.leaderEpoch(), record.partitionEpoch()));
+            }
+            topics.add(new ClusterProtocol.TopicInfo(topic.name(), topic.id(), partitions));
+        }
+        return new ClusterProtocol.MetadataReply(Error.none(), clusterId, image.appliedOffset(), brokers, topics);
+    }
+    private ErrorCode admission(ClusterProtocol.Route route) {
+        if (stopping) return ErrorCode.BROKER_SHUTTING_DOWN;
+        var session = gate.session();
+        if (route.brokerId() != session.brokerId()) return ErrorCode.NOT_PARTITION_LEADER;
+        if (route.brokerEpoch() != session.brokerEpoch()) return ErrorCode.STALE_BROKER_EPOCH;
+        if (!gate.canServe()) return ErrorCode.FENCED_BROKER;
+        var image = clusterMetadata.image(); var view = image.brokers().get(session.brokerId());
+        if (view == null || view.fenced() || !view.registration().session().equals(session)) return ErrorCode.FENCED_BROKER;
+        var assignment = image.partitions().get(new MetadataImage.PartitionKey(route.partition().topicId(), route.partition().partition()));
+        if (assignment == null) return ErrorCode.UNKNOWN_PARTITION;
+        if (assignment.leaderId() != session.brokerId()) return ErrorCode.NOT_PARTITION_LEADER;
+        if (assignment.leaderEpoch() != route.leaderEpoch()) return ErrorCode.STALE_PARTITION_EPOCH;
+        if (runtimes.apply(route.partition()) == null) return ErrorCode.PARTITION_UNAVAILABLE;
+        return ErrorCode.NONE;
+    }
+    private CompletableFuture<Response> clusterProduce(RequestContext context, ClusterProtocol.Produce request) {
+        if (!clusterId.equals(request.clusterId())) return CompletableFuture.completedFuture(clusterMismatch());
+        long deadline = Math.min(context.deadlineNanos(), clock.nanoTime()
+                + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(request.timeoutMs()));
+        var pending = new ArrayList<CompletableFuture<ClusterProtocol.ProduceResult>>();
+        for (var entry : request.entries()) {
+            var route = entry.route(); var error = admission(route);
+            if (error != ErrorCode.NONE) pending.add(CompletableFuture.completedFuture(new ClusterProtocol.ProduceResult(
+                    route.partition(), new Error(error, "Partition admission refused"), ClusterProtocol.Outcome.REJECTED, -1, -1)));
+            else {
+                var runtime = runtimes.apply(route.partition());
+                if (runtime == null) pending.add(CompletableFuture.completedFuture(new ClusterProtocol.ProduceResult(route.partition(),
+                        new Error(ErrorCode.PARTITION_UNAVAILABLE, "Partition not ready"), ClusterProtocol.Outcome.REJECTED, -1, -1)));
+                else pending.add(runtime.produce(entry.batch(), request.ack(), deadline, () -> admission(route) == ErrorCode.NONE)
+                        .exceptionally(failure -> new ClusterProtocol.ProduceResult(route.partition(),
+                                new Error(ErrorCode.STORAGE_ERROR, "Partition request failed"), ClusterProtocol.Outcome.UNKNOWN, -1, -1)));
+            }
+        }
+        return CompletableFuture.allOf(pending.toArray(CompletableFuture[]::new))
+                .thenApply(unused -> new ClusterProtocol.ProduceReply(Error.none(), pending.stream().map(CompletableFuture::join).toList()));
     }
 
     // Entries are independent and not atomic across partitions. The reply is assembled when all

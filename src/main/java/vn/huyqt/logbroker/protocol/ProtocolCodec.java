@@ -18,7 +18,7 @@ import vn.huyqt.logbroker.protocol.Protocol.*;
 import vn.huyqt.logbroker.protocol.Protocol.Error;
 
 /**
- * Bounded version 1 request/response codec independent of Netty.
+ * Bounded version 1 and 2 request/response codec independent of Netty.
  *
  * <p>Frames are complete byte arrays including the leading {@code int32 frameLength}; the layout
  * is specified in {@code docs/protocol-v1.md}. Every count and length is checked against the
@@ -33,9 +33,15 @@ public final class ProtocolCodec {
     // docs/superpowers/specs/2026-09-25-broker-phase-2-design.md.
     private static final int MAX_STRING = 249;
     private final ProtocolLimits limits;
+    private final vn.huyqt.logbroker.controller.metadata.MetadataLimits clusterLimits;
 
     public ProtocolCodec(ProtocolLimits limits) {
+        this(limits, vn.huyqt.logbroker.controller.metadata.MetadataLimits.defaults());
+    }
+
+    public ProtocolCodec(ProtocolLimits limits, vn.huyqt.logbroker.controller.metadata.MetadataLimits clusterLimits) {
         this.limits = Objects.requireNonNull(limits);
+        this.clusterLimits = Objects.requireNonNull(clusterLimits);
     }
 
     /**
@@ -50,10 +56,11 @@ public final class ProtocolCodec {
         try {
             ByteBuffer source = header(frame);
             short operation = source.getShort();
-            source.getShort();
+            short version = source.getShort();
             source.getLong();
             if (operation != 3)
                 return base;
+            if (version == 2) getUuid(source);
             getByte(source);
             getInt(source);
             int partitions = getCount(source, limits.maxPartitionEntries(), 54);
@@ -61,7 +68,7 @@ public final class ProtocolCodec {
             for (int partition = 0; partition < partitions; partition++) {
                 if (source.remaining() < 34)
                     return base;
-                source.position(source.position() + 20);
+                source.position(source.position() + (version == 2 ? 40 : 20));
                 int start = source.position();
                 int length = source.getInt(start + 2);
                 int count = source.getInt(start + 6);
@@ -120,6 +127,7 @@ public final class ProtocolCodec {
      */
     public byte[] encodeRequest(RequestFrame frame) throws ProtocolException {
         requireHeader(frame.operation(), frame.version(), frame.requestId());
+        if (frame.version() == 2) return encodeClusterRequest(frame);
         try {
             return encode(frame.operation(), frame.version(), frame.requestId(), out -> {
                 switch (frame.body()) {
@@ -157,6 +165,7 @@ public final class ProtocolCodec {
                             out.writeInt(entry.maxBytes());
                         }
                     }
+                    default -> throw invalid("Version/body mismatch");
                 }
             });
         } catch (IOException error) {
@@ -179,6 +188,7 @@ public final class ProtocolCodec {
         short version = source.getShort();
         long requestId = source.getLong();
         requireHeader(operation, version, requestId);
+        if (version == 2) return decodeClusterRequest(source, operation, requestId);
         Request body = switch (operation) {
             case 1 -> new CreateTopic(getString(source, MAX_STRING), getInt(source));
             case 2 -> {
@@ -251,6 +261,7 @@ public final class ProtocolCodec {
      *     Failure} carries {@code NONE}
      */
     public byte[] encodeResponse(ResponseFrame frame) throws ProtocolException {
+        if (frame.version() == 2 && !(frame.body() instanceof Failure)) return encodeClusterResponse(frame);
         // Failures may answer an unknown operation or version, which is echoed unchanged.
         if (!(frame.body() instanceof Failure)) {
             requireHeader(frame.operation(), frame.version(), frame.requestId());
@@ -264,6 +275,7 @@ public final class ProtocolCodec {
                     case ProduceReply reply -> reply.error();
                     case FetchReply reply -> reply.error();
                     case Failure failure -> failure.error();
+                    default -> throw invalid("Version/body mismatch");
                 };
                 putError(out, requestError);
                 if (requestError.code() != ErrorCode.NONE)
@@ -315,6 +327,7 @@ public final class ProtocolCodec {
                         }
                     }
                     case Failure ignored -> throw invalid("NONE is not a failure");
+                    default -> throw invalid("Version/body mismatch");
                 }
             });
         } catch (IOException error) {
@@ -342,6 +355,7 @@ public final class ProtocolCodec {
             return new ResponseFrame(operation, version, requestId, new Failure(error));
         }
         requireHeader(operation, version, requestId);
+        if (version == 2) return decodeClusterResponse(source, operation, requestId, error);
         Response body = switch (operation) {
             case 1 -> new CreateTopicReply(error, getUuid(source));
             case 2 -> {
@@ -393,6 +407,224 @@ public final class ProtocolCodec {
         return new ResponseFrame(operation, version, requestId, body);
     }
 
+    private byte[] encodeClusterRequest(RequestFrame frame) throws ProtocolException {
+        try {
+            byte[] bytes = encode(frame.operation(), frame.version(), frame.requestId(), out -> {
+                switch (frame.body()) {
+                    case ClusterProtocol.CreateTopic request -> {
+                        requireOperation(frame.operation(), 1); putUuid(out, request.clusterId());
+                        putString(out, request.name(), MAX_STRING); out.writeInt(request.partitions());
+                        out.writeShort(request.replicationFactor()); out.writeInt(request.timeoutMs());
+                    }
+                    case ClusterProtocol.Metadata request -> {
+                        requireOperation(frame.operation(), 2); putUuid(out, request.clusterId());
+                        putArrayCount(out, request.names().size(), clusterLimits.maxTopics());
+                        for (String name : request.names()) putString(out, name, MAX_STRING);
+                    }
+                    case ClusterProtocol.Produce request -> {
+                        requireOperation(frame.operation(), 3); putUuid(out, request.clusterId());
+                        out.writeByte(request.ack().ordinal()); out.writeInt(request.timeoutMs());
+                        putArrayCount(out, request.entries().size(), limits.maxPartitionEntries());
+                        for (var entry : request.entries()) {
+                            putRoute(out, entry.route()); out.write(WireBatchCodec.encode(entry.batch(), limits));
+                        }
+                    }
+                    case ClusterProtocol.Fetch request -> {
+                        requireOperation(frame.operation(), 4); putUuid(out, request.clusterId());
+                        out.writeInt(request.maxBytes()); out.writeInt(request.minBytes()); out.writeInt(request.maxWaitMs());
+                        putArrayCount(out, request.entries().size(), limits.maxPartitionEntries());
+                        for (var entry : request.entries()) {
+                            putRoute(out, entry.route()); out.writeLong(entry.offset()); out.writeInt(entry.maxBytes());
+                        }
+                        out.writeBoolean(request.allowOversizedFirstBatch());
+                    }
+                    default -> throw invalid("Version/body mismatch");
+                }
+            });
+            decodeRequest(bytes); // Apply the same semantic/duplicate validation on both boundaries.
+            return bytes;
+        } catch (IOException error) { throw asProtocol(error); }
+    }
+
+    private RequestFrame decodeClusterRequest(ByteBuffer source, short operation, long id) throws ProtocolException {
+        try {
+            UUID cluster = getUuid(source);
+            Request body = switch (operation) {
+                case 1 -> new ClusterProtocol.CreateTopic(cluster, getString(source, MAX_STRING), getInt(source),
+                        getShort(source), getInt(source));
+                case 2 -> {
+                    int count = getCount(source, clusterLimits.maxTopics(), 4);
+                    List<String> names = new ArrayList<>(count); Set<String> unique = new HashSet<>();
+                    for (int i = 0; i < count; i++) {
+                        String name = getString(source, MAX_STRING);
+                        if (!unique.add(name)) throw invalid("Duplicate topic name"); names.add(name);
+                    }
+                    yield new ClusterProtocol.Metadata(cluster, names);
+                }
+                case 3 -> {
+                    int ack = Byte.toUnsignedInt(getByte(source)); if (ack > 1) throw invalid("Invalid ack");
+                    int timeout = getInt(source), count = getCount(source, limits.maxPartitionEntries(), 74);
+                    List<ClusterProtocol.ProduceEntry> entries = new ArrayList<>(count); Set<TopicPartition> unique = new HashSet<>();
+                    for (int i = 0; i < count; i++) {
+                        var route = getRoute(source); if (!unique.add(route.partition())) throw invalid("Duplicate partition");
+                        entries.add(new ClusterProtocol.ProduceEntry(route, WireBatchCodec.decode(getWireBatch(source), limits)));
+                    }
+                    yield new ClusterProtocol.Produce(cluster, AckMode.values()[ack], timeout, entries);
+                }
+                case 4 -> {
+                    int max = getInt(source), min = getInt(source), wait = getInt(source);
+                    int count = getCount(source, limits.maxPartitionEntries(), 52);
+                    List<ClusterProtocol.FetchEntry> entries = new ArrayList<>(count); Set<TopicPartition> unique = new HashSet<>();
+                    for (int i = 0; i < count; i++) {
+                        var route = getRoute(source); if (!unique.add(route.partition())) throw invalid("Duplicate partition");
+                        entries.add(new ClusterProtocol.FetchEntry(route, getLong(source), getInt(source)));
+                    }
+                    yield new ClusterProtocol.Fetch(cluster, max, min, wait, entries, getBoolean(source));
+                }
+                default -> throw new ProtocolException(ErrorCode.UNSUPPORTED_OPERATION, "Unknown operation");
+            };
+            requireConsumed(source); return new RequestFrame(operation, (short) 2, id, body);
+        } catch (IllegalArgumentException | ArithmeticException error) {
+            throw new ProtocolException(ErrorCode.INVALID_REQUEST, "Invalid cluster request", error);
+        }
+    }
+
+    private byte[] encodeClusterResponse(ResponseFrame frame) throws ProtocolException {
+        requireHeader(frame.operation(), frame.version(), frame.requestId());
+        try {
+            return encode(frame.operation(), frame.version(), frame.requestId(), out -> {
+                Error error = switch (frame.body()) {
+                    case ClusterProtocol.CreateTopicReply reply -> reply.error();
+                    case ClusterProtocol.MetadataReply reply -> reply.error();
+                    case ClusterProtocol.ProduceReply reply -> reply.error();
+                    case ClusterProtocol.FetchReply reply -> reply.error();
+                    default -> throw invalid("Version/body mismatch");
+                };
+                putError(out, error); if (error.code() != ErrorCode.NONE) return;
+                switch (frame.body()) {
+                    case ClusterProtocol.CreateTopicReply reply -> {
+                        requireOperation(frame.operation(), 1); putUuid(out, reply.topicId()); out.writeLong(reply.commitOffset());
+                    }
+                    case ClusterProtocol.MetadataReply reply -> {
+                        requireOperation(frame.operation(), 2); putUuid(out, reply.clusterId()); out.writeLong(reply.appliedOffset());
+                        putArrayCount(out, reply.brokers().size(), clusterLimits.maxBrokers());
+                        for (var broker : reply.brokers()) {
+                            out.writeInt(broker.id()); putString(out, broker.endpoint().host(), 255);
+                            out.writeInt(broker.endpoint().port()); out.writeLong(broker.brokerEpoch()); out.writeBoolean(broker.fenced());
+                        }
+                        putArrayCount(out, reply.topics().size(), clusterLimits.maxTopics());
+                        for (var topic : reply.topics()) {
+                            putString(out, topic.name(), MAX_STRING); putUuid(out, topic.id());
+                            putArrayCount(out, topic.partitions().size(), clusterLimits.maxPartitions());
+                            for (var partition : topic.partitions()) {
+                                out.writeInt(partition.partition()); putError(out, partition.error());
+                                putArrayCount(out, partition.replicas().size(), 1);
+                                for (int replica : partition.replicas()) out.writeInt(replica);
+                                out.writeInt(partition.leaderId()); out.writeLong(partition.leaderEpoch()); out.writeLong(partition.partitionEpoch());
+                            }
+                        }
+                    }
+                    case ClusterProtocol.ProduceReply reply -> {
+                        requireOperation(frame.operation(), 3); putArrayCount(out, reply.results().size(), limits.maxPartitionEntries());
+                        for (var result : reply.results()) {
+                            putPartition(out, result.partition()); putError(out, result.error()); out.writeByte(result.outcome().ordinal());
+                            out.writeLong(result.firstOffset()); out.writeLong(result.nextOffset());
+                        }
+                    }
+                    case ClusterProtocol.FetchReply reply -> {
+                        requireOperation(frame.operation(), 4); putArrayCount(out, reply.results().size(), limits.maxPartitionEntries());
+                        for (var result : reply.results()) {
+                            putPartition(out, result.partition()); putError(out, result.error());
+                            out.writeLong(result.logStartOffset()); out.writeLong(result.logEndOffset()); out.writeLong(result.highWatermark());
+                            putArrayCount(out, result.batches().size(), limits.maxFrameBytes() / 42);
+                            for (var batch : result.batches()) {
+                                out.writeLong(batch.baseOffset()); out.write(WireBatchCodec.encode(batch.batch(), limits));
+                            }
+                        }
+                    }
+                    default -> throw invalid("Version/body mismatch");
+                }
+            });
+        } catch (IOException error) { throw asProtocol(error); }
+    }
+
+    private ResponseFrame decodeClusterResponse(ByteBuffer source, short operation, long id, Error error) throws ProtocolException {
+        try {
+            Response body = switch (operation) {
+                case 1 -> new ClusterProtocol.CreateTopicReply(error, getUuid(source), getLong(source));
+                case 2 -> {
+                    UUID cluster = getUuid(source); long offset = getLong(source);
+                    int count = getCount(source, clusterLimits.maxBrokers(), 21); var brokers = new ArrayList<ClusterProtocol.BrokerInfo>(count);
+                    Set<Integer> brokerIds = new HashSet<>();
+                    for (int i = 0; i < count; i++) {
+                        int broker = getInt(source); if (!brokerIds.add(broker)) throw invalid("Duplicate broker");
+                        brokers.add(new ClusterProtocol.BrokerInfo(broker,
+                                new vn.huyqt.logbroker.controller.metadata.ClusterRecords.Endpoint(getString(source, 255), getInt(source)),
+                                getLong(source), getBoolean(source)));
+                    }
+                    int topicsCount = getCount(source, clusterLimits.maxTopics(), 24); var topics = new ArrayList<ClusterProtocol.TopicInfo>(topicsCount);
+                    Set<UUID> topicIds = new HashSet<>(); Set<String> names = new HashSet<>(); int totalPartitions = 0;
+                    for (int i = 0; i < topicsCount; i++) {
+                        String name = getString(source, MAX_STRING); UUID topic = getUuid(source);
+                        if (!topicIds.add(topic) || !names.add(name)) throw invalid("Duplicate topic");
+                        int partitionsCount = getCount(source, clusterLimits.maxPartitions(), 38); totalPartitions = Math.addExact(totalPartitions, partitionsCount);
+                        if (totalPartitions > clusterLimits.maxPartitions()) throw invalid("Too many partitions");
+                        var partitions = new ArrayList<ClusterProtocol.PartitionInfo>(partitionsCount); Set<Integer> ids = new HashSet<>();
+                        for (int j = 0; j < partitionsCount; j++) {
+                            int partition = getInt(source); if (!ids.add(partition)) throw invalid("Duplicate partition");
+                            Error state = getError(source); int replicaCount = getCount(source, 1, 4);
+                            var replicas = new ArrayList<Integer>(replicaCount);
+                            for (int k = 0; k < replicaCount; k++) replicas.add(getInt(source));
+                            int leader = getInt(source); long leaderEpoch = getLong(source), partitionEpoch = getLong(source);
+                            if (!brokerIds.contains(leader)) throw invalid("Unknown partition leader");
+                            partitions.add(new ClusterProtocol.PartitionInfo(partition, state, replicas, leader, leaderEpoch, partitionEpoch));
+                        }
+                        topics.add(new ClusterProtocol.TopicInfo(name, topic, partitions));
+                    }
+                    yield new ClusterProtocol.MetadataReply(error, cluster, offset, brokers, topics);
+                }
+                case 3 -> {
+                    int count = getCount(source, limits.maxPartitionEntries(), 43); var results = new ArrayList<ClusterProtocol.ProduceResult>(count);
+                    Set<TopicPartition> unique = new HashSet<>();
+                    for (int i = 0; i < count; i++) {
+                        var partition = getPartition(source); if (!unique.add(partition)) throw invalid("Duplicate partition");
+                        var state = getError(source); int outcome = Byte.toUnsignedInt(getByte(source));
+                        if (outcome > 2) throw invalid("Invalid Produce outcome");
+                        results.add(new ClusterProtocol.ProduceResult(partition, state, ClusterProtocol.Outcome.values()[outcome],
+                                getLong(source), getLong(source)));
+                    }
+                    yield new ClusterProtocol.ProduceReply(error, results);
+                }
+                case 4 -> {
+                    int count = getCount(source, limits.maxPartitionEntries(), 54); var results = new ArrayList<ClusterProtocol.FetchResult>(count);
+                    Set<TopicPartition> unique = new HashSet<>();
+                    for (int i = 0; i < count; i++) {
+                        var partition = getPartition(source); if (!unique.add(partition)) throw invalid("Duplicate partition");
+                        var state = getError(source); long start = getLong(source), end = getLong(source), high = getLong(source);
+                        int batchesCount = getCount(source, limits.maxFrameBytes() / 42, 42); var batches = new ArrayList<FetchBatch>(batchesCount);
+                        for (int j = 0; j < batchesCount; j++) batches.add(new FetchBatch(getLong(source), WireBatchCodec.decode(getWireBatch(source), limits)));
+                        results.add(new ClusterProtocol.FetchResult(partition, state, start, end, high, batches));
+                    }
+                    yield new ClusterProtocol.FetchReply(error, results);
+                }
+                default -> throw new ProtocolException(ErrorCode.UNSUPPORTED_OPERATION, "Unknown operation");
+            };
+            requireConsumed(source); return new ResponseFrame(operation, (short) 2, id, body);
+        } catch (IllegalArgumentException | ArithmeticException bad) {
+            throw new ProtocolException(ErrorCode.INVALID_REQUEST, "Invalid cluster response", bad);
+        }
+    }
+
+    private static void putRoute(DataOutputStream out, ClusterProtocol.Route route) throws IOException {
+        putPartition(out, route.partition()); out.writeInt(route.brokerId()); out.writeLong(route.brokerEpoch()); out.writeLong(route.leaderEpoch());
+    }
+    private static ClusterProtocol.Route getRoute(ByteBuffer source) throws ProtocolException {
+        return new ClusterProtocol.Route(getPartition(source), getInt(source), getLong(source), getLong(source));
+    }
+    private static boolean getBoolean(ByteBuffer source) throws ProtocolException {
+        int value = Byte.toUnsignedInt(getByte(source)); if (value > 1) throw invalid("Invalid boolean"); return value == 1;
+    }
+
     private byte[] encode(short operation, short version, long requestId, Writer writer)
             throws IOException {
         if (requestId < 0)
@@ -423,7 +655,7 @@ public final class ProtocolCodec {
 
     private static void requireHeader(short operation, short version, long id)
             throws ProtocolException {
-        if (version != VERSION)
+        if (version != VERSION && version != 2)
             throw new ProtocolException(ErrorCode.UNSUPPORTED_VERSION, "Unsupported version");
         if (id < 0)
             throw invalid("Negative request ID");

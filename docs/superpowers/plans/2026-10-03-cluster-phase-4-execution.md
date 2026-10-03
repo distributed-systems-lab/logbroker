@@ -19,13 +19,29 @@ tasks in [the implementation plan](2026-10-03-cluster-phase-4.md) still need exe
 | 9 Broker control client and metadata pull | Complete | `c03b772` |
 | 10 Lifecycle and serving gate | Complete | `8ffddca` |
 | 11 Partition inventory/provisioning | Complete | `d420a4d` |
-| 12 Cluster broker composition/forwarding | Complete; WSL verification running | See Task 12 commit |
-| 13 Data wire v2 and guarded I/O | Pending | |
+| 12 Cluster broker composition/forwarding | Complete | `7345b17` |
+| 13 Data wire v2 and guarded I/O | Complete; WSL verification running | See Task 13 commit |
 | 14 Cluster client/routing/retries | Pending | |
 | 15 Cluster process/fault acceptance | Pending | |
 | 16 Operations/examples/documentation/final verification | Pending | |
 
 ## Verification evidence
+
+Task 13, 2026-10-03:
+
+- Independent bootstrap vector, v2 route/outcome/boundary checks and preserved v1 vectors pass.
+  Admission checks cluster, session and leader epochs before scheduling and before partition I/O.
+- Focused Checkpoint B broker/protocol/lifecycle suite: 43 tests, zero failures/errors/skips,
+  completed 22:34:12 before final additional regressions.
+- Final Windows `mvn clean verify`: 400 tests, zero failures/errors, three strict process skips,
+  completed 22:40:31. WSL/ext4 verification running on a fresh source copy.
+- New regressions cover queued fencing, already-appended FLUSHED fencing, blocked append timeout,
+  delayed mutation completion, partial multi-partition success, durable-prefix Fetch, delegated
+  oversized batch, real TCP bootstrap/v1 rejection and malformed outcome/count bounds.
+- A deterministic test found fencing lost behind the lane's coalescing flush control slot.
+  Permission changes now set a pending flag consumed by the common tick; the regression passes.
+  Flush advancement also notifies Fetch waiters; long polling wakes without waiting for a deadline.
+- Native Windows remains core verification, not strict durability evidence. Tasks 14–16 remain.
 
 Task 12, 2026-10-03:
 
@@ -33,7 +49,8 @@ Task 12, 2026-10-03:
   Local metadata authority and standalone startup exist only in historical test fixtures.
 - Focused forwarding/composition/legacy-regression/CLI suite: 17 tests, zero failures/errors/skips.
 - Final Windows `mvn clean verify`: 384 tests, zero failures/errors, three strict process skips,
-  completed 22:16:02. Fresh WSL/ext4 verification is running after an interrupted earlier attempt.
+  completed 22:16:02. Fresh WSL/ext4 `mvn clean verify`: 384 tests, zero failures/errors/skips,
+  completed 22:19:32. Logs/reports in `target/phase4-task12-wsl/` (ignored output).
 - An initial full run reproduced TCP disconnect overtaking a received controller reply's decode.
   A blocked-decode regression confirmed the race; transport now drains received frames first.
   Focused drain/control/CLI tests passed (10 tests); final full suite also passed.

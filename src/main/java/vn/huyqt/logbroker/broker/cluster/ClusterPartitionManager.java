@@ -40,6 +40,12 @@ public final class ClusterPartitionManager {
         this.disk=Objects.requireNonNull(disk); this.root=root.toAbsolutePath().normalize(); this.gate=Objects.requireNonNull(gate);
         this.files=Objects.requireNonNull(files); this.config=Objects.requireNonNull(config); this.lanes=Objects.requireNonNull(lanes);
         this.clock=Objects.requireNonNull(clock); waiters=new ResourceBudget(config.maxFlushedWaiters());
+        gate.onChange(this::permissionChanged);
+    }
+    private void permissionChanged() {
+        List<PartitionRuntime> runtimes;
+        synchronized (this) { runtimes = owned.values().stream().map(Owned::runtime).toList(); }
+        runtimes.forEach(PartitionRuntime::permissionChanged);
     }
     /** Updates desired ownership immediately; disk work never blocks the metadata caller. */
     public synchronized CompletableFuture<Void> reconcile(MetadataImage image,Session nextSession) {
@@ -89,6 +95,7 @@ public final class ClusterPartitionManager {
         List<Map.Entry<TopicPartition,Owned>> existing;
         synchronized(this) { existing=List.copyOf(owned.entrySet()); }
         for(var entry:existing) {
+            entry.getValue().runtime().permissionChanged();
             boolean keep;
             synchronized(this) { keep=!closed && session.equals(entry.getValue().session()) && desired.containsKey(entry.getKey()) && !failures.containsKey(entry.getKey()); }
             if(!keep) closeOwned(entry.getKey(),entry.getValue());

@@ -70,7 +70,7 @@ public final class ClusterBrokerRuntime {
             var metadata=new ClusterMetadataService(control,observer::image,clock);
             java.util.function.Function<vn.huyqt.logbroker.protocol.Protocol.TopicPartition,PartitionRuntime> resolve=tp->partitions.runtime(tp).orElse(null);
             fetch=new FetchCoordinator(new FetchPlanner(resolve,config),resolve,clock,new ResourceBudget(config.maxRequestContexts()));
-            var dispatcher=new RequestDispatcher(metadata,resolve,fetch,clock);
+            var dispatcher=new RequestDispatcher(metadata,resolve,fetch,clock,cluster.clusterId(),gate);
             transport=new NettyServerTransport(config,clock);
             var address=transport.start(new InetSocketAddress(config.host(),config.port()),dispatcher);
             var runtime=new ClusterBrokerRuntime(identity,store,clock,disk,lanes,control,observer,lifecycle,gate,partitions,metadata,fetch,dispatcher,transport,address);

@@ -1,0 +1,2 @@
+# Independent bootstrap Metadata request: operation=2, version=2, requestId=9, UUID zero, no names.
+metadata-bootstrap=000000200002000200000000000000090000000000000000000000000000000000000000

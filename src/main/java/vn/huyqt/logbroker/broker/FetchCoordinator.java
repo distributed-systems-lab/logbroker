@@ -15,6 +15,7 @@ import vn.huyqt.logbroker.protocol.Protocol.Fetch;
 import vn.huyqt.logbroker.protocol.Protocol.FetchReply;
 import vn.huyqt.logbroker.protocol.Protocol.TopicPartition;
 import vn.huyqt.logbroker.protocol.WireBatchCodec;
+import vn.huyqt.logbroker.protocol.ClusterProtocol;
 
 /**
  * Event-driven long polling without occupying a partition worker while waiting.
@@ -31,6 +32,7 @@ public final class FetchCoordinator implements AutoCloseable {
     private final DeadlineScheduler clock;
     private final ResourceBudget waiterBudget;
     private final Set<Waiter> waiters = ConcurrentHashMap.newKeySet();
+    private final Set<ClusterWaiter> clusterWaiters = ConcurrentHashMap.newKeySet();
     private volatile boolean closed;
 
     public FetchCoordinator(FetchPlanner planner,
@@ -77,6 +79,72 @@ public final class FetchCoordinator implements AutoCloseable {
         closed = true;
         for (Waiter waiter : List.copyOf(waiters))
             waiter.expire();
+        for (ClusterWaiter waiter : List.copyOf(clusterWaiters)) waiter.expire();
+    }
+
+    /** Event-driven v2 long polling wakes for committed permission changes as well as durable data. */
+    public CompletableFuture<ClusterProtocol.FetchReply> fetch(RequestContext context, ClusterProtocol.Fetch request,
+            Function<ClusterProtocol.Route, ErrorCode> admission,
+            Function<Runnable, DeadlineScheduler.Ticket> permissionSubscription) {
+        if (closed) return CompletableFuture.completedFuture(new ClusterProtocol.FetchReply(
+                new Error(ErrorCode.BROKER_SHUTTING_DOWN, "Broker closing"), List.of()));
+        if (request.maxWaitMs() == 0 || request.minBytes() == 0) return planner.read(request, admission);
+        var lease = waiterBudget.reserve(1).orElse(null);
+        if (lease == null) return CompletableFuture.completedFuture(new ClusterProtocol.FetchReply(
+                new Error(ErrorCode.OVERLOADED, "Too many Fetch waiters"), List.of()));
+        var waiter = new ClusterWaiter(context, request, admission, lease);
+        clusterWaiters.add(waiter); waiter.start(permissionSubscription); return waiter.result;
+    }
+
+    private final class ClusterWaiter {
+        final RequestContext context;
+        final ClusterProtocol.Fetch request;
+        final Function<ClusterProtocol.Route, ErrorCode> admission;
+        final ResourceBudget.Lease lease;
+        final CompletableFuture<ClusterProtocol.FetchReply> result = new CompletableFuture<>();
+        final List<DeadlineScheduler.Ticket> hooks = new ArrayList<>();
+        boolean evaluating, rerun, expired, finished;
+        ClusterWaiter(RequestContext context, ClusterProtocol.Fetch request,
+                Function<ClusterProtocol.Route, ErrorCode> admission, ResourceBudget.Lease lease) {
+            this.context = context; this.request = request; this.admission = admission; this.lease = lease;
+        }
+        synchronized void start(Function<Runnable, DeadlineScheduler.Ticket> permissionSubscription) {
+            hooks.add(context.onCancel(() -> finish(null, new CancellationException("Connection closed"))));
+            if (finished) { hooks.forEach(DeadlineScheduler.Ticket::cancel); return; }
+            hooks.add(permissionSubscription.apply(this::evaluate));
+            for (var entry : request.entries()) {
+                var runtime = lookup.apply(entry.route().partition());
+                if (runtime != null) hooks.add(runtime.onChange(this::evaluate));
+            }
+            hooks.add(clock.schedule(Math.min(context.deadlineNanos(), clock.nanoTime()
+                    + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(request.maxWaitMs())), this::expire));
+            evaluate();
+        }
+        synchronized void expire() { expired = true; evaluate(); }
+        synchronized void evaluate() {
+            if (finished) return;
+            if (evaluating) { rerun = true; return; }
+            evaluating = true;
+            planner.read(request, admission).whenComplete((reply, failure) -> {
+                synchronized (ClusterWaiter.this) {
+                    if (failure != null) finish(null, failure);
+                    else {
+                        long bytes = reply.results().stream().flatMap(entry -> entry.batches().stream())
+                                .mapToLong(batch -> WireBatchCodec.fetchSize(batch.batch())).sum();
+                        boolean error = reply.error().code() != ErrorCode.NONE || reply.results().stream()
+                                .anyMatch(entry -> entry.error().code() != ErrorCode.NONE);
+                        if (expired || bytes >= request.minBytes() || error) finish(reply, null);
+                    }
+                    evaluating = false;
+                    if (!finished && rerun) { rerun = false; evaluate(); }
+                }
+            });
+        }
+        synchronized void finish(ClusterProtocol.FetchReply reply, Throwable failure) {
+            if (finished) return; finished = true;
+            hooks.forEach(DeadlineScheduler.Ticket::cancel); lease.close(); clusterWaiters.remove(this);
+            if (failure == null) result.complete(reply); else result.completeExceptionally(failure);
+        }
     }
 
     private final class Waiter {

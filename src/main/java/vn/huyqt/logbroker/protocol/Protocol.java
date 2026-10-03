@@ -114,7 +114,8 @@ public final class Protocol {
     }
 
     /** Request body; the frame's operation ID must match the body type. */
-    public sealed interface Request permits CreateTopic, Metadata, Produce, Fetch {
+    public sealed interface Request permits CreateTopic, Metadata, Produce, Fetch,
+            ClusterProtocol.CreateTopic, ClusterProtocol.Metadata, ClusterProtocol.Produce, ClusterProtocol.Fetch {
     }
 
     /**
@@ -122,7 +123,8 @@ public final class Protocol {
      * {@link Failure}.
      */
     public sealed interface Response permits CreateTopicReply, MetadataReply,
-            ProduceReply, FetchReply, Failure {
+            ProduceReply, FetchReply, Failure, ClusterProtocol.CreateTopicReply, ClusterProtocol.MetadataReply,
+            ClusterProtocol.ProduceReply, ClusterProtocol.FetchReply {
     }
 
     public record CreateTopic(String name, int partitions) implements Request {

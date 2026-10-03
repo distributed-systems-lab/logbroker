@@ -11,6 +11,8 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Consumer;
+import java.util.function.BooleanSupplier;
+import vn.huyqt.logbroker.protocol.ClusterProtocol;
 import vn.huyqt.logbroker.protocol.ErrorCode;
 import vn.huyqt.logbroker.protocol.Protocol.AckMode;
 import vn.huyqt.logbroker.protocol.Protocol.Batch;
@@ -56,6 +58,7 @@ public final class PartitionRuntime implements AutoCloseable {
     private volatile long generation;
     private volatile boolean failed;
     private volatile boolean closed;
+    private final java.util.concurrent.atomic.AtomicBoolean permissionDirty = new java.util.concurrent.atomic.AtomicBoolean();
     private CompletableFuture<Void> closeFuture;
     private DeadlineScheduler.Ticket flushTimer;
 
@@ -106,6 +109,27 @@ public final class PartitionRuntime implements AutoCloseable {
      * @param deadlineNanos processing deadline on the {@link DeadlineScheduler#nanoTime()} scale
      */
     public CompletableFuture<ProduceResult> produce(Batch batch, AckMode mode, long deadlineNanos) {
+        return produceInternal(batch, mode, deadlineNanos, new Operation(() -> true), false);
+    }
+
+    /** Checks permission on the lane before append; tracks mutation start independently of errors. */
+    public CompletableFuture<ClusterProtocol.ProduceResult> produce(Batch batch, AckMode mode,
+            long deadlineNanos, BooleanSupplier stillAllowed) {
+        var operation = new Operation(Objects.requireNonNull(stillAllowed));
+        return produceInternal(batch, mode, deadlineNanos, operation, true).thenApply(reply -> {
+            boolean permitted = operation.allowed.getAsBoolean();
+            if (reply.error().code() == ErrorCode.NONE && permitted)
+                return new ClusterProtocol.ProduceResult(partition, reply.error(), ClusterProtocol.Outcome.SUCCESS,
+                        reply.firstOffset(), reply.nextOffset());
+            var error = reply.error().code() == ErrorCode.NONE
+                    ? new Error(ErrorCode.FENCED_BROKER, "Permission changed after append") : reply.error();
+            return new ClusterProtocol.ProduceResult(partition, error, operation.appendStarted
+                    ? ClusterProtocol.Outcome.UNKNOWN : ClusterProtocol.Outcome.REJECTED, -1, -1);
+        });
+    }
+
+    private CompletableFuture<ProduceResult> produceInternal(Batch batch, AckMode mode, long deadlineNanos,
+            Operation operation, boolean timed) {
         Objects.requireNonNull(batch);
         Objects.requireNonNull(mode);
         var result = new CompletableFuture<ProduceResult>();
@@ -141,9 +165,15 @@ public final class PartitionRuntime implements AutoCloseable {
             }
         }
         ResourceBudget.Lease reserved = lease;
+        DeadlineScheduler.Ticket deadline = timed ? clock.schedule(deadlineNanos, () -> {
+            synchronized (operation) {
+                result.complete(error(ErrorCode.REQUEST_TIMED_OUT, "Produce deadline passed"));
+            }
+        }) : null;
+        if (deadline != null) result.whenComplete((ignored, failure) -> deadline.cancel());
         try {
             executor.submit(partition, () -> {
-                appendOnLane(batch, mode, deadlineNanos, encodedBytes, reserved, result);
+                appendOnLane(batch, mode, deadlineNanos, encodedBytes, reserved, result, operation);
                 return null;
             });
         } catch (RejectedExecutionException rejected) {
@@ -156,7 +186,7 @@ public final class PartitionRuntime implements AutoCloseable {
 
     private void appendOnLane(Batch batch, AckMode mode, long deadlineNanos,
             int encodedBytes, ResourceBudget.Lease lease,
-            CompletableFuture<ProduceResult> result) {
+            CompletableFuture<ProduceResult> result, Operation operation) {
         if (closed || failed) {
             if (lease != null)
                 lease.close();
@@ -169,6 +199,15 @@ public final class PartitionRuntime implements AutoCloseable {
                 lease.close();
             result.complete(error(ErrorCode.REQUEST_TIMED_OUT, "Produce deadline passed"));
             return;
+        }
+        synchronized (operation) {
+            if (result.isDone() || !operation.allowed.getAsBoolean() || clock.nanoTime() >= deadlineNanos) {
+                if (lease != null) lease.close();
+                result.complete(error(clock.nanoTime() >= deadlineNanos ? ErrorCode.REQUEST_TIMED_OUT : ErrorCode.FENCED_BROKER,
+                        "Admission revoked before append"));
+                return;
+            }
+            operation.appendStarted = true;
         }
         try {
             AppendResult appended = store.append(batch.records());
@@ -186,9 +225,12 @@ public final class PartitionRuntime implements AutoCloseable {
                 lease.close();
                 result.complete(success(appended));
             } else {
-                Waiter waiter = new Waiter(appended, deadlineNanos, lease, result);
-                waiters.add(waiter);
-                waiter.timer = clock.schedule(deadlineNanos, this::scheduleTick);
+                if (result.isDone()) lease.close();
+                else {
+                    Waiter waiter = new Waiter(appended, deadlineNanos, lease, result, operation);
+                    waiters.add(waiter);
+                    waiter.timer = clock.schedule(deadlineNanos, this::scheduleTick);
+                }
             }
             scheduleFlush();
         } catch (IOException | RuntimeException failure) {
@@ -205,7 +247,10 @@ public final class PartitionRuntime implements AutoCloseable {
         Iterator<Waiter> it = waiters.iterator();
         while (it.hasNext()) {
             Waiter waiter = it.next();
-            if (waiter.appended.nextOffset() <= durableEnd) {
+            if (!waiter.operation.allowed.getAsBoolean()) {
+                waiter.finish(error(ErrorCode.FENCED_BROKER, "Permission revoked after append"));
+                it.remove();
+            } else if (waiter.appended.nextOffset() <= durableEnd) {
                 waiter.finish(success(waiter.appended));
                 it.remove();
             }
@@ -246,10 +291,12 @@ public final class PartitionRuntime implements AutoCloseable {
         }
         if (closed || failed)
             return;
+        settlePermissionChanges();
         if (!dirty.isEmpty() && (dirtyBytes >= config.flushBytes()
                 || clock.nanoTime() - dirty.peekFirst().atNanos >= config.flushInterval().toNanos())) {
             try {
                 pruneDurable(store.flush());
+                generation++; notifyListeners();
             } catch (IOException | RuntimeException failure) {
                 fail(failure);
                 return;
@@ -276,6 +323,27 @@ public final class PartitionRuntime implements AutoCloseable {
         scheduleTick();
     }
 
+    /** Wakes FLUSHED and Fetch waiters on applied permission changes, never elapsed lease time. */
+    public void permissionChanged() {
+        if (!closed) {
+            permissionDirty.set(true);
+            scheduleTick();
+        }
+    }
+
+    private void settlePermissionChanges() {
+        if (permissionDirty.getAndSet(false)) {
+            Iterator<Waiter> it = waiters.iterator();
+            while (it.hasNext()) {
+                Waiter waiter = it.next();
+                if (!waiter.operation.allowed.getAsBoolean()) {
+                    waiter.finish(error(ErrorCode.FENCED_BROKER, "Permission revoked after append")); it.remove();
+                }
+            }
+            generation++; notifyListeners();
+        }
+    }
+
     /**
      * Forces all appended data regardless of thresholds and completes the waiters it covers.
      * Completes immediately if the runtime is closed or failed. A flush failure fails the
@@ -290,6 +358,7 @@ public final class PartitionRuntime implements AutoCloseable {
             if (!closed && !failed) {
                 try {
                     pruneDurable(store.flush());
+                    generation++; notifyListeners();
                     scheduleFlush();
                 } catch (IOException | RuntimeException failure) {
                     fail(failure);
@@ -337,7 +406,10 @@ public final class PartitionRuntime implements AutoCloseable {
         if (closed || failed)
             return fetchError(
                     ErrorCode.PARTITION_UNAVAILABLE, "Partition unavailable");
-        long start = store.logStartOffset(), end = store.logEndOffset();
+        return readOnLane(entry, totalBudget, allowFirstOversize, store.logStartOffset(), store.logEndOffset());
+    }
+
+    private FetchResult readOnLane(FetchEntry entry, int totalBudget, boolean allowFirstOversize, long start, long end) {
         if (entry.offset() < start || entry.offset() > end)
             return fetchError(ErrorCode.OFFSET_OUT_OF_RANGE, "Offset outside log");
         List<FetchBatch> result = new ArrayList<>();
@@ -353,6 +425,7 @@ public final class PartitionRuntime implements AutoCloseable {
                 if (batches.isEmpty())
                     throw new IOException("Fetch made no progress");
                 var stored = batches.getFirst();
+                if (stored.nextOffset() > end) break;
                 var batch = new Batch(stored.records());
                 int wireBytes = WireBatchCodec.fetchSize(batch);
                 boolean fits = wireBytes <= remainingTotal && wireBytes <= remainingPartition;
@@ -370,6 +443,29 @@ public final class PartitionRuntime implements AutoCloseable {
             fail(failure);
             return fetchError(ErrorCode.STORAGE_ERROR, "Partition read failed");
         }
+    }
+
+    /** Captures RF1 HW from the durable end and reads only that prefix on the partition lane. */
+    public CompletableFuture<ClusterProtocol.FetchResult> read(FetchEntry entry, int remainingWireBudget,
+            boolean allowFirstOversize, BooleanSupplier stillAllowed) {
+        Objects.requireNonNull(stillAllowed);
+        try {
+            return executor.submit(partition, () -> {
+                if (!stillAllowed.getAsBoolean()) return clusterFetchError(ErrorCode.FENCED_BROKER, "Admission revoked");
+                if (closed || failed) return clusterFetchError(ErrorCode.PARTITION_UNAVAILABLE, "Partition unavailable");
+                long start = store.logStartOffset(), end = store.logEndOffset(), high = store.durableEndOffset();
+                var read = readOnLane(entry, remainingWireBudget, allowFirstOversize, start, high);
+                if (!stillAllowed.getAsBoolean()) return clusterFetchError(ErrorCode.FENCED_BROKER, "Admission revoked during read");
+                if (read.error().code() != ErrorCode.NONE) return clusterFetchError(read.error().code(), read.error().message());
+                return new ClusterProtocol.FetchResult(partition, read.error(), start, end, high, read.batches());
+            });
+        } catch (RejectedExecutionException error) {
+            return CompletableFuture.completedFuture(clusterFetchError(ErrorCode.OVERLOADED, "Partition queue full"));
+        }
+    }
+
+    private ClusterProtocol.FetchResult clusterFetchError(ErrorCode code, String message) {
+        return new ClusterProtocol.FetchResult(partition, new Error(code, message), -1, -1, -1, List.of());
     }
 
     private FetchResult fetchError(ErrorCode code, String message) {
@@ -458,19 +554,27 @@ public final class PartitionRuntime implements AutoCloseable {
     private record Dirty(long nextOffset, int bytes, long atNanos) {
     }
 
+    private static final class Operation {
+        final BooleanSupplier allowed;
+        volatile boolean appendStarted;
+        Operation(BooleanSupplier allowed) { this.allowed = allowed; }
+    }
+
     private static final class Waiter {
         final AppendResult appended;
         final long deadlineNanos;
         final ResourceBudget.Lease lease;
         final CompletableFuture<ProduceResult> result;
+        final Operation operation;
         DeadlineScheduler.Ticket timer;
 
         Waiter(AppendResult appended, long deadlineNanos, ResourceBudget.Lease lease,
-                CompletableFuture<ProduceResult> result) {
+                CompletableFuture<ProduceResult> result, Operation operation) {
             this.appended = appended;
             this.deadlineNanos = deadlineNanos;
             this.lease = lease;
             this.result = result;
+            this.operation = operation;
         }
 
         void finish(ProduceResult outcome) {

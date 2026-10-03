@@ -15,16 +15,23 @@ public final class RequestContext {
     private final long connectionId;
     private final long requestId;
     private final long deadlineNanos;
+    private final short version;
     private final List<Runnable> cancellation = new ArrayList<>();
     private final AtomicBoolean cancelled = new AtomicBoolean();
 
     public RequestContext(long connectionId, long requestId, long deadlineNanos) {
+        this(connectionId, requestId, deadlineNanos, (short) 1);
+    }
+
+    public RequestContext(long connectionId, long requestId, long deadlineNanos, short version) {
         if (connectionId < 0 || requestId < 0)
             throw new IllegalArgumentException("Negative request identity");
         this.connectionId = connectionId;
         this.requestId = requestId;
         this.deadlineNanos = deadlineNanos;
+        this.version = version;
     }
+    public short version() { return version; }
 
     public long connectionId() {
         return connectionId;
