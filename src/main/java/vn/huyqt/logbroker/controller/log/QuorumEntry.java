@@ -1,6 +1,7 @@
 package vn.huyqt.logbroker.controller.log;
 
 import java.util.Objects;
+import vn.huyqt.logbroker.controller.metadata.ClusterRecords;
 import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
 
 /**
@@ -40,5 +41,30 @@ public sealed interface QuorumEntry {
     public ReadBarrier {
       if (epoch < 0) throw new IllegalArgumentException("Negative epoch");
     }
+  }
+
+  record FeatureLevel(long epoch, ClusterRecords.FeatureLevel event) implements QuorumEntry {
+    public FeatureLevel { validate(epoch, event); }
+  }
+
+  record BrokerRegistration(long epoch, ClusterRecords.BrokerRegistration event) implements QuorumEntry {
+    public BrokerRegistration { validate(epoch, event); }
+  }
+
+  record BrokerState(long epoch, ClusterRecords.BrokerState event) implements QuorumEntry {
+    public BrokerState { validate(epoch, event); }
+  }
+
+  record TopicRecord(long epoch, ClusterRecords.TopicRecord event) implements QuorumEntry {
+    public TopicRecord { validate(epoch, event); }
+  }
+
+  record PartitionRecord(long epoch, ClusterRecords.PartitionRecord event) implements QuorumEntry {
+    public PartitionRecord { validate(epoch, event); }
+  }
+
+  private static void validate(long epoch, Object event) {
+    if (epoch < 0) throw new IllegalArgumentException("Negative epoch");
+    Objects.requireNonNull(event);
   }
 }

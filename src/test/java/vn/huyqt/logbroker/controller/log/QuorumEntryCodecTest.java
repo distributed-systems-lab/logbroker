@@ -30,7 +30,7 @@ class QuorumEntryCodecTest {
   void rejectsUnsupportedVersionTrailingBytesAndInvalidEpoch() {
     for (String hex :
         List.of(
-            "0002030000000000000007",
+            "0003030000000000000007",
             "000103000000000000000700",
             "000103ffffffffffffffff",
             "0001040000000000000007"))
