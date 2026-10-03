@@ -58,7 +58,7 @@ public final class SnapshotCoordinator implements AutoCloseable {
    * @param lastEpoch epoch of the last entry covered by {@code image}
    * @param appendedBytes running counter of appended log bytes; must never decrease
    * @throws IllegalArgumentException if {@code appendedBytes} decreased, or the image is too large
-   *     to snapshot in one bounded slice
+   *     to fit in the snapshot envelope budget
    */
   public void onApplied(MetadataImage image, long lastEpoch, long appendedBytes) {
     if (closed) return;
@@ -68,10 +68,10 @@ public final class SnapshotCoordinator implements AutoCloseable {
     latestEpoch = lastEpoch;
     latestBytes = appendedBytes;
     if (creation != null || appendedBytes - baseline < threshold) return;
-    // v1 has at most 128 topics: the entire encoded image fits in one 256 KiB slice.
-    retainedBytes = 114L + image.topics().stream().mapToLong(t -> 32L + t.name().length()).sum();
-    if (retainedBytes > 256 * 1024)
-      throw new IllegalArgumentException("Snapshot image exceeds one bounded slice");
+    // Charge the whole immutable image; transport reads it in independently bounded chunks.
+    retainedBytes = 102L + MetadataImageCodec.encodedSize(image);
+    if (retainedBytes > 64L * 1024 * 1024)
+      throw new IllegalArgumentException("Snapshot image exceeds envelope budget");
     capturedBytes = appendedBytes;
     creation = token();
     submit.accept(new QuorumEffect.CreateSnapshot(creation, image, lastEpoch));

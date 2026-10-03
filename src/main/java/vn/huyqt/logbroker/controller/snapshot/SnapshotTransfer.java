@@ -174,7 +174,7 @@ public final class SnapshotTransfer {
         || reply.position() != position
         // Same file-size bounds as SnapshotStore; see docs/controller-storage-v1.md.
         || reply.totalLength() < 114
-        || reply.totalLength() > Math.min(maxBytes, 512 + 128 * 281)
+        || reply.totalLength() > maxBytes
         || total != -1 && total != reply.totalLength()
         || reply.chunk().length == 0
         || reply.chunk().length > chunkBytes

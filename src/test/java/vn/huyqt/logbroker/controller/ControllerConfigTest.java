@@ -64,6 +64,15 @@ class ControllerConfigTest {
   }
 
   @Test
+  void snapshotCapacityIncludesClusterAssignmentsAndSupportsConfiguredCounts() {
+    assertThrows(IllegalArgumentException.class,
+        () -> ControllerConfig.builder(identity()).snapshotMaxBytes(65536).build());
+    var config = ControllerConfig.builder(identity()).maxTopics(1024).maxPartitions(8192).build();
+    assertEquals(8192, config.metadataLimits().maxPartitions());
+    assertTrue(config.metadataLimits().maxEncodedImageBytes() + 102 <= config.snapshotMaxBytes());
+  }
+
+  @Test
   void canonicalMembershipHashIndependentOfLocalNodeAndOrdering() {
     var first = identity();
     var second = new ClusterIdentity(first.clusterId(), 2, first.voters().reversed());

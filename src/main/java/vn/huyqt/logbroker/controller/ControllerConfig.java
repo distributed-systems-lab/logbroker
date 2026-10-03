@@ -20,14 +20,14 @@ import vn.huyqt.logbroker.storage.LogConfig;
  *   <li>{@code fetchMaxBytes} is at least the log max batch size and at most {@code maxFrameBytes
  *       - 1024}; the log max batch size is at least 336.
  *   <li>{@code snapshotChunkBytes} is in 1..256 KiB and at most {@code maxFrameBytes - 1024}.
- *   <li>{@code snapshotMaxBytes} is at most 64 MiB and at least {@code 512 + 281 * maxTopics}.
+ *   <li>{@code snapshotMaxBytes} is at most 64 MiB and holds the bounded cluster image plus its envelope.
  *   <li>{@code snapshotTriggerBytes} is positive.
  *   <li>{@code maxPendingRequests} is in 1..1024.
  *   <li>{@code diskQueueCapacity} is in 32..256 and {@code eventQueueCapacity} is above {@code
  *       diskQueueCapacity + 512} and at most 4096.
  *   <li>{@code inboundBytes} and {@code outboundBytes} are at least {@code maxFrameBytes} and at
  *       most 64 MiB; {@code outboundBytes} is also at least 32 times the log max batch size.
- *   <li>{@code maxTopics} is in 1..128 and {@code maxPartitions} in {@code maxTopics}..1024.
+ *   <li>{@code maxTopics} is positive and {@code maxPartitions >= maxTopics}; the image byte budget bounds both.
  * </ul>
  */
 public record ControllerConfig(
@@ -114,8 +114,8 @@ public record ControllerConfig(
         || chunk < 1
         || chunk > 256 * 1024
         || chunk > frame - 1024
-        // The snapshot envelope must hold a catalog with the maximum number of topics.
-        || snapshot < 512L + (long) topics * 281
+        // Include broker identities, topic descriptors and RF=1 assignments plus the envelope.
+        || snapshot < 166L + 32L * 512 + (long) topics * 320 + (long) partitions * 128
         || snapshot > 64 * 1024 * 1024
         || log.maxBatchBytes() < 336
         || trigger <= 0
@@ -133,14 +133,19 @@ public record ControllerConfig(
         || inbound > 64L * 1024 * 1024
         || outbound > 64L * 1024 * 1024
         || topics < 1
-        || topics > 128
         || partitions < topics
-        || partitions > 1024) throw new IllegalArgumentException("Inconsistent controller limits");
+        ) throw new IllegalArgumentException("Inconsistent controller limits");
   }
 
   /** Does nothing; every instance was already validated by the canonical constructor. */
   public void validate() {
     /* The compact constructor establishes the invariant. */
+  }
+
+  /** Image count budgets shared by cluster apply, snapshot encoding and recovery. */
+  public vn.huyqt.logbroker.controller.metadata.MetadataLimits metadataLimits() {
+    return new vn.huyqt.logbroker.controller.metadata.MetadataLimits(32, maxTopics, maxPartitions,
+        snapshotMaxBytes - 102);
   }
 
   /** Returns the documented defaults for {@code identity}; see {@link Builder}. */

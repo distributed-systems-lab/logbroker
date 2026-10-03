@@ -298,11 +298,21 @@ public final class GenerationStore implements AutoCloseable {
    * @throws IOException if the log is missing committed data
    */
   public MetadataImage recoveredImage() throws IOException {
-    var metadata = new MetadataStateMachine();
-    if (baseSnapshot != null)
-      metadata.restore(
-          new SnapshotStore(state.root(), state.identity(), files, state, 64 * 1024 * 1024)
-              .load(baseSnapshot));
+    MetadataImage base = baseSnapshot == null ? null :
+        new SnapshotStore(state.root(), state.identity(), files, state, 64 * 1024 * 1024).load(baseSnapshot);
+    return replayImage(MetadataLimits.defaults(), (short) (base == null || base.metadataVersion() == 1 ? 1 : 2), base);
+  }
+
+  /** Replays a formatted cluster with explicit schema and capacity; never guesses from log bytes. */
+  public MetadataImage recoveredImage(MetadataLimits limits, short schema) throws IOException {
+    MetadataImage base = baseSnapshot == null ? null : new SnapshotStore(state.root(), state.identity(), files,
+        state, 64 * 1024 * 1024, limits).load(baseSnapshot);
+    return replayImage(limits, schema, base);
+  }
+
+  private MetadataImage replayImage(MetadataLimits limits, short schema, MetadataImage base) throws IOException {
+    var metadata = new MetadataStateMachine(limits, schema);
+    if (base != null) metadata.restore(base);
     while (metadata.image().appliedOffset() < committed) {
       var batches = log.read(metadata.image().appliedOffset(), config.maxBatchBytes());
       if (batches.isEmpty()) throw new IOException("Committed replay gap");

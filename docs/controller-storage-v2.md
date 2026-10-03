@@ -24,3 +24,18 @@ preflight. Readers reject invalid counts, versions, kinds, booleans, UTF-8, trun
 and trailing bytes before publishing metadata. Topic and all assignment records must
 be committed and applied in a single complete batch. No Phase 2/3 root migration is
 provided. See the [Phase 4 spec](superpowers/specs/2026-10-02-cluster-phase-4-design.md).
+
+V2 image payload: magic i32 `0x4d494d32`, schema i16=2, feature level i16,
+exclusive applied offset i64, broker count i32 and registrations with fenced u8 and
+stateOffset i64, topic count i32 and TopicRecord payloads, partition count i32 and
+PartitionRecord payloads. Brokers are sorted by ID; topics by unsigned UUID halves;
+partitions by unsigned topic UUID then partition ID. Level zero describes only an
+empty cluster before its committed feature initialization. Readers validate complete
+assignment references and lifecycle revisions before returning an image.
+
+Snapshot envelope magic and layout stay unchanged; the explicit envelope version
+selects the v1 or v2 image decoder. V1 snapshots retain their original encoding.
+V2 snapshots preserve feature level, broker identity, fencing revision and partition
+epochs. Snapshot size is bounded by configuration (at most 64 MiB); upload chunks
+remain bounded independently (at most 256 KiB). Apply and recovery must receive the
+same count limits. A corrupt committed batch fails recovery without partial apply.

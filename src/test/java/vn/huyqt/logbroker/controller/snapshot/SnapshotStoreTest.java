@@ -16,6 +16,61 @@ class SnapshotStoreTest {
   @TempDir Path root;
 
   @Test
+  void versionTwoFeatureImagePublishesAndReopens() throws Exception {
+    var io = new FaultFiles();
+    var identity = ControllerTestSupport.identity(0);
+    QuorumStateStore.format(root, identity, io);
+    var image = new MetadataImage(9, List.of(), (short) 2, Map.of(), Map.of());
+    SnapshotId id;
+    try (var state = QuorumStateStore.open(root, identity, io)) {
+      var store = new SnapshotStore(root, identity, io, state, 65536);
+      id = store.create(image, 3);
+      byte[] bytes = Files.readAllBytes(root.resolve("snapshots").resolve(id.contentId() + ".snapshot"));
+      assertEquals(2, java.nio.ByteBuffer.wrap(bytes).getShort(4));
+      assertEquals(image, store.load(id));
+    }
+    try (var state = QuorumStateStore.open(root, identity, io)) {
+      assertEquals(image, new SnapshotStore(root, identity, io, state, 65536).load(id));
+    }
+  }
+
+  @Test
+  void largeVersionTwoImageUsesBoundedChunksAndPreservesEveryAssignment() throws Exception {
+    var limits = new vn.huyqt.logbroker.controller.metadata.MetadataLimits(32, 1024, 8192, 4 * 1024 * 1024);
+    var session = new vn.huyqt.logbroker.controller.metadata.ClusterRecords.Session(1, new UUID(0, 1), new UUID(0, 2), 2);
+    var registration = new vn.huyqt.logbroker.controller.metadata.ClusterRecords.BrokerRegistration(session,
+        new vn.huyqt.logbroker.controller.metadata.ClusterRecords.Endpoint("localhost", 9092), (short) 2, (short) 2);
+    var topics = new ArrayList<TopicCreated>();
+    var partitions = new TreeMap<MetadataImage.PartitionKey, vn.huyqt.logbroker.controller.metadata.ClusterRecords.PartitionRecord>();
+    for (int i = 1; i <= 1024; i++) {
+      var id = new UUID(0, i);
+      topics.add(new TopicCreated(id, "t" + i + "x".repeat(240), 8));
+      for (int p = 0; p < 8; p++) partitions.put(new MetadataImage.PartitionKey(id, p),
+          new vn.huyqt.logbroker.controller.metadata.ClusterRecords.PartitionRecord(id, p, List.of(1), 1, 0, 0));
+    }
+    var image = new MetadataImage(10000, topics, (short) 2,
+        Map.of(1, new MetadataImage.BrokerRegistrationView(registration, false, 3)), partitions);
+    var io = new FaultFiles();
+    var identity = ControllerTestSupport.identity(0);
+    QuorumStateStore.format(root, identity, io);
+    SnapshotId id;
+    try (var state = QuorumStateStore.open(root, identity, io)) {
+      var store = new SnapshotStore(root, identity, io, state, 4 * 1024 * 1024, limits);
+      id = store.create(image, 3);
+      var bytes = new java.io.ByteArrayOutputStream();
+      try (var pin = store.pin(id)) {
+        assertTrue(pin.length() > 256 * 1024);
+        for (long position = 0; position < pin.length(); position += 65536)
+          bytes.write(pin.read(position, 65536));
+      }
+      assertEquals(image, store.decode(id, bytes.toByteArray()));
+    }
+    try (var state = QuorumStateStore.open(root, identity, io)) {
+      assertEquals(image, new SnapshotStore(root, identity, io, state, 4 * 1024 * 1024, limits).load(id));
+    }
+  }
+
+  @Test
   void publishedSnapshotReopensAndPinnedChunksMatchCompleteFile() throws Exception {
     var io = new FaultFiles();
     var identity = ControllerTestSupport.identity(0);

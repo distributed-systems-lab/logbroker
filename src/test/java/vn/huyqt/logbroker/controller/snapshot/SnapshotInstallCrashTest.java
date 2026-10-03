@@ -63,7 +63,8 @@ class SnapshotInstallCrashTest {
         generation.log().flush();
         generation.checkpointCommit(1);
         var snapshots = new SnapshotStore(directory, identity, io, state, 65536);
-        var image = new MetadataImage(9, List.of());
+        // Exercise the same crash points with a v2 feature image and a v1 speculative log.
+        var image = new MetadataImage(9, List.of(), (short) 2, Map.of(), Map.of());
         var id = snapshots.create(image, 2);
         io.failAfter(failure);
         assertThrows(java.io.IOException.class, () -> generation.install(id, image));
@@ -74,6 +75,8 @@ class SnapshotInstallCrashTest {
           var generation = GenerationStore.open(state, io, LogConfig.defaults())) {
         assertTrue(generation.committedOffset() == 1 || generation.committedOffset() == 9);
         assertEquals(generation.committedOffset(), generation.recoveredImage().appliedOffset());
+        if (generation.committedOffset() == 9)
+          assertEquals((short) 2, generation.recoveredImage().metadataVersion());
       }
     }
   }

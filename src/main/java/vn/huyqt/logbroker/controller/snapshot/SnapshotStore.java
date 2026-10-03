@@ -32,6 +32,7 @@ public final class SnapshotStore implements AutoCloseable {
   private final DurableFiles files;
   private final QuorumStateStore state;
   private final int maxBytes;
+  private final MetadataLimits metadataLimits;
   private volatile List<SnapshotId> retained = List.of();
   private final Map<SnapshotId, Integer> pins = new HashMap<>();
   private SnapshotId downloading;
@@ -86,11 +87,18 @@ public final class SnapshotStore implements AutoCloseable {
   public SnapshotStore(
       Path root, ClusterIdentity identity, DurableFiles files, QuorumStateStore state, int maxBytes)
       throws IOException {
+    this(root, identity, files, state, maxBytes, MetadataLimits.defaults());
+  }
+
+  /** Uses explicit image count budgets; callers must use the same limits on apply and recovery. */
+  public SnapshotStore(Path root, ClusterIdentity identity, DurableFiles files,
+      QuorumStateStore state, int maxBytes, MetadataLimits metadataLimits) throws IOException {
     directory = root.resolve("snapshots");
     this.identity = identity;
     this.files = files;
     this.state = state;
     this.maxBytes = maxBytes;
+    this.metadataLimits = Objects.requireNonNull(metadataLimits);
     // 114 bytes is the fixed 102-byte envelope plus the 12-byte minimum payload decode accepts.
     if (maxBytes < 114 || maxBytes > 64 * 1024 * 1024)
       throw new IllegalArgumentException("Invalid snapshot limit");
@@ -203,7 +211,7 @@ public final class SnapshotStore implements AutoCloseable {
         || bytes.length == 0
         || bytes.length > 256 * 1024
         || position > downloaded
-        || position > Math.min(maxBytes, 512 + 128 * 281) - bytes.length)
+        || position > (long) maxBytes - bytes.length)
       throw new IOException("Invalid snapshot chunk");
     if (position < downloaded) {
       if (position + bytes.length > downloaded) throw new IOException("Overlapping snapshot chunk");
@@ -246,7 +254,7 @@ public final class SnapshotStore implements AutoCloseable {
         || download == null
         || totalLength != downloaded
         || totalLength < 114
-        || totalLength > Math.min(maxBytes, 512 + 128 * 281))
+        || totalLength > maxBytes)
       throw new IOException("Snapshot download length mismatch");
     Path temporary = partial(id);
     files.forceFile(temporary);
@@ -353,13 +361,14 @@ public final class SnapshotStore implements AutoCloseable {
   public byte[] encode(SnapshotId id, MetadataImage image) throws IOException {
     if (image.appliedOffset() != id.endOffset())
       throw new IOException("Snapshot image boundary mismatch");
-    byte[] payload = MetadataImageCodec.encode(image);
+    byte[] payload = image.metadataVersion() == 1 ? MetadataImageCodec.encode(image)
+        : MetadataImageCodec.encodeV2(image, metadataLimits);
     long length = 102L + payload.length;
     if (length > maxBytes) throw new IOException("Snapshot exceeds configured limit");
     byte[] bytes = new byte[(int) length];
     var out = ByteBuffer.wrap(bytes);
     out.putInt(0x51534e31)
-        .putShort((short) 1)
+        .putShort((short) (image.metadataVersion() == 1 ? 1 : 2))
         .putLong(length)
         .putLong(identity.clusterId().getMostSignificantBits())
         .putLong(identity.clusterId().getLeastSignificantBits())
@@ -377,11 +386,13 @@ public final class SnapshotStore implements AutoCloseable {
    * @throws IOException if any check fails, including malformed content
    */
   public MetadataImage decode(SnapshotId expected, byte[] bytes) throws IOException {
-    if (bytes.length < 114 || bytes.length > Math.min(maxBytes, 512 + 128 * 281))
+    if (bytes.length < 114 || bytes.length > maxBytes)
       throw new IOException("Invalid snapshot length");
     try {
       var in = ByteBuffer.wrap(bytes);
-      if (in.getInt() != 0x51534e31 || in.getShort() != 1 || in.getLong() != bytes.length)
+      int magic = in.getInt();
+      short version = in.getShort();
+      if (magic != 0x51534e31 || (version != 1 && version != 2) || in.getLong() != bytes.length)
         throw new IOException("Invalid snapshot header");
       if (!new UUID(in.getLong(), in.getLong()).equals(identity.clusterId()))
         throw new IOException("Snapshot cluster mismatch");
@@ -399,7 +410,8 @@ public final class SnapshotStore implements AutoCloseable {
         throw new IOException("Snapshot checksum mismatch");
       byte[] payload = new byte[count];
       in.get(payload);
-      var image = MetadataImageCodec.decode(payload);
+      var image = version == 1 ? MetadataImageCodec.decode(payload)
+          : MetadataImageCodec.decodeV2(payload, metadataLimits);
       if (image.appliedOffset() != expected.endOffset())
         throw new IOException("Snapshot boundary mismatch");
       return image;
@@ -415,7 +427,7 @@ public final class SnapshotStore implements AutoCloseable {
    */
   public MetadataImage load(SnapshotId id) throws IOException {
     long length = Files.size(path(id));
-    if (length > Math.min(maxBytes, 512 + 128 * 281))
+    if (length > maxBytes)
       throw new IOException("Snapshot exceeds limit");
     return decode(id, Files.readAllBytes(path(id)));
   }
