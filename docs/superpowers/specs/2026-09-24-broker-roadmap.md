@@ -60,7 +60,7 @@ Thiết kế chi tiết: [Phase 3 — Metadata quorum](2026-09-28-metadata-quoru
 
 Broker registration, heartbeat, fencing; topic/replica assignment/partition leader metadata; broker áp dụng metadata; client routing và refresh. Bước đầu replication factor bằng một.
 
-Thiết kế chi tiết: [Phase 4 — Cluster và quản lý partition](2026-10-02-cluster-phase-4-design.md). Các phần thiết kế đã được đồng ý ngày 2026-10-02; bản spec tổng hợp đang chờ review, chưa có implementation plan và chưa triển khai. Chuyển hoàn toàn sang cluster mode với dữ liệu mới; broker observer đồng bộ log/snapshot, tự ngừng Produce/Fetch khi hết xác nhận heartbeat; assignment tự động RF=1, CreateTopic qua broker và client routing nhiều broker.
+Thiết kế chi tiết: [Phase 4 — Cluster và quản lý partition](2026-10-02-cluster-phase-4-design.md). Các phần thiết kế đã được đồng ý ngày 2026-10-02; bản spec tổng hợp đang chờ review, chưa có implementation plan và chưa triển khai. Chuyển hoàn toàn sang cluster mode với dữ liệu mới; broker observer đồng bộ log/snapshot; cập nhật ngày 2026-10-03: broker RUNNING tiếp tục Produce/Fetch khi chỉ mất liên lạc controller, bỏ serving lease/heartbeat barrier; assignment tự động RF=1, CreateTopic qua broker và client routing nhiều broker.
 
 Điều kiện hoàn thành: ghi/đọc đúng partition trên nhiều broker; restart không làm mất metadata đã commit. Chưa cam kết data availability khi broker chứa partition ngừng hoạt động.
 
@@ -69,6 +69,8 @@ Thiết kế chi tiết: [Phase 4 — Cluster và quản lý partition](2026-10-
 Follower fetch; ISR; high watermark; leader epoch; acknowledgment modes; min.insync.replicas; controller chọn leader hợp lệ; xử lý divergent log và replica rejoin; consumer đọc dữ liệu đã commit.
 
 Điều kiện hoàn thành: ba broker, replication factor ba vượt qua crash/network partition/rejoin tests; xác minh bảo đảm dữ liệu theo từng acknowledgment mode và giả định lỗi được thiết kế rõ.
+
+Bổ sung phạm vi thiết kế Phase 5: đường nâng cấp giữ dữ liệu từ Phase 4, tương thích metadata.version/schema và kiểm thử upgrade; controlled shutdown chuyển leader; quy trình unregister broker và thay disk khi có replica còn hợp lệ. Unregister không tái tạo dữ liệu RF=1 đã mất. Các lifecycle API này cần spec riêng trước triển khai.
 
 ### 6. Consumer groups và offset management
 
@@ -81,6 +83,8 @@ Group coordinator; join/leave/heartbeat/rebalance; partition assignment; committ
 Retention theo thời gian/dung lượng; xóa segment an toàn; offset hết hạn; metrics; log chẩn đoán; CLI; fault injection cho crash, delay, mất kết nối và lỗi I/O.
 
 Điều kiện hoàn thành: kịch bản lỗi lặp lại được và báo cáo các bảo đảm đáp ứng. Kiểm thử lỗi của từng phase vẫn phải thực hiện ngay tại phase đó.
+
+Bổ sung mốc lifecycle trong Phase 7: DeleteTopic, committed tombstone, dọn partition trên broker online/offline và xử lý stray directory; kiểm thử xóa/tạo lại cùng tên với UUID khác. Không suy ra topic đã xóa chỉ vì metadata local chưa thấy topic.
 
 ### 8. Share Groups và ShareConsumer
 
@@ -101,6 +105,8 @@ Benchmark throughput, latency, allocation, disk/network I/O; batching và buffer
 ## Phần mở rộng sau lộ trình đầu
 
 Transactions/exactly-once, log compaction, tiered storage và thay đổi động thành viên controller quorum sẽ được bổ sung bằng các phase tiếp theo để tiến tới tương đương chức năng Kafka. Các phần security, rolling upgrade và recovery khi thay thế controller mất storage cũng cần spec riêng. Danh sách này là định hướng mở rộng, chưa phải danh mục đầy đủ hoặc thiết kế đã duyệt cho từng tính năng.
+
+Combined broker/controller process là cải tiến vận hành tùy chọn sau các mốc correctness; trước đó demo dùng script chạy các process riêng. Không là điều kiện hoàn thành Phase 4.
 
 Kafka protocol compatibility không thuộc mục tiêu: dự án tiếp tục dùng protocol/client riêng. Các mốc mở rộng không làm tăng phạm vi triển khai Phase 3.
 
