@@ -51,8 +51,12 @@ public record ControllerConfig(
     long inboundBytes,
     long outboundBytes,
     int maxTopics,
-    int maxPartitions) {
+    int maxPartitions,
+    Duration brokerSessionTimeout) {
   public ControllerConfig {
+    if (brokerSessionTimeout == null || brokerSessionTimeout.isNegative() || brokerSessionTimeout.isZero()
+        || brokerSessionTimeout.compareTo(Duration.ofSeconds(2)) <= 0)
+      throw new IllegalArgumentException("Broker session timeout must exceed heartbeat RPC deadline");
     if (identity.metadataVersion() == 2 && logConfig.maxBatchBytes() < Math.max(372L, 74L + 79L * maxPartitions))
       throw new IllegalArgumentException("Cluster lifecycle batch cannot fit configured partitions");
     validateValues(
@@ -180,7 +184,8 @@ public record ControllerConfig(
         electionMax = Duration.ofSeconds(3),
         leaderContactTimeout = Duration.ofSeconds(3),
         adminTimeout = Duration.ofSeconds(30),
-        shutdownTimeout = Duration.ofSeconds(30);
+        shutdownTimeout = Duration.ofSeconds(30),
+        brokerSessionTimeout = Duration.ofSeconds(10);
     private int maxFrameBytes = 8 * 1024 * 1024,
         fetchMaxBytes = 4 * 1024 * 1024,
         snapshotChunkBytes = 256 * 1024,
@@ -235,6 +240,11 @@ public record ControllerConfig(
 
     public Builder shutdownTimeout(Duration value) {
       shutdownTimeout = value;
+      return this;
+    }
+
+    public Builder brokerSessionTimeout(Duration value) {
+      brokerSessionTimeout = value;
       return this;
     }
 
@@ -330,7 +340,8 @@ public record ControllerConfig(
           inboundBytes,
           outboundBytes,
           maxTopics,
-          maxPartitions);
+          maxPartitions,
+          brokerSessionTimeout);
     }
   }
 }

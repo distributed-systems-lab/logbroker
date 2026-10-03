@@ -101,6 +101,8 @@ public final class ControllerMain {
     short metadataVersion = Short.parseShort(values.getOrDefault("metadata.version", "1"));
     values.remove("metadata.version");
     var builder = ControllerConfig.builder(ControllerOptions.identity(cluster, node, voters, metadataVersion));
+    if (values.containsKey("broker.session.timeout.ms"))
+      builder.brokerSessionTimeout(java.time.Duration.ofMillis(Long.parseLong(values.remove("broker.session.timeout.ms"))));
     var log = vn.huyqt.logbroker.storage.LogConfig.defaults();
     builder.logConfig(
         new vn.huyqt.logbroker.storage.LogConfig(

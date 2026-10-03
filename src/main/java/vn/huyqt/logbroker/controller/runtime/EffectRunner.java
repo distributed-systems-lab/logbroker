@@ -66,12 +66,14 @@ public final class EffectRunner {
   public void run(List<QuorumEffect> effects) {
     for (var effect : effects) {
       if (effect instanceof QuorumEffect.DiskEffect work) {
-        // Appends that do not start with LeaderChange are ordinary and may be refused under
-        // pressure; snapshot creation is independent of log order and runs at low priority.
+        // Lifecycle and feature initialization share the reserved consensus completion slots.
+        // Topic/admin appends may be refused under pressure; snapshots run at low priority.
         boolean ordinary =
             work instanceof QuorumEffect.Append append
                 && !(append.entries().getFirst()
-                    instanceof vn.huyqt.logbroker.controller.log.QuorumEntry.LeaderChange);
+                    instanceof vn.huyqt.logbroker.controller.log.QuorumEntry.LeaderChange)
+                && !(append.entries().getFirst() instanceof vn.huyqt.logbroker.controller.log.QuorumEntry.BrokerState)
+                && !(append.entries().getFirst() instanceof vn.huyqt.logbroker.controller.log.QuorumEntry.FeatureLevel);
         boolean accepted =
             work instanceof QuorumEffect.CreateSnapshot
                 ? disk.submitLowPriority(work.token(), () -> execute(work))

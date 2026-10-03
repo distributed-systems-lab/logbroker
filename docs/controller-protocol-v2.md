@@ -1,5 +1,15 @@
 # Controller control protocol v2
 
+Heartbeat `recoveryId=00000000-0000-0000-0000-000000000000` denotes ordinary
+contact and cannot request unfence. A nonzero ID starts a recovery handshake with
+a fixed target taken from the applied committed image. Retries share the pending
+unfence and its committed revision; controllers retain at most one recovery result
+per current broker session. A new handshake commits a fresh BrokerState and advances
+all owned partition epochs atomically, including when the broker was already unfenced.
+Sequence duplicates can retrieve a result but cannot renew liveness or initiate a change.
+Each ready leader starts a new observation window and requires fresh contact for
+assignment. Expiry proposes fencing; only the applied state is reported as fenced.
+
 Frames retain length prefix, operation and CRC32C from v1. The v2 fixed envelope is:
 operation i16, version i16=2, response u8, cluster UUID (16 bytes), senderId i32,
 senderRole u8, requestId i64, voterHash (32 bytes), body, frame CRC32C i32.

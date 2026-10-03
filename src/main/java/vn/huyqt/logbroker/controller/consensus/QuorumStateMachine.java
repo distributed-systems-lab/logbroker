@@ -10,6 +10,7 @@ import vn.huyqt.logbroker.controller.consensus.QuorumEvent.*;
 import vn.huyqt.logbroker.controller.log.*;
 import vn.huyqt.logbroker.controller.metadata.MetadataImage;
 import vn.huyqt.logbroker.controller.metadata.ClusterControlManager;
+import vn.huyqt.logbroker.controller.metadata.HeartbeatTracker;
 import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.controller.snapshot.*;
@@ -64,6 +65,7 @@ public final class QuorumStateMachine {
   private SnapshotId snapshot;
   private MetadataImage image;
   private final ClusterControlManager cluster;
+  private final HeartbeatTracker heartbeatTracker;
   private boolean clusterAppend;
 
   private record Waiter(Admin invocation, long end) {}
@@ -158,8 +160,9 @@ public final class QuorumStateMachine {
     if (recoveredImage.appliedOffset() != status.applied())
       throw new IllegalArgumentException("Recovered image offset mismatch");
     image = recoveredImage;
+    heartbeatTracker = new HeartbeatTracker(config.brokerSessionTimeout().toNanos());
     cluster = config.identity().metadataVersion() == 2
-        ? new ClusterControlManager(config.metadataLimits(), id -> true, config.logConfig().maxBatchBytes()) : null;
+        ? new ClusterControlManager(config.metadataLimits(), id -> heartbeatTracker.eligible(id,now), config.logConfig().maxBatchBytes()) : null;
     if (cluster != null) cluster.onImage(image);
     transfer =
         new SnapshotTransfer(
@@ -246,6 +249,7 @@ public final class QuorumStateMachine {
               contacts.values().stream().mapToLong(Long::longValue).max().orElse(leaderSince);
           if (now - last >= config.leaderContactTimeout().toNanos()) stepDown(status.epoch(), -1);
           else {
+            if (cluster != null && status.ready()) cluster.onTick(now);
             for (var pending : List.copyOf(waitingFetches.values()))
               if (now >= pending.deadline()) serveFetch(pending.request());
           }
@@ -292,6 +296,7 @@ public final class QuorumStateMachine {
               // The new marker resolves all inherited proposals against the committed image.
               // No new admin proposal can enter until this first readiness transition.
               pendingTopics.clear();
+              if (cluster != null) cluster.leaderStarted(heartbeatTracker,status.epoch(),now);
               transition(status.role(), status.epoch(), status.leaderId(), true, "");
             }
           }
@@ -778,6 +783,12 @@ public final class QuorumStateMachine {
     if (adminWaiters.size() >= Math.min(config.maxPendingRequests(), diskAdmission)
         || logWork.size() >= diskAdmission) {
       complete(admin.invocationId(), new Failure(meta(QuorumError.OVERLOADED)));
+      return;
+    }
+    if (cluster != null && admin.request() instanceof BrokerControlProtocol.Heartbeat heartbeat) {
+      var response = cluster.heartbeat(admin.invocationId(),heartbeat,now,meta(QuorumError.NONE));
+      if (response.isPresent()) complete(admin.invocationId(),response.get());
+      else adminWaiters.put(admin.invocationId(),new Waiter(admin,Long.MAX_VALUE));
       return;
     }
     if (cluster != null && (admin.request() instanceof BrokerControlProtocol.Register

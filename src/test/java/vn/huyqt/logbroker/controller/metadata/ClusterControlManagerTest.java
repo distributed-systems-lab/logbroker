@@ -7,6 +7,29 @@ import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.log.*;
 
 class ClusterControlManagerTest {
+    @Test void replacementCannotRacePendingUnfence() throws Exception {
+        var state = ClusterMetadataApplyTest.initialized();
+        var manager = new ClusterControlManager(MetadataLimits.defaults(), id -> true); manager.onImage(state.image());
+        manager.leaderStarted(new HeartbeatTracker(10),0,0);
+        var session = state.image().brokers().get(1).registration().session();
+        var meta = new QuorumProtocol.ReplyMeta(QuorumError.NONE,"",0,0);
+        assertTrue(manager.heartbeat(1,new BrokerControlProtocol.Heartbeat(session,1,2,new UUID(0,9),true,2000),0,meta).isEmpty());
+        assertEquals(QuorumError.BROKER_ID_IN_USE,manager.submit(2,new BrokerControlProtocol.Register(1,
+            session.storageId(),new UUID(0,99),2,state.image().brokers().get(1).registration().endpoint(),(short)2,(short)2,2000)));
+    }
+    @Test void lifecycleDrainWaitsForPriorTopicImageSoAllAssignmentEpochsAdvance() throws Exception {
+        var state = servingState(); var manager = new ClusterControlManager(MetadataLimits.defaults(),id -> true);
+        manager.onImage(state.image()); manager.leaderStarted(new HeartbeatTracker(10),0,0);
+        assertEquals(QuorumError.NONE,manager.submit(1,new BrokerControlProtocol.CreateTopic("a",2,(short)1,2000)));
+        var s = state.image().brokers().get(1).registration().session();
+        var meta = new QuorumProtocol.ReplyMeta(QuorumError.NONE,"",0,0);
+        assertTrue(manager.heartbeat(2,new BrokerControlProtocol.Heartbeat(s,1,3,new UUID(0,9),true,2000),0,meta).isEmpty());
+        var topic = manager.drainNext(0,3).orElseThrow();
+        assertTrue(manager.drainNext(0,topic.nextOffset()).isEmpty());
+        state.apply(topic); manager.onImage(state.image());
+        var lifecycle = manager.drainNext(0,topic.nextOffset()).orElseThrow(); assertEquals(3,lifecycle.entries().size());
+        state.apply(lifecycle); assertTrue(state.image().partitions().values().stream().allMatch(p -> p.leaderEpoch()==1));
+    }
     private static BrokerControlProtocol.Register registration(int id, long expected, long incarnation) {
         return new BrokerControlProtocol.Register(id, new UUID(0,id), new UUID(0,incarnation), expected,
             new ClusterRecords.Endpoint("localhost", 9092 + id), (short) 2, (short) 2, 2000);

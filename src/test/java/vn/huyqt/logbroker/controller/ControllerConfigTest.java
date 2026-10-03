@@ -7,6 +7,11 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class ControllerConfigTest {
+  @Test void brokerSessionTimeoutMustExceedHeartbeatRpcDeadline() {
+    assertEquals(java.time.Duration.ofSeconds(10),ControllerConfig.builder(identity()).build().brokerSessionTimeout());
+    assertThrows(IllegalArgumentException.class,() -> ControllerConfig.builder(identity())
+        .brokerSessionTimeout(java.time.Duration.ofSeconds(2)).build());
+  }
   @Test void clusterBatchMustContainLargestSessionLifecycleChange() {
     var old = identity(); var v2 = new ClusterIdentity(old.clusterId(),old.nodeId(),old.voters(),(short)2);
     assertThrows(IllegalArgumentException.class, () -> ControllerConfig.builder(v2)
