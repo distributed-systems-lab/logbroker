@@ -119,6 +119,20 @@ public final class NettyControllerClientTransport implements ControllerClientTra
                     .pipeline()
                     .addLast(
                         new ChannelInboundHandlerAdapter() {
+                          private int pendingDecode;
+                          private boolean disconnected;
+
+                          private synchronized void decodingStarted() { pendingDecode++; }
+
+                          private void decodingFinished() {
+                            boolean notify;
+                            synchronized (this) {
+                              pendingDecode--;
+                              notify = disconnected && pendingDecode == 0;
+                            }
+                            if (notify && !closed) failure.accept(new IOException("Controller disconnected"));
+                          }
+
                           public void channelActive(ChannelHandlerContext context) {
                             synchronized (NettyControllerClientTransport.this) {
                               if (closed) {
@@ -143,6 +157,7 @@ public final class NettyControllerClientTransport implements ControllerClientTra
                               context.close();
                               return;
                             }
+                            decodingStarted();
                             try {
                               factory.decode.execute(
                                   () -> {
@@ -167,17 +182,25 @@ public final class NettyControllerClientTransport implements ControllerClientTra
                                     } catch (Exception error) {
                                       failure.accept(error);
                                       context.close();
+                                    } finally {
+                                      decodingFinished();
                                     }
                                   });
                             } catch (RejectedExecutionException error) {
                               try { raw.close(); } catch (Exception close) { error.addSuppressed(close); }
                               failure.accept(error);
                               context.close();
+                              decodingFinished();
                             }
                           }
 
                           public void channelInactive(ChannelHandlerContext context) {
-                            if (!closed) failure.accept(new IOException("Controller disconnected"));
+                            boolean notify;
+                            synchronized (this) {
+                              disconnected = true;
+                              notify = pendingDecode == 0;
+                            }
+                            if (notify && !closed) failure.accept(new IOException("Controller disconnected"));
                           }
 
                           public void exceptionCaught(
