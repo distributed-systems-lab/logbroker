@@ -8,7 +8,7 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
-import vn.huyqt.logbroker.broker.metadata.MetadataService;
+import vn.huyqt.logbroker.broker.metadata.BrokerMetadata;
 import vn.huyqt.logbroker.protocol.ErrorCode;
 import vn.huyqt.logbroker.protocol.Protocol.*;
 import vn.huyqt.logbroker.protocol.Protocol.Error;
@@ -21,20 +21,35 @@ import vn.huyqt.logbroker.protocol.Protocol.Error;
  * requests per connection so that {@link #disconnect} can cancel them. Thread-safe.
  */
 public final class RequestDispatcher {
-    private final MetadataService metadata;
+    /** Injectable v1 metadata boundary for historical protocol fixtures. */
+    public interface MetadataHandler {
+        CompletableFuture<CreateTopicReply> create(String name, int partitions);
+        MetadataReply metadata(List<String> names);
+    }
+
+    private final MetadataHandler metadata;
+    private final BrokerMetadata clusterMetadata;
     private final Function<TopicPartition, PartitionRuntime> runtimes;
     private final FetchCoordinator fetch;
     private final DeadlineScheduler clock;
     private final ConcurrentHashMap<Long, Set<RequestContext>> connections = new ConcurrentHashMap<>();
     private volatile boolean stopping;
 
-    public RequestDispatcher(MetadataService metadata,
+    public RequestDispatcher(MetadataHandler metadata,
             Function<TopicPartition, PartitionRuntime> runtimes,
             FetchCoordinator fetch, DeadlineScheduler clock) {
         this.metadata = Objects.requireNonNull(metadata);
+        this.clusterMetadata = null;
         this.runtimes = Objects.requireNonNull(runtimes);
         this.fetch = Objects.requireNonNull(fetch);
         this.clock = Objects.requireNonNull(clock);
+    }
+
+    /** Cluster composition; the v2 branches are provided by the cluster data protocol. */
+    public RequestDispatcher(BrokerMetadata metadata,Function<TopicPartition,PartitionRuntime> runtimes,
+        FetchCoordinator fetch,DeadlineScheduler clock) {
+        this.metadata=null; this.clusterMetadata=Objects.requireNonNull(metadata);
+        this.runtimes=Objects.requireNonNull(runtimes); this.fetch=Objects.requireNonNull(fetch); this.clock=Objects.requireNonNull(clock);
     }
 
     /**
@@ -46,6 +61,8 @@ public final class RequestDispatcher {
     public CompletableFuture<Response> handle(RequestContext context, Request request) {
         Objects.requireNonNull(context);
         Objects.requireNonNull(request);
+        if(clusterMetadata!=null)
+            return CompletableFuture.completedFuture(new Failure(new Error(ErrorCode.UNSUPPORTED_VERSION,"Cluster broker requires data protocol v2")));
         if (stopping)
             return CompletableFuture.completedFuture(new Failure(
                     new Error(ErrorCode.BROKER_SHUTTING_DOWN, "Broker closing")));

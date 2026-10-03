@@ -25,7 +25,7 @@ import vn.huyqt.logbroker.storage.LogRecord;
 import vn.huyqt.logbroker.storage.PartitionLog;
 
 /**
- * Local event source for topic metadata; KRaft will replace this source later.
+ * Historical local metadata fixture; production metadata comes from the controller quorum.
  *
  * <p>Events are {@link TopicCatalog.TopicCreated} records in a separate {@code PartitionLog}
  * under {@code metadata/} in the data directory; see {@link MetadataEventCodec}. CreateTopic
@@ -36,7 +36,7 @@ import vn.huyqt.logbroker.storage.PartitionLog;
  * <p>Metadata failures are broker-wide: replay rejects any invalid or conflicting event, and a
  * runtime append or flush failure stops further CreateTopic and invokes the fatal handler.
  */
-public final class MetadataService implements AutoCloseable {
+public final class LegacyMetadataFixture implements AutoCloseable, vn.huyqt.logbroker.broker.RequestDispatcher.MetadataHandler {
     private final BrokerConfig config;
     private final PartitionRegistry registry;
     private final PartitionLog log;
@@ -51,7 +51,7 @@ public final class MetadataService implements AutoCloseable {
     private volatile boolean failed;
     private volatile boolean closed;
 
-    private MetadataService(BrokerConfig config, PartitionRegistry registry,
+    private LegacyMetadataFixture(BrokerConfig config, PartitionRegistry registry,
             PartitionLog log, Consumer<Throwable> fatalHandler) {
         this.config = config;
         this.registry = registry;
@@ -60,7 +60,7 @@ public final class MetadataService implements AutoCloseable {
     }
 
     /** Opens the service with a fatal handler that does nothing. */
-    public static MetadataService open(Path root, BrokerConfig config,
+    public static LegacyMetadataFixture open(Path root, BrokerConfig config,
             PartitionRegistry registry) throws IOException {
         return open(root, config, registry, error -> {
         });
@@ -75,7 +75,7 @@ public final class MetadataService implements AutoCloseable {
      * @throws IOException if the log cannot be recovered, holds an invalid or conflicting event,
      *     or describes more topics or partitions than the broker limits allow
      */
-    public static MetadataService open(Path root, BrokerConfig config,
+    public static LegacyMetadataFixture open(Path root, BrokerConfig config,
             PartitionRegistry registry,
             Consumer<Throwable> fatalHandler) throws IOException {
         Objects.requireNonNull(root);
@@ -83,7 +83,7 @@ public final class MetadataService implements AutoCloseable {
         Objects.requireNonNull(registry);
         Objects.requireNonNull(fatalHandler);
         PartitionLog log = PartitionLog.open(root.resolve("metadata"), config.logConfig());
-        MetadataService service = new MetadataService(config, registry, log, fatalHandler);
+        LegacyMetadataFixture service = new LegacyMetadataFixture(config, registry, log, fatalHandler);
         try {
             service.replay();
             for (TopicInfo topic : service.catalog.snapshot())

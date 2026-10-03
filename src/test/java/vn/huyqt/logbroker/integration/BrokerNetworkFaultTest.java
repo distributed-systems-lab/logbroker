@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import vn.huyqt.logbroker.broker.Broker;
+import vn.huyqt.logbroker.broker.LegacyBrokerFixture;
 import vn.huyqt.logbroker.broker.BrokerConfig;
 import vn.huyqt.logbroker.broker.DeadlineScheduler;
 import vn.huyqt.logbroker.client.BrokerClient;
@@ -29,7 +29,7 @@ class BrokerNetworkFaultTest {
     @TempDir Path directory;
 
     @Test void droppedProduceResponseIsUnknownWithoutAutomaticReplay() throws Exception {
-        try (var broker = Broker.start(BrokerConfig.defaults(directory).withPort(0));
+        try (var broker = LegacyBrokerFixture.start(BrokerConfig.defaults(directory).withPort(0));
              var listener = new ServerSocket(0);
              var clock = DeadlineScheduler.system()) {
             int brokerPort = broker.address().getPort();
@@ -48,7 +48,7 @@ class BrokerNetworkFaultTest {
                     forwarded.incrementAndGet();
                     upstream.getOutputStream().write(request);
                     readFrame(new DataInputStream(upstream.getInputStream()));
-                    // Broker completed the write. Lose only its response to this client.
+                    // LegacyBrokerFixture completed the write. Lose only its response to this client.
                 } catch (Exception error) { throw new RuntimeException(error); }
             });
             try (var client = client(listener.getLocalPort(), clock)) {

@@ -21,7 +21,7 @@ class BrokerIsolationTest {
     @Test void createsProducesFlushesAndFetchesAcrossBrokerRestart() throws Exception {
         var config = BrokerConfig.defaults(directory).withPort(0);
         java.util.UUID id;
-        try (var broker = Broker.start(config);
+        try (var broker = LegacyBrokerFixture.start(config);
              var clock = DeadlineScheduler.system();
              var client = new BrokerClient(ClientConfig.defaults(new InetSocketAddress(
                      "127.0.0.1", broker.address().getPort())),
@@ -37,7 +37,7 @@ class BrokerIsolationTest {
                             new byte[]{42}, List.of()))))))).get(5, TimeUnit.SECONDS);
             assertEquals(Protocol.Error.none(), sent.results().getFirst().error());
         }
-        try (var broker = Broker.start(config);
+        try (var broker = LegacyBrokerFixture.start(config);
              var clock = DeadlineScheduler.system();
              var client = new BrokerClient(ClientConfig.defaults(new InetSocketAddress(
                      "127.0.0.1", broker.address().getPort())),

@@ -28,7 +28,7 @@ class MetadataRecoveryTest {
             log.flush();
         }
         try (var registry = new PartitionRegistry(config, FilePartitionStore::open);
-             var metadata = MetadataService.open(directory, config, registry)) {
+             var metadata = LegacyMetadataFixture.open(directory, config, registry)) {
             assertEquals(event.id(), metadata.metadata(List.of("orders")).topics().getFirst().id());
             assertNotNull(registry.require(new vn.huyqt.logbroker.protocol.Protocol.TopicPartition(
                     event.id(), 1)));
@@ -39,7 +39,7 @@ class MetadataRecoveryTest {
     void corruptedMetadataStopsStartup() throws Exception {
         var config = BrokerConfig.defaults(directory);
         try (var registry = new PartitionRegistry(config, FilePartitionStore::open);
-             var metadata = MetadataService.open(directory, config, registry)) {
+             var metadata = LegacyMetadataFixture.open(directory, config, registry)) {
             metadata.create("orders", 1).get();
         }
         Path data = directory.resolve("metadata").resolve("00000000000000000000.log");
@@ -48,7 +48,7 @@ class MetadataRecoveryTest {
         Files.write(data, bytes);
         try (var registry = new PartitionRegistry(config, FilePartitionStore::open)) {
             assertThrows(IOException.class,
-                    () -> MetadataService.open(directory, config, registry));
+                    () -> LegacyMetadataFixture.open(directory, config, registry));
         }
     }
 
@@ -57,7 +57,7 @@ class MetadataRecoveryTest {
         var config = BrokerConfig.defaults(directory);
         UUID id;
         try (var registry = new PartitionRegistry(config, FilePartitionStore::open);
-             var metadata = MetadataService.open(directory, config, registry)) {
+             var metadata = LegacyMetadataFixture.open(directory, config, registry)) {
             id = metadata.create("orders", 2).get().topicId();
             registry.require(new vn.huyqt.logbroker.protocol.Protocol.TopicPartition(id, 0))
                     .append(List.of(new LogRecord(0, null, new byte[]{1}, List.of())));
@@ -68,7 +68,7 @@ class MetadataRecoveryTest {
         bytes[bytes.length - 1] ^= 1;
         Files.write(data, bytes);
         try (var registry = new PartitionRegistry(config, FilePartitionStore::open);
-             var metadata = MetadataService.open(directory, config, registry)) {
+             var metadata = LegacyMetadataFixture.open(directory, config, registry)) {
             var topics = metadata.metadata(List.of("orders")).topics();
             assertEquals(vn.huyqt.logbroker.protocol.ErrorCode.PARTITION_UNAVAILABLE,
                     topics.getFirst().partitions().get(0).error().code());

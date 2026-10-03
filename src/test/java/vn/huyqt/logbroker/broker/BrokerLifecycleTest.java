@@ -13,12 +13,12 @@ class BrokerLifecycleTest {
 
     @Test void locksDataRootUntilShutdownAndCanRestart() throws Exception {
         var config = BrokerConfig.defaults(directory).withPort(0);
-        try (var broker = Broker.start(config)) {
+        try (var broker = LegacyBrokerFixture.start(config)) {
             assertTrue(broker.address().getPort() > 0);
-            assertThrows(IOException.class, () -> Broker.start(config));
+            assertThrows(IOException.class, () -> LegacyBrokerFixture.start(config));
             broker.shutdown(Duration.ofSeconds(5)).get();
         }
-        try (var restarted = Broker.start(config)) {
+        try (var restarted = LegacyBrokerFixture.start(config)) {
             assertTrue(restarted.address().getPort() > 0);
         }
     }

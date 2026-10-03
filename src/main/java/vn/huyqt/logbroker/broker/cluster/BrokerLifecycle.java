@@ -38,7 +38,7 @@ public final class BrokerLifecycle {
         if(!identity.clusterId().equals(control.settings().clusterId()) || identity.brokerId()!=control.settings().brokerId()
             || identity.brokerId()!=gate.session().brokerId() || !identity.storageId().equals(gate.session().storageId()))
             throw new IllegalArgumentException("Lifecycle identity mismatch");
-        observer.attachLifecycle(this::metadataApplied,this::failed);
+        observer.attachLifecycle(image->marshal(()->metadataApplied(image)),error->marshal(()->failed(error)));
     }
     public synchronized CompletableFuture<Void> start() {
         if(startedOnce) throw new IllegalStateException("Lifecycle already started"); startedOnce=true; ++generation;

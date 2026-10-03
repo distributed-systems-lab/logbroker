@@ -15,7 +15,7 @@ import vn.huyqt.logbroker.broker.cluster.BrokerIdentityStore;
 import vn.huyqt.logbroker.controller.persistence.DurableFiles;
 
 /**
- * CLI entry point for one local broker.
+ * CLI entry point for a formatted cluster broker.
  *
  * <p>Options and properties are described in {@code docs/broker-configuration.md}.
  */
@@ -33,15 +33,9 @@ public final class BrokerMain {
             System.out.println("FORMATTED broker="+identity.brokerId()+" storageId="+identity.storageId()); return;
         }
         BrokerConfig config = parse(args);
-        if (Files.exists(config.dataDirectory().resolve("broker-identity.bin")))
-            throw new IllegalArgumentException("Cluster root cannot be started as a standalone broker");
-        for (int i=0;i+1<args.length;i+=2) if (args[i].equals("--config")) {
-            var settings=new Properties(); try (var input=Files.newInputStream(Path.of(args[i+1]))) { settings.load(input); }
-            if (settings.stringPropertyNames().stream().anyMatch(BrokerClusterConfig.PROPERTY_KEYS::contains))
-                throw new IllegalArgumentException("Cluster startup requires a formatted cluster broker root");
-        }
+        BrokerClusterConfig cluster = clusterConfig(args);
         var logger = System.getLogger(BrokerMain.class.getName());
-        Broker broker = Broker.start(config);
+        Broker broker = Broker.start(config, cluster);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
                 broker.close();
@@ -52,6 +46,19 @@ public final class BrokerMain {
         System.out.println("READY " + broker.address().getPort());
         System.out.flush();
         new CountDownLatch(1).await();
+    }
+
+    static BrokerClusterConfig clusterConfig(String[] args) throws IOException {
+        for (int i = 0; i + 1 < args.length; i += 2) {
+            if (args[i].equals("--config")) {
+                var settings = new Properties();
+                try (var input = Files.newInputStream(Path.of(args[i + 1]))) {
+                    settings.load(input);
+                }
+                return BrokerClusterConfig.fromProperties(settings);
+            }
+        }
+        throw new IllegalArgumentException("Cluster startup requires --config");
     }
 
     // Fail closed: unknown or duplicate options and unknown property keys abort startup instead

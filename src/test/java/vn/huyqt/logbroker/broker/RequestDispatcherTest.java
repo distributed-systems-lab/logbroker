@@ -9,7 +9,7 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import vn.huyqt.logbroker.broker.metadata.MetadataService;
+import vn.huyqt.logbroker.broker.metadata.LegacyMetadataFixture;
 import vn.huyqt.logbroker.protocol.ErrorCode;
 import vn.huyqt.logbroker.protocol.Protocol.*;
 import vn.huyqt.logbroker.storage.LogRecord;
@@ -24,7 +24,7 @@ class RequestDispatcherTest {
         try (var clock = new ManualScheduler();
              var workers = new PartitionExecutor(2, 2, 8);
              var registry = new PartitionRegistry(config, FilePartitionStore::open);
-             var metadata = MetadataService.open(directory, config, registry)) {
+             var metadata = LegacyMetadataFixture.open(directory, config, registry)) {
             UUID id = metadata.create("orders", 1).get().topicId();
             var known = new TopicPartition(id, 0);
             var missing = new TopicPartition(new UUID(5, 6), 0);

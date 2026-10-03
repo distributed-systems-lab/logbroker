@@ -19,7 +19,8 @@ class BrokerMainTest {
         assertEquals(7,identity.brokerId()); assertTrue(Files.isRegularFile(root.resolve("broker-identity.bin")));
         assertTrue(Files.isRegularFile(root.resolve("observer/observer-state.journal")));
         assertTrue(Files.isRegularFile(root.resolve("partition-inventory.journal")));
-        assertThrows(IllegalArgumentException.class,() -> BrokerMain.main(new String[]{"--config",properties.toString(),"--data",root.toString()}));
+        assertEquals(identity.clusterId(), BrokerMain.clusterConfig(new String[]{"--config", properties.toString()}).clusterId());
+        assertThrows(IllegalArgumentException.class, () -> BrokerMain.main(new String[]{"--data", root.toString()}));
         assertThrows(IllegalArgumentException.class,() -> BrokerMain.format(new String[]{"--data",root.toString()},
             new vn.huyqt.logbroker.controller.support.FaultFiles()));
     }

@@ -146,7 +146,7 @@ public final class ClusterPartitionManager {
     public synchronized Map<TopicPartition,String> failures() { return Map.copyOf(failures); }
     private void closeOwned(TopicPartition partition,Owned entry) throws Exception {
         // This ordered worker may wait; neither metadata nor Netty threads ever do.
-        entry.runtime().closeAsync().get(); entry.store().close();
+        entry.runtime().closeAsync().get(); entry.store().flush(); entry.store().close();
         synchronized(this) { owned.remove(partition,entry); }
     }
     private void closeAll() throws Exception {

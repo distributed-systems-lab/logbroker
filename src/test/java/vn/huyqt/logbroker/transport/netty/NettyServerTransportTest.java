@@ -13,7 +13,7 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import vn.huyqt.logbroker.broker.*;
-import vn.huyqt.logbroker.broker.metadata.MetadataService;
+import vn.huyqt.logbroker.broker.metadata.LegacyMetadataFixture;
 import vn.huyqt.logbroker.protocol.Protocol;
 import vn.huyqt.logbroker.protocol.ProtocolCodec;
 import vn.huyqt.logbroker.protocol.ErrorCode;
@@ -29,7 +29,7 @@ class NettyServerTransportTest {
         var codec = new ProtocolCodec(config.protocolLimits());
         try (var clock = DeadlineScheduler.system();
              var registry = new PartitionRegistry(config, FilePartitionStore::open);
-             var metadata = MetadataService.open(directory, config, registry)) {
+             var metadata = LegacyMetadataFixture.open(directory, config, registry)) {
             var fetch = new FetchCoordinator(new FetchPlanner(Map.of(), config),
                     ignored -> null, clock, new ResourceBudget(8));
             var dispatcher = new RequestDispatcher(metadata, ignored -> null, fetch, clock);
@@ -69,7 +69,7 @@ class NettyServerTransportTest {
         try (var clock = DeadlineScheduler.system();
              var workers = new PartitionExecutor(1, 1, 8);
              var registry = new PartitionRegistry(config, FilePartitionStore::open);
-             var metadata = MetadataService.open(directory, config, registry)) {
+             var metadata = LegacyMetadataFixture.open(directory, config, registry)) {
             UUID id = metadata.create("orders", 1).get().topicId();
             var tp = new Protocol.TopicPartition(id, 0);
             var runtime = new PartitionRuntime(tp, registry.require(tp), workers, clock, config);
@@ -128,7 +128,7 @@ class NettyServerTransportTest {
         var budget = new ResourceBudget(3L * frame.length);
         try (var clock = DeadlineScheduler.system();
              var registry = new PartitionRegistry(config, FilePartitionStore::open);
-             var metadata = MetadataService.open(directory, config, registry)) {
+             var metadata = LegacyMetadataFixture.open(directory, config, registry)) {
             var fetch = new FetchCoordinator(new FetchPlanner(Map.of(), config),
                     ignored -> null, clock, new ResourceBudget(8));
             var dispatcher = new RequestDispatcher(metadata, ignored -> null, fetch, clock);

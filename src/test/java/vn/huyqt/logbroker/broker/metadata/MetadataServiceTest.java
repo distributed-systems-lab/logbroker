@@ -22,7 +22,7 @@ class MetadataServiceTest {
         var config = BrokerConfig.defaults(directory);
         UUID id;
         try (var registry = new PartitionRegistry(config, FilePartitionStore::open);
-             var metadata = MetadataService.open(directory, config, registry)) {
+             var metadata = LegacyMetadataFixture.open(directory, config, registry)) {
             id = metadata.create("orders", 2).get(5, TimeUnit.SECONDS).topicId();
             assertEquals(id, metadata.create("orders", 2).get(5, TimeUnit.SECONDS).topicId());
             assertEquals(ErrorCode.TOPIC_ALREADY_EXISTS,
@@ -31,7 +31,7 @@ class MetadataServiceTest {
             assertNotNull(registry.require(new TopicPartition(id, 1)));
         }
         try (var registry = new PartitionRegistry(config, FilePartitionStore::open);
-             var metadata = MetadataService.open(directory, config, registry)) {
+             var metadata = LegacyMetadataFixture.open(directory, config, registry)) {
             var info = metadata.metadata(List.of("orders")).topics().getFirst();
             assertEquals(id, info.id());
             assertEquals(2, info.partitions().size());

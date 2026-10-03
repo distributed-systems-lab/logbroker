@@ -8,7 +8,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import vn.huyqt.logbroker.broker.Broker;
+import vn.huyqt.logbroker.broker.LegacyBrokerFixture;
 import vn.huyqt.logbroker.broker.BrokerConfig;
 import vn.huyqt.logbroker.protocol.ErrorCode;
 import vn.huyqt.logbroker.protocol.Protocol;
@@ -24,7 +24,7 @@ class TransportConformanceTest {
     }
 
     private void runContract(Supplier<ClientTransport> factory) throws Exception {
-        try (var broker = Broker.start(BrokerConfig.defaults(directory).withPort(0));
+        try (var broker = LegacyBrokerFixture.start(BrokerConfig.defaults(directory).withPort(0));
              var transport = factory.get()) {
             var replies = new LinkedBlockingQueue<Protocol.ResponseFrame>();
             var failures = new LinkedBlockingQueue<Throwable>();

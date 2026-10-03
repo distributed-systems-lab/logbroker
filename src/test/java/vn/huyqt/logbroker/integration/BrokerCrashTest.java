@@ -12,7 +12,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import vn.huyqt.logbroker.broker.Broker;
+import vn.huyqt.logbroker.broker.LegacyBrokerFixture;
 import vn.huyqt.logbroker.broker.BrokerConfig;
 import vn.huyqt.logbroker.broker.DeadlineScheduler;
 import vn.huyqt.logbroker.client.BrokerClient;
@@ -29,7 +29,7 @@ class BrokerCrashTest {
         String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
         String classpath = System.getProperty("java.class.path");
         Process child = new ProcessBuilder(java, "-cp", classpath,
-                "vn.huyqt.logbroker.broker.BrokerMain", "--data", directory.toString(),
+                "vn.huyqt.logbroker.broker.LegacyBrokerMain", "--data", directory.toString(),
                 "--port", "0").redirectError(ProcessBuilder.Redirect.INHERIT).start();
         UUID id;
         try {
@@ -62,10 +62,10 @@ class BrokerCrashTest {
             child.destroyForcibly();
             assertTrue(child.waitFor(10, TimeUnit.SECONDS));
         }
-        Broker reopened = null;
+        LegacyBrokerFixture reopened = null;
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         while (reopened == null && System.nanoTime() < until) {
-            try { reopened = Broker.start(BrokerConfig.defaults(directory).withPort(0)); }
+            try { reopened = LegacyBrokerFixture.start(BrokerConfig.defaults(directory).withPort(0)); }
             catch (java.io.IOException lockPending) { Thread.sleep(25); }
         }
         assertNotNull(reopened, "Data-root lock did not release after process death");

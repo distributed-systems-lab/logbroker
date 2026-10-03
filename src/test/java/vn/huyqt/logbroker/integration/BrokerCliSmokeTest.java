@@ -22,7 +22,7 @@ class BrokerCliSmokeTest {
         String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
         String classpath = System.getProperty("java.class.path");
         var broker = new ProcessBuilder(java, "-cp", classpath,
-                "vn.huyqt.logbroker.broker.BrokerMain", "--data", directory.toString(),
+                "vn.huyqt.logbroker.broker.LegacyBrokerMain", "--data", directory.toString(),
                 "--port", "0").redirectError(ProcessBuilder.Redirect.INHERIT).start();
         try {
             var ready = CompletableFuture.supplyAsync(() -> {

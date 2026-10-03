@@ -15,17 +15,72 @@ tasks in [the implementation plan](2026-10-03-cluster-phase-4.md) still need exe
 | 5 Heartbeat liveness and committed fencing | Complete | `060dcd6` |
 | 6 Committed observer endpoints and budgets | Complete | `9fd270b` |
 | 7 Broker identity/format/config | Complete; initialization helpers extracted in Tasks 8/11 | See Task 7 commit |
-| 8 Durable observer generations/snapshot journal | Pending | |
-| 9 Broker control client and metadata pull | Pending | |
-| 10 Lifecycle and serving gate | Pending | |
-| 11 Partition inventory/provisioning | Pending | |
-| 12 Cluster broker composition/forwarding | Pending | |
+| 8 Durable observer generations/snapshot journal | Complete | `7fe770d` |
+| 9 Broker control client and metadata pull | Complete | `c03b772` |
+| 10 Lifecycle and serving gate | Complete | `8ffddca` |
+| 11 Partition inventory/provisioning | Complete | `d420a4d` |
+| 12 Cluster broker composition/forwarding | Complete; WSL verification running | See Task 12 commit |
 | 13 Data wire v2 and guarded I/O | Pending | |
 | 14 Cluster client/routing/retries | Pending | |
 | 15 Cluster process/fault acceptance | Pending | |
 | 16 Operations/examples/documentation/final verification | Pending | |
 
 ## Verification evidence
+
+Task 12, 2026-10-03:
+
+- Production Broker/BrokerMain now require explicit cluster config and a formatted root.
+  Local metadata authority and standalone startup exist only in historical test fixtures.
+- Focused forwarding/composition/legacy-regression/CLI suite: 17 tests, zero failures/errors/skips.
+- Final Windows `mvn clean verify`: 384 tests, zero failures/errors, three strict process skips,
+  completed 22:16:02. Fresh WSL/ext4 verification is running after an interrupted earlier attempt.
+- An initial full run reproduced TCP disconnect overtaking a received controller reply's decode.
+  A blocked-decode regression confirmed the race; transport now drains received frames first.
+  Focused drain/control/CLI tests passed (10 tests); final full suite also passed.
+  The selector included a nonexistent AdminClientRetryTest; actual ControllerClientRetryTest
+  subsequently ran in the full suite. No assertions or timeouts were weakened.
+- Startup bind failure releases storage/root ownership; shutdown drains before root release.
+  Observer lifecycle callbacks marshal to the scheduler to avoid lock inversion.
+- This is composition verification. Real data v2/client/process acceptance remains Tasks 13–16.
+
+Task 11, 2026-10-03:
+
+- Focused provisioning/inventory/manager/lane/storage suite: 16 tests, zero failures/errors/skips.
+- Windows full `mvn clean verify`: 378 tests, zero failures/errors, three strict process skips,
+  completed 20:50:32.
+- Fresh WSL Ubuntu source copy on verified ext4: 378 tests, zero failures/errors/skips,
+  completed 20:50:54. Logs/reports: `target/phase4-task11-wsl/` (ignored output).
+- Provisioning faults cover every measured force boundary. Missing COMPLETE logs stay unavailable;
+  obsolete open completion cannot publish. A reserved partition-lane close barrier drains I/O first.
+- The previous attempt to stage/commit Task 11 was not executed because automatic approval review
+  hit its usage limit. On continuation, staging/check/commit succeeded without bypassing review.
+
+Task 8 and initial Task 9, 2026-10-03:
+
+- Task 8 Windows full suite before Task 9: 345 tests, zero failures/errors, three strict process skips.
+- Observer persistence/install/shared snapshot regressions plus initial control client/observer:
+  34 tests, zero failures/errors/skips, completed 20:11:10 on Windows.
+- Fresh WSL Ubuntu source copy on verified ext4: `mvn clean verify`, 355 tests,
+  zero failures/errors/skips, completed 20:12:46 Asia/Saigon. This includes initial Task 9;
+  later Task 9 changes still require verification. Evidence was copied to
+  `target/phase4-wsl-evidence/` (ignored build output).
+- An earlier WSL full run had one ControllerCrashTest convergence timeout after restart
+  (349 tests, one failure). A focused rerun passed, followed by the full 355-test pass.
+  The transient timeout's root cause is not established; no test assertions/timeouts were weakened.
+- SnapshotJournal borrows the existing journal without introducing voter hard state in the
+  observer. Forced observer checkpoints cover only received contiguous batches. Cancellation
+  before generation publication leaves the old log usable; published corruption fails recovery.
+  Cleanup preserves active generations and snapshot pins.
+- Final Task 9 focused broker control/observer/store/admin-retry/wire limits suite:
+  21 tests, zero failures/errors/skips, completed 20:15:04 on Windows. Includes a real
+  Netty broker discovery connection, bounded RPC queue and duplicate callback admission,
+  remaining wire timeout, disk-draining stop and corrupt snapshot retry.
+- Task 10 lifecycle/gate/observer/control focused suite: 20 tests, zero failures/errors/skips,
+  completed 20:26:29 on Windows. Covers fresh registration, original incarnation/CAS on retry,
+  applied recovery grant before RUNNING, controller absence for 60 seconds without lease expiry,
+  committed fencing, fixed recovery target, old grant refusal and storage identity mismatch.
+  The final observer retry change avoids issuing a metadata read barrier after transient fetch errors;
+  the same 20-test suite passed again at 20:27:42 before the Task 10 commit.
 
 Checkpoint A (Tasks 4–6), 2026-10-03:
 
@@ -111,4 +166,4 @@ was stopped or user settings changed.
   production composition. Cluster roots/configs are refused by the transitional standalone launcher,
   so a formatted root cannot silently run with standalone semantics. Legacy launch fixtures remain
   until the Task 12/16 composition switch. Format tests use FaultFiles, not Windows durability claims.
-- Next: Task 8 observer persistence and reusable SnapshotJournal.
+- Next: Task 13 data protocol v2 and guarded partition I/O.

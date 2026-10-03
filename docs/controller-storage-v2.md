@@ -71,3 +71,17 @@ V2 snapshots preserve feature level, broker identity, fencing revision and parti
 epochs. Snapshot size is bounded by configuration (at most 64 MiB); upload chunks
 remain bounded independently (at most 256 KiB). Apply and recovery must receive the
 same count limits. A corrupt committed batch fails recovery without partial apply.
+
+The broker observer owns a separate state journal, not voter hard state. It publishes
+only a forced contiguous committed prefix. Snapshot installation forces a fresh
+generation before publishing its journal reference; recovery never combines an old
+image with a new suffix. Cancellation before publication keeps the old generation
+usable. Garbage collection respects active generations and snapshot pins.
+
+Broker partition inventory frames use magic `0x50494e32` (PIN2), version 2,
+length, consecutive i64 sequence, u8 kind and CRC32C. INIT binds the storage UUID;
+INTENT and COMPLETE bind topic UUID and partition ID. Provisioning forces INTENT,
+opens/recovers and forces the log and directories, then forces COMPLETE before
+publishing a runtime. A missing COMPLETE log stays unavailable; it is never silently
+recreated. Invalid complete frames fail recovery; only a valid incomplete final tail
+may be truncated. Strict directory durability is verified on Linux/WSL ext4.
