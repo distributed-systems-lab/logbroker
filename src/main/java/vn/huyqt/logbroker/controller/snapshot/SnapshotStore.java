@@ -27,10 +27,15 @@ import vn.huyqt.logbroker.controller.protocol.QuorumError;
  * serialized by the caller. {@link #retained()} is volatile and may be read from any thread.
  */
 public final class SnapshotStore implements AutoCloseable {
+  /** A downloaded remote envelope failed validation; local force/read failures remain ordinary IO errors. */
+  public static final class InvalidDownloadContent extends IOException {
+    public InvalidDownloadContent(IOException cause) { super("Invalid downloaded snapshot content", cause); }
+  }
   private final Path directory;
-  private final ClusterIdentity identity;
+  private final UUID clusterId;
+  private final byte[] voterHash;
   private final DurableFiles files;
-  private final QuorumStateStore state;
+  private final SnapshotJournal journal;
   private final int maxBytes;
   private final MetadataLimits metadataLimits;
   private volatile List<SnapshotId> retained = List.of();
@@ -93,10 +98,18 @@ public final class SnapshotStore implements AutoCloseable {
   /** Uses explicit image count budgets; callers must use the same limits on apply and recovery. */
   public SnapshotStore(Path root, ClusterIdentity identity, DurableFiles files,
       QuorumStateStore state, int maxBytes, MetadataLimits metadataLimits) throws IOException {
+    this(root,identity.clusterId(),identity.voterHash(),files,SnapshotJournal.of(state.journal()),maxBytes,metadataLimits);
+  }
+
+  /** Borrows an observer or controller journal; caller owns its serialization and lifetime. */
+  public SnapshotStore(Path root, UUID clusterId, byte[] voterHash, DurableFiles files,
+      SnapshotJournal journal, int maxBytes, MetadataLimits metadataLimits) throws IOException {
     directory = root.resolve("snapshots");
-    this.identity = identity;
+    this.clusterId = Objects.requireNonNull(clusterId);
+    if (voterHash.length!=32) throw new IllegalArgumentException("Invalid voter hash");
+    this.voterHash = voterHash.clone();
     this.files = files;
-    this.state = state;
+    this.journal = Objects.requireNonNull(journal);
     this.maxBytes = maxBytes;
     this.metadataLimits = Objects.requireNonNull(metadataLimits);
     // 114 bytes is the fixed 102-byte envelope plus the 12-byte minimum payload decode accepts.
@@ -105,7 +118,7 @@ public final class SnapshotStore implements AutoCloseable {
     if (!Files.isDirectory(directory))
       throw new IOException("Published snapshot directory missing");
     // Each SNAPSHOT_SET replaces the previous one, so the last frame is authoritative.
-    for (var frame : state.journal().frames())
+    for (var frame : journal.frames())
       if (frame.type() == StateJournal.SNAPSHOT_SET) {
         var in = ByteBuffer.wrap(frame.payload());
         try {
@@ -156,7 +169,7 @@ public final class SnapshotStore implements AutoCloseable {
     for (var existing : retained) if (!existing.equals(id) && next.size() < 2) next.add(existing);
     ByteBuffer payload = ByteBuffer.allocate(4 + next.size() * 32).putInt(next.size());
     for (var snapshot : next) snapshot.writeTo(payload);
-    state.journal().append(StateJournal.SNAPSHOT_SET, payload.array());
+    journal.append(StateJournal.SNAPSHOT_SET, payload.array());
     retained = List.copyOf(next);
   }
 
@@ -173,7 +186,7 @@ public final class SnapshotStore implements AutoCloseable {
     load(id);
     var out = ByteBuffer.allocate(36).putInt(1);
     id.writeTo(out);
-    state.journal().append(StateJournal.SNAPSHOT_SET, out.array());
+    journal.append(StateJournal.SNAPSHOT_SET, out.array());
     retained = List.of(id);
   }
 
@@ -258,7 +271,10 @@ public final class SnapshotStore implements AutoCloseable {
       throw new IOException("Snapshot download length mismatch");
     Path temporary = partial(id);
     files.forceFile(temporary);
-    var image = decode(id, Files.readAllBytes(temporary));
+    byte[] downloadedContent = Files.readAllBytes(temporary);
+    MetadataImage image;
+    try { image = decode(id, downloadedContent); }
+    catch (IOException invalid) { throw new InvalidDownloadContent(invalid); }
     download.close();
     download = null;
     if (Files.exists(path(id))) {
@@ -321,7 +337,7 @@ public final class SnapshotStore implements AutoCloseable {
       upload = null;
     }
     if (upload == null) {
-      if (!retained.contains(id) && !id.equals(GenerationStore.snapshotReference(state)))
+      if (!retained.contains(id) && !id.equals(journal.snapshotReference()))
         throw new Unavailable(QuorumError.SNAPSHOT_NOT_FOUND);
       if (uploads.size() >= 2) throw new Unavailable(QuorumError.OVERLOADED);
       upload = new Upload(id, pin(id), now);
@@ -356,7 +372,7 @@ public final class SnapshotStore implements AutoCloseable {
    */
   public void refreshRetained() throws IOException {
     retained =
-        new SnapshotStore(directory.getParent(), identity, files, state, maxBytes, metadataLimits).retained();
+        new SnapshotStore(directory.getParent(), clusterId, voterHash, files, journal, maxBytes, metadataLimits).retained();
   }
 
   @Override
@@ -385,9 +401,9 @@ public final class SnapshotStore implements AutoCloseable {
     out.putInt(0x51534e31)
         .putShort((short) (image.metadataVersion() == 1 ? 1 : 2))
         .putLong(length)
-        .putLong(identity.clusterId().getMostSignificantBits())
-        .putLong(identity.clusterId().getLeastSignificantBits())
-        .put(identity.voterHash());
+        .putLong(clusterId.getMostSignificantBits())
+        .putLong(clusterId.getLeastSignificantBits())
+        .put(voterHash);
     id.writeTo(out);
     out.putInt(payload.length).put(payload);
     out.putInt(StateJournal.crc(bytes, 0, bytes.length - 4));
@@ -409,11 +425,11 @@ public final class SnapshotStore implements AutoCloseable {
       short version = in.getShort();
       if (magic != 0x51534e31 || (version != 1 && version != 2) || in.getLong() != bytes.length)
         throw new IOException("Invalid snapshot header");
-      if (!new UUID(in.getLong(), in.getLong()).equals(identity.clusterId()))
+      if (!new UUID(in.getLong(), in.getLong()).equals(clusterId))
         throw new IOException("Snapshot cluster mismatch");
       byte[] hash = new byte[32];
       in.get(hash);
-      if (!Arrays.equals(hash, identity.voterHash()))
+      if (!Arrays.equals(hash, voterHash))
         throw new IOException("Snapshot voter mismatch");
       SnapshotId actual = SnapshotId.readFrom(in);
       if (!actual.equals(expected)) throw new IOException("Snapshot identity mismatch");
@@ -476,7 +492,7 @@ public final class SnapshotStore implements AutoCloseable {
   public synchronized void releaseObsolete() throws IOException {
     var referenced = new HashSet<UUID>();
     for (var id : retained) referenced.add(id.contentId());
-    var base = GenerationStore.snapshotReference(state);
+    var base = journal.snapshotReference();
     if (base != null) referenced.add(base.contentId());
     for (var id : pins.keySet()) referenced.add(id.contentId());
     boolean deleted = false;

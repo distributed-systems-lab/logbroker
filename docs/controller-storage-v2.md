@@ -1,6 +1,30 @@
 # Controller metadata storage v2
 
 Schema v2 extends quorum entry payloads; the storage record-batch format is unchanged.
+
+Broker roots use a separate 50-byte identity (`0x42494432`, schema i16=2, total
+length i32, cluster UUID, brokerId i32, storage UUID, CRC32C), and `.broker.lock`
+held until all ordered I/O drains. Format publishes this identity last, after
+`observer/`, `partitions/` and the inventory INIT frame are forced. Opening a root
+never creates missing components.
+
+The observer has its own 30-byte `observer-identity.bin` (`0x4f494432`, schema 2,
+length 30, cluster UUID, CRC32C), generation directories and `observer-state.journal`.
+The journal uses StateJournal framing without HARD_STATE records. GENERATION retains
+the existing 25/57-byte payload; observer COMMIT payload is the exclusive end i64,
+and SNAPSHOT_SET bytes are unchanged. No vote or controller epoch is persisted there.
+`membership.bin` pins the independently verified 32-byte voter hash with a CRC32C
+trailer before snapshot acceptance. Its hash and cluster ID validate snapshot headers
+without constructing a voter identity. SnapshotJournal borrows journal ownership;
+the broker and controller continue to own their separate journals and root locks.
+
+Observer receive validates the entire contiguous committed prefix before writing,
+then appends/flushes, forces its actual received-end checkpoint, and publishes the
+image. An empty fetch does not checkpoint remote coverage beyond received data.
+Restart applies only the checkpoint and discards an unapplied received tail. Install
+forces the immutable snapshot and empty replacement log before publishing GENERATION;
+cancellation before that frame leaves the old log usable. Cleanup follows publication
+and old-log close, preserves referenced/pinned snapshots, and ignores unrelated paths.
 Controller `identity.bin` uses explicit format 2, retains the magic `0x51494431`,
 and stores metadata.version i16=2 after the local node ID and before canonical voters.
 The length and CRC32C cover the entire identity. Format 1 retains its original bytes

@@ -6,7 +6,6 @@ import java.nio.ByteBuffer;
 import java.nio.channels.*;
 import java.nio.file.*;
 import java.util.*;
-import vn.huyqt.logbroker.controller.log.QuorumLog;
 import vn.huyqt.logbroker.controller.persistence.*;
 import vn.huyqt.logbroker.storage.LogConfig;
 
@@ -34,7 +33,7 @@ public final class BrokerIdentityStore implements AutoCloseable {
         Files.createDirectories(root); files.verifySupport(root);
         files.writeNew(root.resolve(".broker.lock"),new byte[0]);
         Files.createDirectory(root.resolve("partitions")); files.syncDirectory(root.resolve("partitions"));
-        initializeObserver(root.resolve("observer"),clusterId,files);
+        ObserverStore.format(root.resolve("observer"),clusterId,files,LogConfig.defaults());
         // INIT framing is shared with the inventory reader/provisioning implementation (Task 11).
         byte[] init=new byte[39]; var out=ByteBuffer.wrap(init);
         out.putInt(0x50494e32).putShort((short)2).putInt(init.length).putLong(1).put((byte)0);
@@ -44,22 +43,6 @@ public final class BrokerIdentityStore implements AutoCloseable {
         files.writeNew(root.resolve("broker-identity.bin"),encode(identity)); files.syncDirectory(root);
         if (root.toAbsolutePath().getParent()!=null) files.syncDirectory(root.toAbsolutePath().getParent());
         return identity;
-    }
-    // Extracted into ObserverStore.format in Task 8, before cluster runtime composition.
-    private static void initializeObserver(Path root,UUID cluster,DurableFiles files) throws IOException {
-        UUID generation=UUID.randomUUID(); var logPath=root.resolve("generations").resolve(generation.toString()).resolve("log");
-        Files.createDirectories(logPath);
-        try (var log=QuorumLog.open(logPath,LogConfig.defaults(),0,0,true,files)) { log.flush(); }
-        files.syncDirectory(logPath); files.syncDirectory(logPath.getParent()); files.syncDirectory(root.resolve("generations"));
-        Files.createDirectory(root.resolve("snapshots")); files.syncDirectory(root.resolve("snapshots")); files.syncDirectory(root);
-        try (var journal=StateJournal.open(root.resolve("observer-state.journal"),files)) {
-            journal.append(StateJournal.GENERATION,ByteBuffer.allocate(25).putLong(generation.getMostSignificantBits())
-                .putLong(generation.getLeastSignificantBits()).putLong(0).put((byte)0).array());
-            journal.append(StateJournal.COMMIT,ByteBuffer.allocate(8).putLong(0).array());
-        }
-        byte[] bytes=new byte[30]; var out=ByteBuffer.wrap(bytes);
-        out.putInt(0x4f494432).putShort((short)2).putInt(bytes.length).putLong(cluster.getMostSignificantBits()).putLong(cluster.getLeastSignificantBits());
-        out.putInt(StateJournal.crc(bytes,0,bytes.length-4)); files.writeNew(root.resolve("observer-identity.bin"),bytes); files.syncDirectory(root);
     }
     /** Opens existing formatted identity only; never creates missing roots or journal components. */
     public static BrokerIdentityStore open(Path root,UUID clusterId,int brokerId,DurableFiles files) throws IOException {
