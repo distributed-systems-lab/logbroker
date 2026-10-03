@@ -7,6 +7,7 @@ import java.nio.ByteBuffer;
 import java.util.*;
 import vn.huyqt.logbroker.broker.*;
 import vn.huyqt.logbroker.controller.ControllerConfig;
+import vn.huyqt.logbroker.controller.protocol.BrokerControlProtocol;
 
 /**
  * Fixed envelope staging selects the reserved control pool before allocating a frame body.
@@ -26,7 +27,7 @@ public final class QuorumFrameDecoder extends ChannelInboundHandlerAdapter {
   private final ControllerConfig config;
   private final ResourceBudget control, shared;
   private final DeadlineScheduler clock;
-  private final byte[] header = new byte[69];
+  private final byte[] header = new byte[70];
   private int headerCount, count, total;
   private byte[] bytes;
   private ResourceBudget.Lease lease;
@@ -70,7 +71,7 @@ public final class QuorumFrameDecoder extends ChannelInboundHandlerAdapter {
             if (deadline != null) deadline.cancel();
             deadline = clock.schedule(clock.nanoTime() + 30_000_000_000L, context::close);
           }
-          int wanted = headerCount < 4 ? 4 : 69;
+          int wanted = headerCount < 4 ? 4 : headerCount < 8 ? 8 : headerBytes();
           int copy = Math.min(wanted - headerCount, input.readableBytes());
           input.readBytes(header, headerCount, copy);
           headerCount += copy;
@@ -85,7 +86,15 @@ public final class QuorumFrameDecoder extends ChannelInboundHandlerAdapter {
             if (!input.isReadable()) return;
             continue;
           }
-          if (headerCount < 69) return;
+          if (headerCount == 8) {
+            short version = ByteBuffer.wrap(header).getShort(6);
+            if (version != 1 && version != 2 || total < headerBytes() + 4) {
+              context.close(); return;
+            }
+            if (!input.isReadable()) return;
+            continue;
+          }
+          if (headerCount < headerBytes()) return;
           if (!validHeader()) {
             context.close();
             return;
@@ -97,8 +106,8 @@ public final class QuorumFrameDecoder extends ChannelInboundHandlerAdapter {
             return;
           }
           bytes = new byte[total];
-          System.arraycopy(header, 0, bytes, 0, 69);
-          count = 69;
+          System.arraycopy(header, 0, bytes, 0, headerBytes());
+          count = headerBytes();
         }
         int copy = Math.min(bytes.length - count, input.readableBytes());
         input.readBytes(bytes, count, copy);
@@ -130,6 +139,23 @@ public final class QuorumFrameDecoder extends ChannelInboundHandlerAdapter {
     int op = in.getShort(), version = in.getShort(), direction = in.get();
     UUID cluster = new UUID(in.getLong(), in.getLong());
     int sender = in.getInt();
+    if (version == 2) {
+      int role = in.get() & 255;
+      if (role > 2 || direction < 0 || direction > 1) return false;
+      var senderRole = BrokerControlProtocol.SenderRole.values()[role];
+      long request = in.getLong();
+      byte[] hash = new byte[32]; in.get(hash);
+      if (request < 0 || !cluster.equals(config.identity().clusterId())
+          || !BrokerControlProtocol.allowed((short) version, senderRole, (short) op, direction == 1)) return false;
+      if (senderRole == BrokerControlProtocol.SenderRole.VOTER) {
+        if (config.identity().voters().stream().noneMatch(v -> v.id() == sender)
+            || !Arrays.equals(hash, config.identity().voterHash())) return false;
+      } else if (senderRole == BrokerControlProtocol.SenderRole.ADMIN ? sender != -1 : sender < 0) return false;
+      else if (!Arrays.equals(hash, new byte[32])) return false;
+      peerControl = senderRole == BrokerControlProtocol.SenderRole.VOTER
+          && op <= 106 && op != 105 && total <= 64 * 1024;
+      return true;
+    }
     long request = in.getLong();
     byte[] hash = new byte[32];
     in.get(hash);
@@ -148,6 +174,8 @@ public final class QuorumFrameDecoder extends ChannelInboundHandlerAdapter {
     peerControl = sender >= 0 && op <= 106 && op != 105 && total <= 64 * 1024;
     return true;
   }
+
+  private int headerBytes() { return ByteBuffer.wrap(header).getShort(6) == 2 ? 70 : 69; }
 
   private void release() {
     if (lease != null) lease.close();

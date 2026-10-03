@@ -9,6 +9,8 @@ import java.util.*;
 import vn.huyqt.logbroker.broker.metadata.*;
 import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
 import vn.huyqt.logbroker.controller.ControllerConfig;
+import vn.huyqt.logbroker.controller.ClusterIdentity;
+import vn.huyqt.logbroker.controller.metadata.*;
 import vn.huyqt.logbroker.controller.consensus.QuorumStatus;
 import vn.huyqt.logbroker.controller.log.*;
 import vn.huyqt.logbroker.controller.persistence.StateJournal;
@@ -29,7 +31,7 @@ public final class QuorumCodec {
   /** Exact v1 wire size without materializing batch/chunk payloads. */
   public static long encodedSize(Frame frame) {
     // 4-byte length prefix plus the 69-byte minimum frame: 65-byte envelope and 4-byte CRC.
-    long bytes = 73;
+    long bytes = frame.version() == 2 ? 74 : 73;
     var message = frame.message();
     if (message instanceof Reply reply) {
       bytes += 18 + utf8(reply.meta().message());
@@ -46,6 +48,19 @@ public final class QuorumCodec {
           case ReadLocalMetadata ignored -> 0L;
           case CreateTopic create -> 12L + utf8(create.name());
           case ReadMetadata ignored -> 4L;
+          case BrokerControlProtocol.Register r -> 60L + utf8(r.endpoint().host());
+          case BrokerControlProtocol.Heartbeat ignored -> 81L;
+          case BrokerControlProtocol.ObserverFetch ignored -> 76L;
+          case BrokerControlProtocol.ObserverSnapshot ignored -> 96L;
+          case BrokerControlProtocol.CreateTopic r -> 14L + utf8(r.name());
+          case BrokerControlProtocol.RegisterReply ignored -> 60L;
+          case BrokerControlProtocol.HeartbeatReply ignored -> 41L;
+          case BrokerControlProtocol.ObserverFetchReply r -> 8L + fetchSize(r.payload());
+          case BrokerControlProtocol.ObserverSnapshotReply r -> 56L + r.chunkLength();
+          case BrokerControlProtocol.CreateTopicReply ignored -> 24L;
+          case BrokerControlProtocol.DescribeReply r -> 118L + 12L * r.status().durableMatches().size()
+              + utf8(r.status().failure()) + r.voters().stream().mapToLong(v -> 12L + utf8(v.host())).sum();
+          case BrokerControlProtocol.MetadataReply r -> 17L + MetadataImageCodec.encodedSize(r.image());
           case VoteReply ignored -> 1L;
           case EpochReply ignored -> 0L;
           case Failure ignored -> 0L;
@@ -80,6 +95,15 @@ public final class QuorumCodec {
         };
   }
 
+  private static long fetchSize(FetchPayload payload) {
+    return switch (payload) {
+      case Divergence ignored -> 17;
+      case SnapshotRequired ignored -> 33;
+      case FetchData data -> 5L + data.batches().stream().mapToLong(batch ->
+          16L + batch.entries().stream().mapToLong(e -> 4L + QuorumEntryCodec.encodedSize(e)).sum()).sum();
+    };
+  }
+
   /**
    * Conservative outbound memory charge for {@code frame}: eight times its encoded size plus 64
    * bytes per batch, entry or topic. See {@code docs/controller-configuration.md} for how the
@@ -94,6 +118,11 @@ public final class QuorumCodec {
       for (var batch : data.batches()) elements += 1L + batch.entries().size();
     else if (frame.message() instanceof MetadataReply reply)
       elements = reply.view().topics().size();
+    else if (frame.message() instanceof BrokerControlProtocol.ObserverFetchReply reply
+        && reply.payload() instanceof FetchData data)
+      for (var batch : data.batches()) elements += 1L + batch.entries().size();
+    else if (frame.message() instanceof BrokerControlProtocol.MetadataReply reply)
+      elements = (long) reply.image().brokers().size() + reply.image().topics().size() + reply.image().partitions().size();
     return Math.addExact(
         Math.multiplyExact(8, encodedSize(frame)), Math.multiplyExact(64, elements));
   }
@@ -111,10 +140,11 @@ public final class QuorumCodec {
       var bytes = new ByteArrayOutputStream();
       var out = new DataOutputStream(bytes);
       out.writeShort(frame.operation());
-      out.writeShort(1);
+      out.writeShort(frame.version());
       out.writeByte(frame.response() ? 1 : 0);
       uuid(out, frame.clusterId());
       out.writeInt(frame.senderId());
+      if (frame.version() == 2) out.writeByte(frame.senderRole().ordinal());
       out.writeLong(frame.requestId());
       out.write(frame.voterHash());
       writeBody(out, frame.message());
@@ -169,6 +199,54 @@ public final class QuorumCodec {
         out.writeInt(r.timeoutMs());
       }
       case ReadMetadata r -> out.writeInt(r.timeoutMs());
+      case BrokerControlProtocol.Register r -> {
+        out.writeInt(r.brokerId()); uuid(out, r.storageId()); uuid(out, r.incarnationId());
+        out.writeLong(r.expectedBrokerEpoch()); string(out, r.endpoint().host());
+        out.writeInt(r.endpoint().port()); out.writeShort(r.minVersion()); out.writeShort(r.maxVersion());
+        out.writeInt(r.timeoutMs());
+      }
+      case BrokerControlProtocol.Heartbeat r -> {
+        session(out, r.session()); out.writeLong(r.sequence()); out.writeLong(r.appliedOffset());
+        uuid(out, r.recoveryId()); out.writeBoolean(r.recoveryComplete()); out.writeInt(r.timeoutMs());
+      }
+      case BrokerControlProtocol.ObserverFetch r -> {
+        session(out, r.session()); out.writeLong(r.controllerEpoch()); out.writeLong(r.nextOffset());
+        out.writeLong(r.prefixEpoch()); out.writeInt(r.maxBytes()); out.writeInt(r.maxWaitMs());
+      }
+      case BrokerControlProtocol.ObserverSnapshot r -> {
+        session(out, r.session()); out.writeLong(r.controllerEpoch()); snapshot(out, r.id());
+        out.writeLong(r.position()); out.writeInt(r.maxBytes());
+      }
+      case BrokerControlProtocol.CreateTopic r -> {
+        string(out, r.name()); out.writeInt(r.partitions()); out.writeShort(r.replicationFactor()); out.writeInt(r.timeoutMs());
+      }
+      case BrokerControlProtocol.RegisterReply r -> {
+        session(out, r.session()); out.writeLong(r.registrationOffset()); out.writeLong(r.requiredMetadataOffset());
+      }
+      case BrokerControlProtocol.HeartbeatReply r -> {
+        out.writeByte(r.status().ordinal()); out.writeLong(r.brokerEpoch()); out.writeLong(r.stateOffset());
+        out.writeLong(r.requiredMetadataOffset()); uuid(out, r.recoveryId());
+      }
+      case BrokerControlProtocol.ObserverFetchReply r -> {
+        out.writeLong(r.commitOffset()); fetchPayload(out, r.payload());
+      }
+      case BrokerControlProtocol.ObserverSnapshotReply r -> {
+        snapshot(out, r.id()); out.writeLong(r.position()); out.writeLong(r.totalLength());
+        var chunk = r.chunk(); blob(out, chunk); out.writeInt(StateJournal.crc(chunk, 0, chunk.length));
+      }
+      case BrokerControlProtocol.CreateTopicReply r -> { uuid(out, r.topicId()); out.writeLong(r.commitOffset()); }
+      case BrokerControlProtocol.DescribeReply r -> {
+        writeStatus(out, r.status()); out.writeInt(r.voters().size());
+        for (var voter : r.voters()) {
+          out.writeInt(voter.id()); string(out, voter.host()); out.writeInt(voter.port());
+        }
+        out.write(r.voterHash());
+      }
+      case BrokerControlProtocol.MetadataReply r -> {
+        out.writeByte(r.consistency().ordinal()); out.writeInt(r.nodeId()); out.writeLong(r.commitOffset());
+        blob(out, MetadataImageCodec.encodeV2(r.image(), new MetadataLimits(Math.max(1, r.image().brokers().size()),
+            Math.max(1, r.image().topics().size()), Math.max(1, r.image().partitions().size()), 64 * 1024 * 1024)));
+      }
       case VoteReply r -> out.writeBoolean(r.granted());
       case EpochReply ignored -> {}
       case QuorumFetchReply r -> {
@@ -200,26 +278,7 @@ public final class QuorumCodec {
         out.writeInt(StateJournal.crc(chunk, 0, chunk.length));
       }
       case DescribeQuorumReply r -> {
-        var s = r.status();
-        out.writeInt(s.nodeId());
-        // Role is encoded by ordinal, so QuorumStatus.Role order is part of the wire format.
-        out.writeByte(s.role().ordinal());
-        out.writeLong(s.epoch());
-        out.writeInt(s.leaderId());
-        uuid(out, s.generation());
-        out.writeLong(s.logEnd());
-        out.writeLong(s.durableEnd());
-        out.writeLong(s.commit());
-        out.writeLong(s.applied());
-        out.writeLong(s.snapshotEnd());
-        out.writeBoolean(s.ready());
-        out.writeInt(s.durableMatches().size());
-        // Sorted by voter ID so equal statuses encode to identical bytes.
-        for (var e : new TreeMap<>(s.durableMatches()).entrySet()) {
-          out.writeInt(e.getKey());
-          out.writeLong(e.getValue());
-        }
-        string(out, s.failure());
+        writeStatus(out, r.status());
       }
       case CreateTopicReply r -> uuid(out, r.topicId());
       case MetadataReply r -> {
@@ -235,6 +294,28 @@ public final class QuorumCodec {
       }
       case Failure ignored -> {}
     }
+  }
+
+  private static void session(DataOutputStream out, ClusterRecords.Session s) throws IOException {
+    out.writeInt(s.brokerId()); uuid(out, s.storageId()); uuid(out, s.incarnationId()); out.writeLong(s.brokerEpoch());
+  }
+  private static void fetchPayload(DataOutputStream out, FetchPayload payload) throws IOException {
+    switch (payload) {
+      case FetchData data -> {
+        out.writeByte(0); out.writeInt(data.batches().size());
+        for (var batch : data.batches()) writeBatch(out, batch);
+      }
+      case SnapshotRequired r -> { out.writeByte(2); snapshot(out, r.id()); }
+      case Divergence ignored -> throw new IllegalArgumentException("Observer cannot truncate");
+    }
+  }
+  private static void writeStatus(DataOutputStream out, QuorumStatus s) throws IOException {
+    out.writeInt(s.nodeId()); out.writeByte(s.role().ordinal()); out.writeLong(s.epoch());
+    out.writeInt(s.leaderId()); uuid(out, s.generation()); out.writeLong(s.logEnd());
+    out.writeLong(s.durableEnd()); out.writeLong(s.commit()); out.writeLong(s.applied());
+    out.writeLong(s.snapshotEnd()); out.writeBoolean(s.ready()); out.writeInt(s.durableMatches().size());
+    for (var e : new TreeMap<>(s.durableMatches()).entrySet()) { out.writeInt(e.getKey()); out.writeLong(e.getValue()); }
+    string(out, s.failure());
   }
 
   private static void writeBatch(DataOutputStream out, QuorumBatch batch) throws IOException {
@@ -301,6 +382,7 @@ public final class QuorumCodec {
     private final ControllerConfig config;
     private final boolean materialize;
     private long elements;
+    private short version;
 
     Reader(byte[] bytes, ControllerConfig config, boolean materialize) throws IOException {
       if (bytes == null || bytes.length < 73 || bytes.length > config.maxFrameBytes() + 4)
@@ -315,11 +397,18 @@ public final class QuorumCodec {
       try {
         if (in.getInt() != bytes.length - 4) throw new IOException("Frame length mismatch");
         short op = in.getShort();
-        if (op < 101 || op > 109) throw new IOException("Unsupported operation");
-        if (in.getShort() != 1) throw new IOException("Unsupported quorum version");
+        version = in.getShort();
+        if (version != 1 && version != 2) throw new IOException("Unsupported quorum version");
+        if (op < 101 || op > (version == 2 ? 113 : 109)) throw new IOException("Unsupported operation");
         boolean reply = bool();
         UUID cluster = uuid();
         int sender = in.getInt();
+        var role = sender == -1 ? BrokerControlProtocol.SenderRole.ADMIN : BrokerControlProtocol.SenderRole.VOTER;
+        if (version == 2) {
+          int value = in.get() & 255;
+          if (value > 2) throw new IOException("Unknown sender role");
+          role = BrokerControlProtocol.SenderRole.values()[value];
+        }
         long request = in.getLong();
         byte[] hash = new byte[32];
         in.get(hash);
@@ -330,7 +419,7 @@ public final class QuorumCodec {
         in.limit(bytes.length - 4);
         Message body = body(op, reply);
         if (in.hasRemaining()) throw new IOException("Trailing quorum bytes");
-        return new Frame(op, reply, cluster, sender, request, hash, body);
+        return new Frame(version, role, op, reply, cluster, sender, request, hash, body);
       } catch (BufferUnderflowException | IllegalArgumentException | ArithmeticException e) {
         throw new IOException("Invalid quorum payload", e);
       }
@@ -354,13 +443,30 @@ public final class QuorumCodec {
               new FetchSnapshot(
                   nonnegative(), snapshot(), nonnegative(), positive(config.snapshotChunkBytes()));
           case 106 -> new DescribeQuorum();
-          case 107 ->
-              new CreateTopic(
-                  string(249),
-                  positive(config.maxPartitions()),
-                  positive((int) config.adminTimeout().toMillis()));
+          case 107 -> {
+            String name = string(249);
+            int partitions = positive(config.maxPartitions());
+            if (version == 1) yield new CreateTopic(name, partitions, timeout());
+            short rf = in.getShort();
+            if (rf != 1) throw new IOException("Unsupported replication factor");
+            yield new BrokerControlProtocol.CreateTopic(name, partitions, rf, timeout());
+          }
           case 108 -> new ReadMetadata(positive((int) config.adminTimeout().toMillis()));
           case 109 -> new ReadLocalMetadata();
+          case 110 -> {
+            int broker = range(0, Integer.MAX_VALUE);
+            UUID storage = uuid(), incarnation = uuid();
+            long expected = in.getLong();
+            if (expected < -1) throw new IOException("Invalid registration CAS");
+            var endpoint = new ClusterRecords.Endpoint(string(255), positive(65535));
+            short min = in.getShort(), max = in.getShort();
+            new ClusterRecords.BrokerRegistration(new ClusterRecords.Session(broker, storage, incarnation, 0), endpoint, min, max);
+            yield new BrokerControlProtocol.Register(broker, storage, incarnation, expected, endpoint, min, max, timeout());
+          }
+          case 111 -> new BrokerControlProtocol.Heartbeat(session(), nonnegative(), nonnegative(), uuid(), bool(), timeout());
+          case 112 -> new BrokerControlProtocol.ObserverFetch(session(), nonnegative(), nonnegative(), nonnegative(),
+              positive(config.fetchMaxBytes()), range(0, (int) config.fetchIdleWait().toMillis()));
+          case 113 -> new BrokerControlProtocol.ObserverSnapshot(session(), nonnegative(), snapshot(), nonnegative(), positive(config.snapshotChunkBytes()));
           default -> throw new IOException("Unknown operation");
         };
       var meta =
@@ -396,9 +502,73 @@ public final class QuorumCodec {
             throw new IOException("Snapshot chunk checksum mismatch");
           yield new FetchSnapshotReply(meta, id, position, total, chunk);
         }
-        case 106 -> new DescribeQuorumReply(meta, status());
-        case 107 -> new CreateTopicReply(meta, uuid());
-        case 108, 109 -> new MetadataReply(meta, view());
+        case 106 -> {
+          var status = status();
+          if (version == 1) yield new DescribeQuorumReply(meta, status);
+          int count = count(3, 13);
+          if (count != 3) throw new IOException("Fixed quorum requires three voters");
+          var voters = new ArrayList<ClusterIdentity.Voter>();
+          for (int i = 0; i < count; i++) voters.add(new ClusterIdentity.Voter(range(0, Integer.MAX_VALUE), string(255), positive(65535)));
+          byte[] hash = new byte[32]; in.get(hash);
+          var identity = new ClusterIdentity(new UUID(0, 1), voters.getFirst().id(), voters);
+          if (!Arrays.equals(hash, identity.voterHash())) throw new IOException("Noncanonical voter hash");
+          yield new BrokerControlProtocol.DescribeReply(meta, status, voters, hash);
+        }
+        case 107 -> version == 1 ? new CreateTopicReply(meta, uuid())
+            : new BrokerControlProtocol.CreateTopicReply(meta, uuid(), nonnegative());
+        case 108, 109 -> {
+          if (version == 1) yield new MetadataReply(meta, view());
+          int consistency = in.get() & 255;
+          if (consistency > 1) throw new IOException("Invalid read consistency");
+          int node = in.getInt();
+          long commit = nonnegative();
+          int n = length(28, config.metadataLimits().maxImageBytes());
+          var slice = in.slice(); slice.limit(n);
+          elements += MetadataImageCodec.preflightV2(slice, config.metadataLimits());
+          byte[] imageBytes = take(n);
+          var image = materialize ? MetadataImageCodec.decodeV2(imageBytes, config.metadataLimits()) : MetadataImage.empty((short) 2);
+          if (image.appliedOffset() > commit) throw new IOException("Applied offset exceeds commit");
+          yield new BrokerControlProtocol.MetadataReply(meta, Consistency.values()[consistency], node, commit, image);
+        }
+        case 110 -> {
+          var session = session();
+          long revision = nonnegative(), target = nonnegative();
+          if (revision != session.brokerEpoch() || target < revision) throw new IOException("Invalid registration offsets");
+          yield new BrokerControlProtocol.RegisterReply(meta, session, revision, target);
+        }
+        case 111 -> {
+          int status = in.get() & 255;
+          if (status > 3) throw new IOException("Invalid session status");
+          yield new BrokerControlProtocol.HeartbeatReply(meta, BrokerControlProtocol.SessionStatus.values()[status],
+              nonnegative(), nonnegative(), nonnegative(), uuid());
+        }
+        case 112 -> {
+          long commit = nonnegative();
+          int kind = in.get() & 255;
+          FetchPayload payload;
+          if (kind == 0) {
+            var batches = batches();
+            if (materialize && !batches.isEmpty() && batches.getLast().nextOffset() > commit)
+              throw new IOException("Uncommitted observer data");
+            payload = new FetchData(batches);
+          } else if (kind == 2) {
+            var id = snapshot();
+            if (id.endOffset() > commit) throw new IOException("Uncommitted observer snapshot");
+            payload = new SnapshotRequired(id);
+          } else throw new IOException("Observer cannot truncate history");
+          yield new BrokerControlProtocol.ObserverFetchReply(meta, commit, payload);
+        }
+        case 113 -> {
+          var id = snapshot();
+          long position = nonnegative(), total = nonnegative();
+          if (total > config.snapshotMaxBytes() || position > total) throw new IOException("Invalid snapshot size");
+          int n = length(0, config.snapshotChunkBytes());
+          if (n > total - position) throw new IOException("Chunk exceeds snapshot");
+          int start = in.position();
+          byte[] chunk = take(n);
+          if (in.getInt() != StateJournal.crc(bytes, start, n)) throw new IOException("Invalid chunk CRC");
+          yield new BrokerControlProtocol.ObserverSnapshotReply(meta, id, position, total, chunk);
+        }
         default -> throw new IOException("Invalid reply op");
       };
     }
@@ -420,7 +590,7 @@ public final class QuorumCodec {
           int n = length(11, config.logConfig().maxBatchBytes());
           storageBytes = Math.addExact(storageBytes, 20L + n);
           byte[] entry = take(n);
-          if (materialize) entries.add(QuorumEntryCodec.decode(entry));
+          if (materialize) entries.add(QuorumEntryCodec.decode(entry, config.metadataLimits()));
         }
         int end = in.position();
         int crc = in.getInt();
@@ -438,6 +608,11 @@ public final class QuorumCodec {
           if (batches.get(i).baseOffset() != batches.get(i - 1).nextOffset())
             throw new IOException("Fetch batch gap");
       return List.copyOf(batches);
+    }
+
+    private int timeout() throws IOException { return positive((int) config.adminTimeout().toMillis()); }
+    private ClusterRecords.Session session() throws IOException {
+      return new ClusterRecords.Session(range(0, Integer.MAX_VALUE), uuid(), uuid(), nonnegative());
     }
 
     private QuorumStatus status() throws IOException {

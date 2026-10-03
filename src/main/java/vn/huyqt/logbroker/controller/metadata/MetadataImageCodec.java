@@ -144,6 +144,56 @@ public final class MetadataImageCodec {
     if (count < 0 || count > max || count > in.available() / minBytes) throw new IOException("Invalid image count");
     return count;
   }
+
+  /** Structural preflight without materializing images; returns array elements for memory charging. */
+  public static long preflightV2(ByteBuffer source, MetadataLimits limits) throws IOException {
+    var in = source.slice();
+    if (in.remaining() < 28 || in.remaining() > limits.maxImageBytes()) throw new IOException("Invalid image size");
+    try {
+      if (in.getInt() != 0x4d494d32 || in.getShort() != 2) throw new IOException("Invalid image schema");
+      int feature = in.getShort();
+      if (feature != 0 && feature != 2 || in.getLong() < 0) throw new IOException("Invalid feature or offset");
+      int brokers = checkedCount(in, limits.maxBrokers(), 66);
+      for (int i = 0; i < brokers; i++) {
+        skip(in, 44); checkedString(in, 255); skip(in, 8);
+        if ((in.get() & 255) > 1) throw new IOException("Invalid fence boolean");
+        skip(in, 8);
+      }
+      int topics = checkedCount(in, limits.maxTopics(), 25);
+      long total = 0;
+      for (int i = 0; i < topics; i++) {
+        skip(in, 16); checkedString(in, 249);
+        int partitions = in.getInt();
+        if (partitions < 1 || (total += partitions) > limits.maxPartitions()) throw new IOException("Invalid partition total");
+      }
+      int partitions = checkedCount(in, limits.maxPartitions(), 48);
+      for (int i = 0; i < partitions; i++) {
+        skip(in, 20);
+        if (in.getInt() != 1) throw new IOException("Invalid replica count");
+        skip(in, 24);
+      }
+      if (in.hasRemaining() || feature == 0 && brokers + topics + partitions != 0)
+        throw new IOException("Trailing or uninitialized image");
+      return (long) brokers + topics + partitions;
+    } catch (java.nio.BufferUnderflowException e) { throw new IOException("Truncated image", e); }
+  }
+  private static int checkedCount(ByteBuffer in, int max, int min) throws IOException {
+    int n = in.getInt();
+    if (n < 0 || n > max || n > in.remaining() / min) throw new IOException("Invalid count");
+    return n;
+  }
+  private static void skip(ByteBuffer in, int n) throws IOException {
+    if (n > in.remaining()) throw new IOException("Truncated image");
+    in.position(in.position() + n);
+  }
+  private static void checkedString(ByteBuffer in, int max) throws IOException {
+    int n = in.getInt();
+    if (n < 1 || n > max || n > in.remaining()) throw new IOException("Invalid string length");
+    var slice = in.slice(); slice.limit(n);
+    StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+        .onUnmappableCharacter(CodingErrorAction.REPORT).decode(slice);
+    skip(in, n);
+  }
   private static void uuid(DataOutputStream out, UUID id) throws IOException {
     out.writeLong(id.getMostSignificantBits()); out.writeLong(id.getLeastSignificantBits());
   }

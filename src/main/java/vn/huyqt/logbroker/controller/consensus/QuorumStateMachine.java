@@ -1187,6 +1187,7 @@ public final class QuorumStateMachine {
         new QuorumEffect.Reply(
             request.route(),
             new Frame(
+                request.frame().version(), BrokerControlProtocol.SenderRole.VOTER,
                 request.frame().operation(),
                 true,
                 config.identity().clusterId(),

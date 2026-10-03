@@ -243,7 +243,7 @@ public final class ControllerNode implements AutoCloseable {
   private void receive(QuorumTransport.Inbound inbound) {
     var frame = inbound.frame();
     var priority =
-        frame.senderId() == -1
+        frame.senderRole() != BrokerControlProtocol.SenderRole.VOTER || frame.operation() >= 106
             ? ControllerLoop.Priority.ADMIN
             : frame.operation() == 105
                 ? ControllerLoop.Priority.SNAPSHOT
@@ -327,7 +327,7 @@ public final class ControllerNode implements AutoCloseable {
     var frame = inbound.frame();
     // Network admin requests go through the service so they share its pending bound. The inbound
     // reference is held until the reply write finishes.
-    if (frame.senderId() == -1) {
+    if (frame.senderRole() != BrokerControlProtocol.SenderRole.VOTER || frame.operation() >= 106) {
       adminSources.put(inbound.route(), inbound);
       int timeout =
           frame.message() instanceof CreateTopic c
@@ -352,8 +352,17 @@ public final class ControllerNode implements AutoCloseable {
                                   core.status().epoch(),
                                   core.status().leaderId()));
                 }
+                if (frame.version() == 2 && response instanceof DescribeQuorumReply described) {
+                  response = new BrokerControlProtocol.DescribeReply(described.meta(), described.status(),
+                      config.identity().voters(), config.identity().voterHash());
+                } else if (frame.version() == 2 && response instanceof MetadataReply) {
+                  // Full cluster reads are enabled by the v2 formatted controller composition.
+                  response = new Failure(new ReplyMeta(QuorumError.UNSUPPORTED_VERSION,
+                      "Controller metadata root is v1", core.status().epoch(), core.status().leaderId()));
+                }
                 var result =
                     new Frame(
+                        frame.version(), BrokerControlProtocol.SenderRole.VOTER,
                         frame.operation(),
                         true,
                         config.identity().clusterId(),

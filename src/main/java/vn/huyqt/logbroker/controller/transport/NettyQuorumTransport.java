@@ -276,6 +276,17 @@ public final class NettyQuorumTransport implements QuorumTransport {
     return peer && frame.operation() != 105 && frame.operation() <= 106 && length <= 64 * 1024;
   }
 
+  private static vn.huyqt.logbroker.controller.metadata.ClusterRecords.Session brokerSession(Message message) {
+    return switch (message) {
+      case BrokerControlProtocol.Register r -> new vn.huyqt.logbroker.controller.metadata.ClusterRecords.Session(
+          r.brokerId(), r.storageId(), r.incarnationId(), 0);
+      case BrokerControlProtocol.Heartbeat r -> r.session();
+      case BrokerControlProtocol.ObserverFetch r -> r.session();
+      case BrokerControlProtocol.ObserverSnapshot r -> r.session();
+      default -> null;
+    };
+  }
+
   // At the connection cap, evict the oldest connection not classified as a peer (unidentified or
   // admin); classified peer connections are never evicted. See docs/controller-configuration.md.
   private synchronized ResourceBudget.Lease admitConnection() {
@@ -283,7 +294,7 @@ public final class NettyQuorumTransport implements QuorumTransport {
     if (lease != null) return lease;
     var victim =
         routes.values().stream()
-            .filter(c -> c.peer < 0 && !c.evicted)
+            .filter(c -> c.role != BrokerControlProtocol.SenderRole.VOTER && !c.evicted)
             .min(Comparator.comparingLong(c -> c.id))
             .orElse(null);
     if (victim == null) return null;
@@ -305,6 +316,9 @@ public final class NettyQuorumTransport implements QuorumTransport {
     private final int expectedPeer;
     // -2 until an accepted connection identifies itself; -1 for admin, otherwise a voter ID.
     private volatile int peer = -2;
+    private volatile BrokerControlProtocol.SenderRole role;
+    private short version;
+    private UUID brokerIncarnation;
     private volatile boolean evicted;
     private ChannelHandlerContext context;
     private ResourceBudget.Lease connectionLease, peerLease;
@@ -318,11 +332,11 @@ public final class NettyQuorumTransport implements QuorumTransport {
     private boolean decoding;
     private final CompletableFuture<Channel> activated = new CompletableFuture<>();
 
-    private record Rpc(short operation, DeadlineScheduler.Ticket timeout) {}
+    private record Rpc(short operation, short version, DeadlineScheduler.Ticket timeout) {}
 
     Connection(int expectedPeer) {
       this.expectedPeer = expectedPeer;
-      if (expectedPeer >= 0) peer = expectedPeer;
+      if (expectedPeer >= 0) { peer = expectedPeer; role = BrokerControlProtocol.SenderRole.VOTER; }
     }
 
     @Override
@@ -402,24 +416,26 @@ public final class NettyQuorumTransport implements QuorumTransport {
         synchronized (this) {
           if (!context.channel().isActive() || evicted || closed) return;
           if (expectedPeer >= 0) {
-            if (!frame.response() || frame.senderId() != expectedPeer) {
+            if (!frame.response() || frame.senderId() != expectedPeer
+                || frame.senderRole() != BrokerControlProtocol.SenderRole.VOTER) {
               context.close();
               return;
             }
             var rpc = rpcs.get(frame.requestId());
             // A response with no matching outstanding RPC, such as one arriving after its timeout,
             // is dropped without closing the connection.
-            if (rpc == null || rpc.operation() != frame.operation()) return;
+            if (rpc == null || rpc.operation() != frame.operation() || rpc.version() != frame.version()) return;
             if (rpcs.remove(frame.requestId(), rpc)) {
               rpc.timeout().cancel();
               outgoingSlots.release();
             }
           } else {
-            if (frame.response() || peer != -2 && peer != frame.senderId()) {
+            if (frame.response() || peer != -2 && (peer != frame.senderId()
+                || role != frame.senderRole() || version != frame.version())) {
               context.close();
               return;
             }
-            if (peer == -2 && frame.senderId() >= 0) {
+            if (peer == -2 && frame.senderRole() == BrokerControlProtocol.SenderRole.VOTER) {
               peerLease = peerConnections.reserve(1).orElse(null);
               if (peerLease == null) {
                 context.close();
@@ -427,6 +443,16 @@ public final class NettyQuorumTransport implements QuorumTransport {
               }
             }
             peer = frame.senderId();
+            role = frame.senderRole();
+            version = frame.version();
+            if (role == BrokerControlProtocol.SenderRole.BROKER) {
+              var session = brokerSession(frame.message());
+              if (session != null) {
+                if (session.brokerId() != peer || brokerIncarnation != null
+                    && !brokerIncarnation.equals(session.incarnationId())) { context.close(); return; }
+                brokerIncarnation = session.incarnationId();
+              }
+            }
             if (handshake != null) {
               handshake.cancel();
               handshake = null;
@@ -482,7 +508,7 @@ public final class NettyQuorumTransport implements QuorumTransport {
                 var removed = rpcs.remove(frame.requestId());
                 if (removed != null) outgoingSlots.release();
               });
-      var rpc = new Rpc(frame.operation(), ticket);
+      var rpc = new Rpc(frame.operation(), frame.version(), ticket);
       if (rpcs.putIfAbsent(frame.requestId(), rpc) != null) {
         ticket.cancel();
         outgoingSlots.release();
@@ -521,7 +547,7 @@ public final class NettyQuorumTransport implements QuorumTransport {
       }
       if (size > config.maxFrameBytes() + 4L)
         return CompletableFuture.failedFuture(new IOException("Outbound frame exceeds limit"));
-      boolean isControl = control(frame, (int) size, peer >= 0);
+      boolean isControl = control(frame, (int) size, role == BrokerControlProtocol.SenderRole.VOTER);
       // The lease is taken before queuing for encode and held until the write future completes
       // (or released at once if the frame never reaches Netty), so queued and in-flight outbound
       // bytes are both bounded.

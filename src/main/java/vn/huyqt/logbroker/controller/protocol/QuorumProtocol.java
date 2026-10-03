@@ -33,7 +33,9 @@ public final class QuorumProtocol {
           DescribeQuorum,
           CreateTopic,
           ReadMetadata,
-          ReadLocalMetadata {}
+          ReadLocalMetadata, BrokerControlProtocol.Register, BrokerControlProtocol.Heartbeat,
+          BrokerControlProtocol.ObserverFetch, BrokerControlProtocol.ObserverSnapshot,
+          BrokerControlProtocol.CreateTopic {}
 
   public sealed interface Reply extends Message
       permits VoteReply,
@@ -43,7 +45,10 @@ public final class QuorumProtocol {
           DescribeQuorumReply,
           CreateTopicReply,
           MetadataReply,
-          Failure {
+          Failure, BrokerControlProtocol.RegisterReply, BrokerControlProtocol.HeartbeatReply,
+          BrokerControlProtocol.ObserverFetchReply, BrokerControlProtocol.ObserverSnapshotReply,
+          BrokerControlProtocol.CreateTopicReply, BrokerControlProtocol.DescribeReply,
+          BrokerControlProtocol.MetadataReply {
     /** Error, message, epoch and leader hint; any error other than {@code NONE} ends the body. */
     ReplyMeta meta();
   }
@@ -58,6 +63,8 @@ public final class QuorumProtocol {
    *     sender's membership; always 32 bytes
    */
   public record Frame(
+      short version,
+      BrokerControlProtocol.SenderRole senderRole,
       short operation,
       boolean response,
       UUID clusterId,
@@ -68,9 +75,18 @@ public final class QuorumProtocol {
     public Frame {
       Objects.requireNonNull(clusterId);
       Objects.requireNonNull(message);
+      Objects.requireNonNull(senderRole);
+      if (version != 1 && version != 2) throw new IllegalArgumentException("Unsupported frame schema");
       if (voterHash.length != 32 || requestId < 0 || senderId < -1)
         throw new IllegalArgumentException("Invalid frame identity");
       voterHash = voterHash.clone();
+    }
+
+    /** Legacy envelope; v1 infers voter/admin role from senderId. */
+    public Frame(short operation, boolean response, UUID clusterId, int senderId,
+        long requestId, byte[] voterHash, Message message) {
+      this((short) 1, senderId == -1 ? BrokerControlProtocol.SenderRole.ADMIN : BrokerControlProtocol.SenderRole.VOTER,
+          operation, response, clusterId, senderId, requestId, voterHash, message);
     }
 
     @Override
@@ -256,6 +272,11 @@ public final class QuorumProtocol {
       case CreateTopic ignored -> 107;
       case ReadMetadata ignored -> 108;
       case ReadLocalMetadata ignored -> 109;
+      case BrokerControlProtocol.CreateTopic ignored -> 107;
+      case BrokerControlProtocol.Register ignored -> 110;
+      case BrokerControlProtocol.Heartbeat ignored -> 111;
+      case BrokerControlProtocol.ObserverFetch ignored -> 112;
+      case BrokerControlProtocol.ObserverSnapshot ignored -> 113;
     };
   }
 }
