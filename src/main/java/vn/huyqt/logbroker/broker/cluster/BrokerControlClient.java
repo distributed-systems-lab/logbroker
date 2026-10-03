@@ -169,6 +169,7 @@ public final class BrokerControlClient implements AutoCloseable {
     }
     public synchronized byte[] voterHash() { if(hash==null) throw new IllegalStateException("Membership undiscovered"); return hash.clone(); }
     public synchronized long controllerEpoch() { return epoch; }
+    BrokerClusterConfig settings() { return config; }
     @Override public synchronized void close() {
         if(closed) return; closed=true; clearConnection();
         for(var call:calls) { call.timer.cancel(); marshal(()->call.future.completeExceptionally(exception(call,QuorumError.NODE_UNAVAILABLE,"Control client closed"))); }

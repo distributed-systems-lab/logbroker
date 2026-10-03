@@ -20,6 +20,9 @@ public final class MetadataObserver {
     private final Executor disk;
     private final Consumer<MetadataImage> published;
     private final Consumer<Throwable> fatal;
+    private Consumer<MetadataImage> lifecycleImage = ignored -> {};
+    private Consumer<Throwable> lifecycleFailure = ignored -> {};
+    private boolean attached;
     private volatile long generation;
     private volatile MetadataImage image;
     private Session session;
@@ -91,7 +94,11 @@ public final class MetadataObserver {
             });
         });
     }
-    private void publish() { image=store.image(); published.accept(image); }
+    synchronized void attachLifecycle(Consumer<MetadataImage> image,Consumer<Throwable> failure) {
+        if(running || attached) throw new IllegalStateException("Lifecycle must attach before observer startup");
+        lifecycleImage=Objects.requireNonNull(image); lifecycleFailure=Objects.requireNonNull(failure); attached=true;
+    }
+    private void publish() { image=store.image(); published.accept(image); lifecycleImage.accept(image); }
     private void request(long token,Request request,Consumer<Reply> accepted) {
         if(!current(token)) return;
         if(flight!=null || diskPending) throw new IllegalStateException("Observer pipeline overlap");
@@ -113,8 +120,8 @@ public final class MetadataObserver {
     }
     private void restart(long token) {
         if(!current(token)) return;
-        if(snapshot!=null) submit(token,()->store.snapshots().cancelDownload(),()-> { snapshot=null; later(token,()->discover(token)); });
-        else later(token,()->discover(token));
+        if(snapshot!=null) submit(token,()->store.snapshots().cancelDownload(),()-> { snapshot=null; later(token,()->fetch(token)); });
+        else later(token,()->fetch(token));
     }
     @FunctionalInterface private interface DiskAction { void run() throws Exception; }
     private void submit(long token,DiskAction action,Runnable completion) {
@@ -132,7 +139,7 @@ public final class MetadataObserver {
             }});
         }); } catch(RejectedExecutionException e) { diskPending=false; fail(e); }
     }
-    private void fail(Throwable error) { stop(); fatal.accept(error); }
+    private void fail(Throwable error) { stop(); fatal.accept(error); lifecycleFailure.accept(error); }
     /** Invalidates callbacks immediately; completes only after disk work and download cleanup drain. */
     public synchronized CompletableFuture<Void> stop() {
         if(running) { running=false; ++generation; if(retry!=null) retry.cancel(); if(flight!=null) flight.cancel(false); flight=null; }
