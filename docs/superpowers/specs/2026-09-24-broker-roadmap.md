@@ -60,7 +60,7 @@ Thiết kế chi tiết: [Phase 3 — Metadata quorum](2026-09-28-metadata-quoru
 
 Broker registration, heartbeat, fencing; topic/replica assignment/partition leader metadata; broker áp dụng metadata; client routing và refresh. Bước đầu replication factor bằng một.
 
-Thiết kế chi tiết: [Phase 4 — Cluster và quản lý partition](2026-10-02-cluster-phase-4-design.md). Các phần thiết kế đã được đồng ý ngày 2026-10-02; bản spec tổng hợp đang chờ review, chưa có implementation plan và chưa triển khai. Chuyển hoàn toàn sang cluster mode với dữ liệu mới; broker observer đồng bộ log/snapshot; cập nhật ngày 2026-10-03: broker RUNNING tiếp tục Produce/Fetch khi chỉ mất liên lạc controller, bỏ serving lease/heartbeat barrier; assignment tự động RF=1, CreateTopic qua broker và client routing nhiều broker.
+Thiết kế chi tiết: [Phase 4 — Cluster và quản lý partition](2026-10-02-cluster-phase-4-design.md). Các phần thiết kế đã được đồng ý ngày 2026-10-02; đã có [implementation plan](../plans/2026-10-03-cluster-phase-4.md) theo yêu cầu ngày 2026-10-03; chưa triển khai. Chuyển hoàn toàn sang cluster mode với dữ liệu mới; broker observer đồng bộ log/snapshot; cập nhật ngày 2026-10-03: broker RUNNING tiếp tục Produce/Fetch khi chỉ mất liên lạc controller, bỏ serving lease/heartbeat barrier; assignment tự động RF=1, CreateTopic qua broker và client routing nhiều broker.
 
 Điều kiện hoàn thành: ghi/đọc đúng partition trên nhiều broker; restart không làm mất metadata đã commit. Chưa cam kết data availability khi broker chứa partition ngừng hoạt động.
 
