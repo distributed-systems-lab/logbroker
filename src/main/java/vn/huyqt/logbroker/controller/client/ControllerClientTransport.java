@@ -6,9 +6,9 @@ import java.util.function.Consumer;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.Frame;
 
 /**
- * One admin connection, used by {@link ControllerClient} for a single attempt and then closed. A
- * new instance is created per attempt, so late frames from an abandoned connection cannot reach a
- * later attempt.
+ * One control connection. Admin callers use a fresh connection per attempt; broker callers may
+ * reuse a selected controller connection for serialized RPCs. The owner correlates request IDs
+ * and connection generations, so abandoned callbacks cannot reach a later attempt.
  */
 public interface ControllerClientTransport extends AutoCloseable {
   /**

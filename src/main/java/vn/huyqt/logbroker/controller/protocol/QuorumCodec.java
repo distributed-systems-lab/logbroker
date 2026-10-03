@@ -28,6 +28,35 @@ import vn.huyqt.logbroker.controller.snapshot.SnapshotId;
 public final class QuorumCodec {
   private QuorumCodec() {}
 
+  /** Wire allocation limits, independent of election membership or a local voter identity. */
+  public record WireLimits(int maxFrameBytes, int fetchMaxBytes, int snapshotChunkBytes,
+      int snapshotMaxBytes, vn.huyqt.logbroker.storage.LogConfig logConfig,
+      java.time.Duration fetchIdleWait, java.time.Duration adminTimeout, MetadataLimits metadataLimits) {
+    public WireLimits {
+      Objects.requireNonNull(logConfig); Objects.requireNonNull(fetchIdleWait);
+      Objects.requireNonNull(adminTimeout); Objects.requireNonNull(metadataLimits);
+      if (maxFrameBytes < 1024 || maxFrameBytes > 8 * 1024 * 1024
+          || fetchMaxBytes < logConfig.maxBatchBytes() || fetchMaxBytes > maxFrameBytes - 1024
+          || snapshotChunkBytes < 1 || snapshotChunkBytes > 256 * 1024
+          || snapshotChunkBytes > maxFrameBytes - 1024 || snapshotMaxBytes < 1
+          || snapshotMaxBytes > 64 * 1024 * 1024
+          || fetchIdleWait.isNegative() || fetchIdleWait.toMillis() > Integer.MAX_VALUE
+          || adminTimeout.toMillis() < 1 || adminTimeout.toMillis() > Integer.MAX_VALUE)
+        throw new IllegalArgumentException("Invalid wire limits");
+    }
+    public int maxTopics() { return metadataLimits.maxTopics(); }
+    public int maxPartitions() { return metadataLimits.maxPartitions(); }
+    public static WireLimits from(ControllerConfig config) {
+      return new WireLimits(config.maxFrameBytes(), config.fetchMaxBytes(), config.snapshotChunkBytes(),
+          config.snapshotMaxBytes(), config.logConfig(), config.fetchIdleWait(), config.adminTimeout(), config.metadataLimits());
+    }
+    public static WireLimits observer(MetadataLimits limits) {
+      return new WireLimits(8 * 1024 * 1024, 4 * 1024 * 1024, 256 * 1024, 64 * 1024 * 1024,
+          vn.huyqt.logbroker.storage.LogConfig.defaults(), java.time.Duration.ofMillis(100),
+          java.time.Duration.ofSeconds(30), limits);
+    }
+  }
+
   /** Exact v1 wire size without materializing batch/chunk payloads. */
   public static long encodedSize(Frame frame) {
     // 4-byte length prefix plus the 69-byte minimum frame: 65-byte envelope and 4-byte CRC.
@@ -359,6 +388,10 @@ public final class QuorumCodec {
    * @throws IOException if the frame is invalid
    */
   public static long preflight(byte[] bytes, ControllerConfig config) throws IOException {
+    return preflight(bytes, WireLimits.from(config));
+  }
+
+  public static long preflight(byte[] bytes, WireLimits config) throws IOException {
     var reader = new Reader(bytes, config, false);
     reader.frame();
     return Math.addExact(2L * bytes.length, 64L * reader.elements);
@@ -372,6 +405,10 @@ public final class QuorumCodec {
    * @throws IOException if the frame is invalid
    */
   public static Frame decode(byte[] bytes, ControllerConfig config) throws IOException {
+    return decode(bytes, WireLimits.from(config));
+  }
+
+  public static Frame decode(byte[] bytes, WireLimits config) throws IOException {
     preflight(bytes, config);
     return new Reader(bytes, config, true).frame();
   }
@@ -379,12 +416,12 @@ public final class QuorumCodec {
   private static final class Reader {
     private final byte[] bytes;
     private final ByteBuffer in;
-    private final ControllerConfig config;
+    private final WireLimits config;
     private final boolean materialize;
     private long elements;
     private short version;
 
-    Reader(byte[] bytes, ControllerConfig config, boolean materialize) throws IOException {
+    Reader(byte[] bytes, WireLimits config, boolean materialize) throws IOException {
       if (bytes == null || bytes.length < 73 || bytes.length > config.maxFrameBytes() + 4)
         throw new IOException("Invalid quorum frame size");
       this.bytes = bytes;

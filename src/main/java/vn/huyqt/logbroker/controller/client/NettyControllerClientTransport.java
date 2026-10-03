@@ -16,14 +16,17 @@ import vn.huyqt.logbroker.controller.*;
 import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.Frame;
 import vn.huyqt.logbroker.controller.transport.QuorumFrameDecoder;
+import vn.huyqt.logbroker.broker.cluster.BrokerClusterConfig;
+import vn.huyqt.logbroker.transport.netty.BoundedFrameDecoder;
 
 /**
- * Shared factory budgets and workers; each attempt owns one channel and at most one RPC.
+ * Shared factory budgets and workers; each connection owns one channel.
  *
  * <p>Inbound frames are framed by {@link QuorumFrameDecoder}, then preflighted and decoded with
  * {@link QuorumCodec} on a decode worker, under the limits of {@link ControllerConfig#defaults}
- * for the target identity. A decode failure closes the channel and reports through the failure
- * callback.
+ * for the target identity. Broker discovery uses bounded wire-only framing; its control client
+ * verifies and pins membership before accepting metadata. Quorum voter framing remains strict.
+ * A decode failure closes the channel and reports through the failure callback.
  */
 public final class NettyControllerClientTransport implements ControllerClientTransport {
   /**
@@ -32,6 +35,8 @@ public final class NettyControllerClientTransport implements ControllerClientTra
    */
   public static final class Factory implements ControllerClientTransport.Factory {
     private final ControllerConfig config;
+    private final QuorumCodec.WireLimits wireLimits;
+    private final BrokerClusterConfig broker;
     private final DeadlineScheduler clock;
     private final MultiThreadIoEventLoopGroup loops =
         new MultiThreadIoEventLoopGroup(2, NioIoHandler.newFactory());
@@ -55,7 +60,17 @@ public final class NettyControllerClientTransport implements ControllerClientTra
      */
     public Factory(ClusterIdentity identity, DeadlineScheduler clock) {
       config = ControllerConfig.defaults(identity);
+      wireLimits = QuorumCodec.WireLimits.from(config);
+      broker = null;
       this.clock = clock;
+    }
+
+    /** Broker discovery has no local voter identity; the control client pins reply membership. */
+    public Factory(BrokerClusterConfig broker, DeadlineScheduler clock) {
+      this.broker = Objects.requireNonNull(broker);
+      this.config = null;
+      this.wireLimits = QuorumCodec.WireLimits.observer(broker.limits());
+      this.clock = Objects.requireNonNull(clock);
     }
 
     public synchronized ControllerClientTransport create() {
@@ -97,8 +112,9 @@ public final class NettyControllerClientTransport implements ControllerClientTra
                 socket
                     .pipeline()
                     .addLast(
-                        new QuorumFrameDecoder(
-                            factory.config, factory.inbound, factory.inbound, factory.clock));
+                        factory.broker == null
+                            ? new QuorumFrameDecoder(factory.config, factory.inbound, factory.inbound, factory.clock)
+                            : new BoundedFrameDecoder(70, factory.wireLimits.maxFrameBytes(), factory.inbound, factory.clock));
                 socket
                     .pipeline()
                     .addLast(
@@ -116,7 +132,13 @@ public final class NettyControllerClientTransport implements ControllerClientTra
                           }
 
                           public void channelRead(ChannelHandlerContext context, Object message) {
-                            if (!(message instanceof QuorumFrameDecoder.OwnedFrame raw)) {
+                            final byte[] bytes;
+                            final AutoCloseable raw;
+                            if (message instanceof QuorumFrameDecoder.OwnedFrame voterFrame) {
+                              bytes = voterFrame.bytes(); raw = voterFrame;
+                            } else if (factory.broker != null && message instanceof BoundedFrameDecoder.OwnedFrame brokerFrame) {
+                              bytes = brokerFrame.bytes(); raw = brokerFrame;
+                            } else {
                               io.netty.util.ReferenceCountUtil.release(message);
                               context.close();
                               return;
@@ -127,17 +149,20 @@ public final class NettyControllerClientTransport implements ControllerClientTra
                                     try (raw) {
                                       // Preflight bounds the decoded size, so the budget is
                                       // reserved before any payload is materialized.
-                                      long bytes =
-                                          QuorumCodec.preflight(raw.bytes(), factory.config);
+                                      long allocation = QuorumCodec.preflight(bytes, factory.wireLimits);
                                       try (var lease =
                                           factory
                                               .inbound
-                                              .reserve(bytes)
+                                              .reserve(allocation)
                                               .orElseThrow(
                                                   () ->
                                                       new IOException("Decode budget exhausted"))) {
-                                        receive.accept(
-                                            QuorumCodec.decode(raw.bytes(), factory.config));
+                                        var frame = QuorumCodec.decode(bytes, factory.wireLimits);
+                                        if (factory.broker != null && (frame.version() != 2 || !frame.response()
+                                            || frame.senderRole() != BrokerControlProtocol.SenderRole.VOTER
+                                            || frame.operation() < 106 || !frame.clusterId().equals(factory.broker.clusterId())))
+                                          throw new IOException("Invalid broker control reply identity");
+                                        receive.accept(frame);
                                       }
                                     } catch (Exception error) {
                                       failure.accept(error);
@@ -145,7 +170,7 @@ public final class NettyControllerClientTransport implements ControllerClientTra
                                     }
                                   });
                             } catch (RejectedExecutionException error) {
-                              raw.close();
+                              try { raw.close(); } catch (Exception close) { error.addSuppressed(close); }
                               failure.accept(error);
                               context.close();
                             }
@@ -176,6 +201,11 @@ public final class NettyControllerClientTransport implements ControllerClientTra
    * frame exceeds 4 KiB.
    */
   public CompletableFuture<Void> send(Frame frame) {
+    if (factory.broker != null && (frame.version() != 2 || frame.response()
+        || frame.senderRole() != BrokerControlProtocol.SenderRole.BROKER
+        || frame.senderId() != factory.broker.brokerId() || frame.operation() < 106
+        || !frame.clusterId().equals(factory.broker.clusterId()) || !Arrays.equals(frame.voterHash(), new byte[32])))
+      return CompletableFuture.failedFuture(new IOException("Invalid broker control request identity"));
     var current = channel;
     if (closed || current == null || !current.isActive())
       return CompletableFuture.failedFuture(new IOException("Controller not connected"));

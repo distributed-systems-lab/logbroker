@@ -55,6 +55,15 @@ public record ClusterIdentity(UUID clusterId, int nodeId, List<Voter> voters, sh
    * big-endian. The local node ID is not included.
    */
   public byte[] canonicalVoters() {
+    return canonicalVoters(voters);
+  }
+
+  /** Canonical membership encoding without requiring a local election identity. */
+  public static byte[] canonicalVoters(List<Voter> membership) {
+    var voters = membership.stream().sorted(Comparator.comparingInt(Voter::id)).toList();
+    if (voters.size() != 3 || voters.stream().map(Voter::id).distinct().count() != 3
+        || voters.stream().map(v -> v.host() + ":" + v.port()).distinct().count() != 3)
+      throw new IllegalArgumentException("Expected three distinct voters");
     try {
       var bytes = new ByteArrayOutputStream();
       var out = new DataOutputStream(bytes);
@@ -74,8 +83,12 @@ public record ClusterIdentity(UUID clusterId, int nodeId, List<Voter> voters, sh
 
   /** Returns the SHA-256 of {@link #canonicalVoters()}; a new 32-byte array on every call. */
   public byte[] voterHash() {
+    return voterHash(voters);
+  }
+
+  public static byte[] voterHash(List<Voter> voters) {
     try {
-      return MessageDigest.getInstance("SHA-256").digest(canonicalVoters());
+      return MessageDigest.getInstance("SHA-256").digest(canonicalVoters(voters));
     } catch (NoSuchAlgorithmException impossible) {
       throw new IllegalStateException(impossible);
     }
