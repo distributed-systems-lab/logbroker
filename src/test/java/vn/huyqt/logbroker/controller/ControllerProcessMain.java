@@ -5,7 +5,10 @@ import java.nio.file.*;
 import java.util.concurrent.CountDownLatch;
 import vn.huyqt.logbroker.controller.persistence.DurableFiles;
 
-/** Fault-test launcher uses production recovery/runtime with a private bind behind the proxy. */
+/**
+ * Fault-test launcher uses production recovery/runtime with a private bind behind the proxy.
+ * Kept in the controller package to access the package-private test bind seam.
+ */
 public final class ControllerProcessMain {
   public static void main(String[] args) throws Exception {
     var settings = ControllerMain.settings(Path.of(args[0]));

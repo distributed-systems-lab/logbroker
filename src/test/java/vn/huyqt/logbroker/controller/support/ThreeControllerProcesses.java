@@ -93,7 +93,7 @@ public final class ThreeControllerProcesses implements AutoCloseable {
                 Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                 "-cp",
                 System.getProperty("java.class.path"),
-                "vn.huyqt.logbroker.controller.ControllerProcessMain",
+                ControllerProcessMain.class.getName(),
                 config(node).toString(),
                 Integer.toString(backend[node]))
             .redirectOutput(

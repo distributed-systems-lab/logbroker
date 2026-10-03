@@ -7,9 +7,14 @@ import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DisabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 import vn.huyqt.logbroker.controller.support.ThreeControllerProcesses;
 
+@DisabledOnOs(
+    value = OS.WINDOWS,
+    disabledReason = "Strict controller durability requires directory force; run on Linux/WSL ext4")
 class ControllerSnapshotCatchupTest {
   @TempDir Path root;
 

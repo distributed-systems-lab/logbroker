@@ -1,5 +1,7 @@
 # Phase 3 verification
 
+On native Windows, `mvn test` skips `ControllerClusterTest`, `ControllerCrashTest` and `ControllerSnapshotCatchupTest` because strict process tests require directory force. The remaining tests still run, including the explicit unsupported-provider check in `DurableFilesTest`. Run the full suite from a Linux/WSL ext4 checkout to verify strict process behavior; skips do not establish controller durability support. On other platforms the durability probe remains mandatory and unsupported filesystems fail explicitly.
+
 Verified on 2026-09-29 with OpenJDK 21.0.12.1 (Ubuntu), Maven 3.8.7, Ubuntu 24.04 under WSL2 kernel 5.15.153.1. Controller roots and the final build workspace used the Linux ext4 filesystem (`/dev/sdc`); directory `FileChannel.force` probing succeeded. Native Windows unit runs use simulated directory persistence and do not establish controller durability support.
 
 `mvn clean verify dependency:copy-dependencies` passed **262 tests, zero failures, errors or skips**, covering Phases 1, 2 and 3. The first full Linux run exposed a test cleanup assumption that a second close must finish within 100 ms. Cleanup now retries within a bounded five seconds; the blocked-disk timeout and retained-root-lock assertions remain. The corrected targeted test and full suite passed.
