@@ -16,7 +16,10 @@ import java.util.*;
  * Construction throws {@link IllegalArgumentException} for the zero cluster UUID or any other
  * membership shape.
  */
-public record ClusterIdentity(UUID clusterId, int nodeId, List<Voter> voters) {
+public record ClusterIdentity(UUID clusterId, int nodeId, List<Voter> voters, short metadataVersion) {
+  public ClusterIdentity(UUID clusterId, int nodeId, List<Voter> voters) {
+    this(clusterId, nodeId, voters, (short) 1);
+  }
   /**
    * One voter endpoint: a non-negative ID, a non-blank host of at most 255 UTF-8 bytes and a port
    * in 1..65535.
@@ -33,6 +36,7 @@ public record ClusterIdentity(UUID clusterId, int nodeId, List<Voter> voters) {
   }
 
   public ClusterIdentity {
+    if (metadataVersion != 1 && metadataVersion != 2) throw new IllegalArgumentException("Unsupported metadata version");
     Objects.requireNonNull(clusterId);
     Objects.requireNonNull(voters);
     voters = voters.stream().sorted(Comparator.comparingInt(Voter::id)).toList();

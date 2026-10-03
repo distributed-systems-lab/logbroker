@@ -98,7 +98,9 @@ public final class ControllerMain {
     String cluster = remove(values, "cluster.id"), voters = remove(values, "voters");
     int node = Integer.parseInt(remove(values, "node.id"));
     Path data = Path.of(remove(values, "data.dir"));
-    var builder = ControllerConfig.builder(ControllerOptions.identity(cluster, node, voters));
+    short metadataVersion = Short.parseShort(values.getOrDefault("metadata.version", "1"));
+    values.remove("metadata.version");
+    var builder = ControllerConfig.builder(ControllerOptions.identity(cluster, node, voters, metadataVersion));
     var log = vn.huyqt.logbroker.storage.LogConfig.defaults();
     builder.logConfig(
         new vn.huyqt.logbroker.storage.LogConfig(

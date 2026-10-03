@@ -102,7 +102,10 @@ public final class QuorumStateStore implements AutoCloseable {
     if (!Files.isRegularFile(root.resolve("identity.bin"))
         || !Files.isRegularFile(root.resolve("quorum-state.journal")))
       throw new IOException("Controller storage is missing or not formatted");
-    if (!Arrays.equals(encodeIdentity(identity), Files.readAllBytes(root.resolve("identity.bin"))))
+    if (Files.size(root.resolve("identity.bin")) > 1024)
+      throw new IOException("Controller identity exceeds bound");
+    byte[] identityBytes = Files.readAllBytes(root.resolve("identity.bin"));
+    if (!identity.equals(decodeIdentity(identityBytes)) || !Arrays.equals(encodeIdentity(identity), identityBytes))
       throw new IOException("Controller identity, voter set or checksum mismatch");
     files.verifySupport(root);
     FileChannel channel = FileChannel.open(root.resolve(".lock"), READ, WRITE);
@@ -167,14 +170,45 @@ public final class QuorumStateStore implements AutoCloseable {
     votedFor = vote;
   }
 
+  /** Decodes the explicitly versioned, bounded root identity; does not acquire its lock. */
+  public static ClusterIdentity decodeIdentity(byte[] bytes) throws IOException {
+    try {
+      if (bytes.length < 38 || bytes.length > 1024) throw new IOException("Invalid identity length");
+      var in = ByteBuffer.wrap(bytes);
+      if (in.getInt() != 0x51494431) throw new IOException("Invalid identity magic");
+      short format = in.getShort();
+      if (format != 1 && format != 2 || in.getInt() != bytes.length
+          || in.getInt(bytes.length - 4) != StateJournal.crc(bytes, 0, bytes.length - 4))
+        throw new IOException("Invalid identity format, length or checksum");
+      UUID cluster = new UUID(in.getLong(), in.getLong()); int node = in.getInt();
+      short version = format == 1 ? 1 : in.getShort();
+      if (version != format || in.getInt() != 3) throw new IOException("Invalid identity feature or voter count");
+      var voters = new ArrayList<ClusterIdentity.Voter>();
+      for (int i = 0; i < 3; i++) {
+        int id = in.getInt(), length = in.getInt();
+        if (length < 1 || length > 255 || length > in.remaining() - 8) throw new IOException("Invalid voter host length");
+        byte[] host = new byte[length]; in.get(host);
+        String name = java.nio.charset.StandardCharsets.UTF_8.newDecoder()
+            .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+            .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT).decode(ByteBuffer.wrap(host)).toString();
+        voters.add(new ClusterIdentity.Voter(id, name, in.getInt()));
+      }
+      if (in.remaining() != 4) throw new IOException("Trailing identity bytes");
+      return new ClusterIdentity(cluster, node, voters, version);
+    } catch (java.nio.BufferUnderflowException | IllegalArgumentException e) {
+      throw new IOException("Invalid controller identity", e);
+    }
+  }
+
   private static byte[] encodeIdentity(ClusterIdentity identity) {
     byte[] voters = identity.canonicalVoters();
-    byte[] bytes = new byte[34 + voters.length];
-    var out = ByteBuffer.wrap(bytes).putInt(0x51494431).putShort((short) 1).putInt(bytes.length);
+    byte[] bytes = new byte[34 + voters.length + (identity.metadataVersion() == 2 ? 2 : 0)];
+    var out = ByteBuffer.wrap(bytes).putInt(0x51494431).putShort(identity.metadataVersion()).putInt(bytes.length);
     out.putLong(identity.clusterId().getMostSignificantBits())
         .putLong(identity.clusterId().getLeastSignificantBits())
-        .putInt(identity.nodeId())
-        .put(voters);
+        .putInt(identity.nodeId());
+    if (identity.metadataVersion() == 2) out.putShort(identity.metadataVersion());
+    out.put(voters);
     out.putInt(StateJournal.crc(bytes, 0, bytes.length - 4));
     return bytes;
   }

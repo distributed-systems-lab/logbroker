@@ -7,6 +7,12 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class ControllerConfigTest {
+  @Test void clusterBatchMustContainLargestSessionLifecycleChange() {
+    var old = identity(); var v2 = new ClusterIdentity(old.clusterId(),old.nodeId(),old.voters(),(short)2);
+    assertThrows(IllegalArgumentException.class, () -> ControllerConfig.builder(v2)
+        .logConfig(new vn.huyqt.logbroker.storage.LogConfig(1024*1024,65536,4096)).build());
+    assertDoesNotThrow(() -> ControllerConfig.builder(v2).build());
+  }
   @Test
   void eventQueueMustLeaveGeneralAdmissionBeyondReservedSlots() {
     assertThrows(

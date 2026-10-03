@@ -19,6 +19,7 @@ public final class QuorumHarness {
   private final SimulatedTransport transport = new SimulatedTransport();
   private final long seed;
   private long now;
+  private short metadataVersion = 1;
   private final int adminCapacity;
   private final vn.huyqt.logbroker.storage.LogConfig logConfig;
   private final Map<Long, Map<Long, QuorumEntryEvidence>> committedEvidence = new HashMap<>();
@@ -222,6 +223,14 @@ public final class QuorumHarness {
     return new QuorumHarness(seed, 1024);
   }
 
+  public static QuorumHarness threeNodes(long seed, short version) {
+    var h = new QuorumHarness(seed, 1024);
+    h.metadataVersion = version;
+    for (int node = 0; node < 3; node++) h.restart(node);
+    return h;
+  }
+  public vn.huyqt.logbroker.controller.metadata.MetadataImage image(int node) { return metadata[node].image(); }
+
   public static QuorumHarness threeNodes(long seed, int adminCapacity) {
     return new QuorumHarness(seed, adminCapacity);
   }
@@ -392,9 +401,10 @@ public final class QuorumHarness {
 
   public void restart(int node) {
     disks[node].recover();
-    metadata[node] = new MetadataStateMachine();
+    metadata[node] = new MetadataStateMachine(vn.huyqt.logbroker.controller.metadata.MetadataLimits.defaults(), metadataVersion);
     try {
-      metadata[node].restore(disks[node].installedImage());
+      if (disks[node].installedImage().appliedOffset() > 0 || metadataVersion == 1)
+        metadata[node].restore(disks[node].installedImage());
     } catch (Exception e) {
       throw new AssertionError(e);
     }
@@ -422,7 +432,8 @@ public final class QuorumHarness {
             "");
     nodes[node] =
         new QuorumStateMachine(
-            ControllerConfig.builder(ControllerTestSupport.identity(node))
+            ControllerConfig.builder(new ClusterIdentity(ControllerTestSupport.identity(node).clusterId(), node,
+                ControllerTestSupport.identity(node).voters(), metadataVersion))
                 .logConfig(logConfig)
                 .maxPendingRequests(adminCapacity)
                 .build(),

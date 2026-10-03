@@ -53,6 +53,8 @@ public record ControllerConfig(
     int maxTopics,
     int maxPartitions) {
   public ControllerConfig {
+    if (identity.metadataVersion() == 2 && logConfig.maxBatchBytes() < Math.max(372L, 74L + 79L * maxPartitions))
+      throw new IllegalArgumentException("Cluster lifecycle batch cannot fit configured partitions");
     validateValues(
         identity,
         logConfig,

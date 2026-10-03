@@ -36,7 +36,7 @@ public final class ControllerCli {
       Set<String> keys =
           switch (command) {
             case "generate-cluster-id" -> Set.of();
-            case "format" -> Set.of("data", "node", "cluster", "voters");
+            case "format" -> Set.of("data", "node", "cluster", "voters", "metadata-version");
             case "create-topic" -> Set.of("cluster", "voters", "bootstrap", "name", "partitions");
             case "metadata" -> Set.of("cluster", "voters", "bootstrap");
             case "local-metadata", "describe-quorum" ->
@@ -66,7 +66,7 @@ public final class ControllerCli {
         ControllerOptions.identity(
             ControllerOptions.required(options, "cluster"),
             Integer.parseInt(ControllerOptions.required(options, "node")),
-            ControllerOptions.required(options, "voters"));
+            ControllerOptions.required(options, "voters"), Short.parseShort(options.getOrDefault("metadata-version", "1")));
     Path root = Path.of(ControllerOptions.required(options, "data"));
     QuorumStateStore.format(root, identity, new DurableFiles());
     out.println("FORMATTED node=" + identity.nodeId() + " data=" + root.toAbsolutePath());

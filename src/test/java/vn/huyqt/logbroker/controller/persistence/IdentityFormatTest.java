@@ -14,6 +14,20 @@ import vn.huyqt.logbroker.controller.support.FaultFiles;
 class IdentityFormatTest {
   @TempDir Path temporary;
 
+  @Test void metadataVersionIsDurablyPinnedAndLegacyIdentityCannotOpenV2() throws Exception {
+    var v2 = new ClusterIdentity(identity().clusterId(), 0, identity().voters(), (short) 2);
+    var root = temporary.resolve("v2"); var io = new FaultFiles();
+    QuorumStateStore.format(root, v2, io);
+    byte[] bytes = Files.readAllBytes(root.resolve("identity.bin"));
+    assertEquals(2, java.nio.ByteBuffer.wrap(bytes).getShort(4));
+    assertEquals(2, java.nio.ByteBuffer.wrap(bytes).getShort(30));
+    assertEquals(v2, QuorumStateStore.decodeIdentity(bytes));
+    byte[] corrupt = bytes.clone(); corrupt[30] = 1;
+    assertThrows(IOException.class, () -> QuorumStateStore.decodeIdentity(corrupt));
+    assertThrows(IOException.class, () -> QuorumStateStore.open(root, identity(), io));
+    try (var state = QuorumStateStore.open(root, v2, io)) { assertEquals(v2, state.identity()); }
+  }
+
   private ClusterIdentity identity() {
     return new ClusterIdentity(
         new UUID(0, 1),

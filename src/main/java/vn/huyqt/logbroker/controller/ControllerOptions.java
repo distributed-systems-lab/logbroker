@@ -49,6 +49,9 @@ public final class ControllerOptions {
    *     or the voters do not form a valid {@link ClusterIdentity}
    */
   public static ClusterIdentity identity(String cluster, int node, String text) {
+    return identity(cluster, node, text, (short) 1);
+  }
+  public static ClusterIdentity identity(String cluster, int node, String text, short version) {
     var voters = new ArrayList<ClusterIdentity.Voter>();
     for (String token : text.split(",", -1)) {
       int at = token.indexOf('@'), colon = token.lastIndexOf(':');
@@ -62,6 +65,6 @@ public final class ControllerOptions {
               host,
               Integer.parseInt(token.substring(colon + 1))));
     }
-    return new ClusterIdentity(UUID.fromString(cluster), node, voters);
+    return new ClusterIdentity(UUID.fromString(cluster), node, voters, version);
   }
 }

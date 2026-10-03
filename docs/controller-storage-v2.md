@@ -1,6 +1,14 @@
 # Controller metadata storage v2
 
 Schema v2 extends quorum entry payloads; the storage record-batch format is unchanged.
+Controller `identity.bin` uses explicit format 2, retains the magic `0x51494431`,
+and stores metadata.version i16=2 after the local node ID and before canonical voters.
+The length and CRC32C cover the entire identity. Format 1 retains its original bytes
+and has implicit metadata.version=1; a root cannot be opened with a different version.
+Formatting accepts `--metadata-version 2`; startup pins it with `metadata.version=2`.
+The first empty-log leader commits LeaderChange and FeatureLevel together before
+admission. A later leader applies its committed marker and inherited prefix before
+deciding whether an additional feature bootstrap is needed.
 All integers use big-endian order. Offsets are exclusive. Entries start with schema i16,
 kind u8 and controller epoch i64. V1 kinds 1 (LeaderChange), 2 (legacy TopicCreated)
 and 3 (ReadBarrier) retain their original bytes. V2 supports those kinds and adds:

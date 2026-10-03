@@ -194,7 +194,9 @@ public final class FakeDisk {
           throw new IOException("Invalid fake snapshot");
         snapshots.put(downloading, download);
         var image =
-            MetadataImageCodec.decode(Arrays.copyOfRange(download, 98, download.length - 4));
+            java.nio.ByteBuffer.wrap(download).getShort(4) == 1
+                ? MetadataImageCodec.decode(Arrays.copyOfRange(download, 98, download.length - 4))
+                : MetadataImageCodec.decodeV2(Arrays.copyOfRange(download, 98, download.length - 4), MetadataLimits.defaults());
         yield new DiskResult.DownloadFinished(downloading, image);
       }
       case QuorumEffect.CancelDownload ignored -> {
@@ -252,11 +254,13 @@ public final class FakeDisk {
   }
 
   private byte[] encode(SnapshotId id, MetadataImage image) throws IOException {
-    byte[] payload = MetadataImageCodec.encode(image), bytes = new byte[102 + payload.length];
+    byte[] payload = image.metadataVersion() == 1 ? MetadataImageCodec.encode(image)
+        : MetadataImageCodec.encodeV2(image, MetadataLimits.defaults());
+    byte[] bytes = new byte[102 + payload.length];
     var identity = ControllerTestSupport.identity(0);
     var out = java.nio.ByteBuffer.wrap(bytes);
     out.putInt(0x51534e31)
-        .putShort((short) 1)
+        .putShort((short) (image.metadataVersion() == 1 ? 1 : 2))
         .putLong(bytes.length)
         .putLong(identity.clusterId().getMostSignificantBits())
         .putLong(identity.clusterId().getLeastSignificantBits())

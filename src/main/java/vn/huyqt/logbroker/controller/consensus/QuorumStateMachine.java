@@ -9,6 +9,7 @@ import vn.huyqt.logbroker.controller.ControllerConfig;
 import vn.huyqt.logbroker.controller.consensus.QuorumEvent.*;
 import vn.huyqt.logbroker.controller.log.*;
 import vn.huyqt.logbroker.controller.metadata.MetadataImage;
+import vn.huyqt.logbroker.controller.metadata.ClusterControlManager;
 import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.controller.snapshot.*;
@@ -62,6 +63,8 @@ public final class QuorumStateMachine {
   private boolean replicaBusy, applyBusy;
   private SnapshotId snapshot;
   private MetadataImage image;
+  private final ClusterControlManager cluster;
+  private boolean clusterAppend;
 
   private record Waiter(Admin invocation, long end) {}
 
@@ -155,6 +158,9 @@ public final class QuorumStateMachine {
     if (recoveredImage.appliedOffset() != status.applied())
       throw new IllegalArgumentException("Recovered image offset mismatch");
     image = recoveredImage;
+    cluster = config.identity().metadataVersion() == 2
+        ? new ClusterControlManager(config.metadataLimits(), id -> true, config.logConfig().maxBatchBytes()) : null;
+    if (cluster != null) cluster.onImage(image);
     transfer =
         new SnapshotTransfer(
             config.snapshotChunkBytes(),
@@ -270,15 +276,24 @@ public final class QuorumStateMachine {
         else {
           progress(status.logEnd(), status.durableEnd(), status.commit(), applied.end());
           image = applied.image();
+          if (cluster != null) cluster.onImage(image);
           applyBusy = false;
           if (status.role() == QuorumStatus.Role.LEADER
               && !status.ready()
               && leaderMarkerEnd > 0
               && status.applied() >= leaderMarkerEnd) {
-            // The new marker resolves all inherited proposals against the committed image.
-            // No new admin proposal can enter until this first readiness transition.
-            pendingTopics.clear();
-            transition(status.role(), status.epoch(), status.leaderId(), true, "");
+            if (cluster != null && image.metadataVersion() == 0) {
+              // Apply the inherited prefix before deciding whether bootstrap is absent.
+              // A follower may have the feature on disk without having applied it yet.
+              leaderMarkerEnd = 0;
+              append(List.of(new QuorumEntry.FeatureLevel(status.epoch(),
+                  new vn.huyqt.logbroker.controller.metadata.ClusterRecords.FeatureLevel((short) 2))), true);
+            } else {
+              // The new marker resolves all inherited proposals against the committed image.
+              // No new admin proposal can enter until this first readiness transition.
+              pendingTopics.clear();
+              transition(status.role(), status.epoch(), status.leaderId(), true, "");
+            }
           }
           completeApplied();
           applyCommitted();
@@ -308,6 +323,7 @@ public final class QuorumStateMachine {
         }
       }
     }
+    if (cluster != null && active() && status.role() == QuorumStatus.Role.LEADER && status.ready()) drainCluster();
     return List.copyOf(effects);
   }
 
@@ -317,7 +333,7 @@ public final class QuorumStateMachine {
 
   // Frames from self, non-voters, another cluster or another voter set never touch consensus state.
   private boolean validPeer(Frame frame) {
-    return frame.senderId() != status.nodeId()
+    return frame.senderRole() == BrokerControlProtocol.SenderRole.VOTER && frame.senderId() != status.nodeId()
         && config.identity().voters().stream().anyMatch(v -> v.id() == frame.senderId())
         && frame.clusterId().equals(config.identity().clusterId())
         && Arrays.equals(frame.voterHash(), config.identity().voterHash());
@@ -619,6 +635,7 @@ public final class QuorumStateMachine {
     // The new generation is an empty log at the snapshot end, so every offset collapses to it.
     index = installed.index();
     image = installed.image();
+    if (cluster != null) cluster.onImage(image);
     replicaBusy = false;
     applyBusy = false;
     electionPending = false;
@@ -696,7 +713,11 @@ public final class QuorumStateMachine {
       if (voter.id() != status.nodeId())
         effects.add(
             new QuorumEffect.Send(voter.id(), request(new BeginQuorumEpoch(status.epoch()))));
-    append(List.of(new QuorumEntry.LeaderChange(status.epoch(), status.nodeId())), true);
+    var marker = new ArrayList<QuorumEntry>();
+    marker.add(new QuorumEntry.LeaderChange(status.epoch(), status.nodeId()));
+    if (cluster != null && image.metadataVersion() == 0 && status.logEnd() == 0)
+      marker.add(new QuorumEntry.FeatureLevel(status.epoch(), new vn.huyqt.logbroker.controller.metadata.ClusterRecords.FeatureLevel((short) 2)));
+    append(marker, true);
   }
 
   private void append(List<QuorumEntry> entries, boolean marker) {
@@ -738,7 +759,7 @@ public final class QuorumStateMachine {
     }
     if (admin.request() instanceof ReadLocalMetadata) {
       complete(
-          admin.invocationId(), new MetadataReply(meta(QuorumError.NONE), view(Consistency.LOCAL)));
+          admin.invocationId(), metadataReply(Consistency.LOCAL));
       return;
     }
     if (status.role() != QuorumStatus.Role.LEADER) {
@@ -758,6 +779,19 @@ public final class QuorumStateMachine {
         || logWork.size() >= diskAdmission) {
       complete(admin.invocationId(), new Failure(meta(QuorumError.OVERLOADED)));
       return;
+    }
+    if (cluster != null && (admin.request() instanceof BrokerControlProtocol.Register
+        || admin.request() instanceof BrokerControlProtocol.CreateTopic)) {
+      var error = cluster.submit(admin.invocationId(), admin.request());
+      if (error != QuorumError.NONE) complete(admin.invocationId(), new Failure(meta(error)));
+      else {
+        adminWaiters.put(admin.invocationId(), new Waiter(admin, Long.MAX_VALUE));
+        completeCluster();
+      }
+      return;
+    }
+    if (cluster != null && admin.request() instanceof CreateTopic) {
+      complete(admin.invocationId(), new Failure(meta(QuorumError.UNSUPPORTED_VERSION))); return;
     }
     if (admin.request() instanceof CreateTopic create) {
       TopicCreated existing =
@@ -823,6 +857,7 @@ public final class QuorumStateMachine {
   private void drainProposals() {
     drainScheduled = false;
     if (status.role() != QuorumStatus.Role.LEADER || !status.ready()) return;
+    if (cluster != null) return; // Cluster drain orders complete commands before read barriers.
     var topics = List.copyOf(waitingTopics);
     waitingTopics.clear();
     var reads = List.copyOf(waitingReads);
@@ -878,6 +913,7 @@ public final class QuorumStateMachine {
   }
 
   private void completeApplied() {
+    if (cluster != null) completeCluster();
     for (var waiter : List.copyOf(adminWaiters.values()))
       if (waiter.end() <= status.applied()) {
         var admin = waiter.invocation();
@@ -889,7 +925,7 @@ public final class QuorumStateMachine {
                   .findFirst()
                   .orElseThrow();
           reply = new CreateTopicReply(meta(QuorumError.NONE), topic.id());
-        } else reply = new MetadataReply(meta(QuorumError.NONE), view(Consistency.LINEARIZABLE));
+        } else reply = metadataReply(Consistency.LINEARIZABLE);
         adminWaiters.remove(admin.invocationId());
         complete(admin.invocationId(), reply);
       }
@@ -913,6 +949,30 @@ public final class QuorumStateMachine {
         image.topics());
   }
 
+  private Reply metadataReply(Consistency consistency) {
+    return cluster == null ? new MetadataReply(meta(QuorumError.NONE), view(consistency))
+        : new BrokerControlProtocol.MetadataReply(meta(QuorumError.NONE), consistency, status.nodeId(), status.commit(), image);
+  }
+  private void completeCluster() {
+    for (var done : cluster.completions(meta(QuorumError.NONE))) {
+      adminWaiters.remove(done.invocationId()); complete(done.invocationId(), done.reply());
+    }
+  }
+  private void drainCluster() {
+    if (clusterAppend || !logWork.isEmpty()) return;
+    var next = cluster.drainNext(status.epoch(), status.logEnd());
+    if (next.isPresent()) {
+      clusterAppend = true;
+      append(next.get().entries(), false, batch -> clusterAppend = false);
+    } else if (!waitingReads.isEmpty()) {
+      var reads = List.copyOf(waitingReads); waitingReads.clear(); clusterAppend = true;
+      append(List.of(new QuorumEntry.ReadBarrier(status.epoch())), false, batch -> {
+        clusterAppend = false;
+        for (long id : reads) setWaiterEnd(id, batch.nextOffset());
+      });
+    }
+  }
+
   private void complete(long id, Reply reply) {
     effects.add(new QuorumEffect.CompleteAdmin(id, reply));
   }
@@ -923,6 +983,7 @@ public final class QuorumStateMachine {
       if (waiter.invocation().deadlineNanos() <= now) {
         long id = waiter.invocation().invocationId();
         adminWaiters.remove(id);
+        if (cluster != null) cluster.cancel(id);
         waitingReads.remove(id);
         for (var pending : pendingTopics.values()) pending.waiters.remove(id);
         complete(
@@ -937,6 +998,7 @@ public final class QuorumStateMachine {
   }
 
   private void completeAll(QuorumError error) {
+    if (cluster != null) { cluster.onLeadershipLost(); clusterAppend = false; }
     for (long id : List.copyOf(adminWaiters.keySet())) complete(id, new Failure(meta(error)));
     adminWaiters.clear();
     waitingReads.clear();

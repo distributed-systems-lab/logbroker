@@ -35,7 +35,7 @@ public final class ControllerNode implements AutoCloseable {
   private final QuorumStateStore state;
   private final GenerationStore generation;
   private final SnapshotStore snapshots;
-  private final MetadataStateMachine metadata = new MetadataStateMachine();
+  private final MetadataStateMachine metadata;
   private final DeadlineScheduler clock;
   private final QuorumStateMachine core;
   private final ControllerLoop loop;
@@ -68,6 +68,7 @@ public final class ControllerNode implements AutoCloseable {
     this.state = state;
     this.generation = generation;
     this.snapshots = snapshots;
+    metadata = new MetadataStateMachine(config.metadataLimits(), config.identity().metadataVersion());
     metadata.restore(image);
     clock = DeadlineScheduler.system();
     var index = generation.epochIndex();
@@ -137,9 +138,9 @@ public final class ControllerNode implements AutoCloseable {
       // that epoch before communicating so the node never runs behind its own log.
       long logEpoch = generation.epochIndex().positionAt(generation.log().end()).lastEpoch();
       if (logEpoch > state.epoch()) state.persistVote(logEpoch, -1);
-      var image = generation.recoveredImage();
+      var image = generation.recoveredImage(config.metadataLimits(), config.identity().metadataVersion());
       var snapshots =
-          new SnapshotStore(root, config.identity(), files, state, config.snapshotMaxBytes());
+          new SnapshotStore(root, config.identity(), files, state, config.snapshotMaxBytes(), config.metadataLimits());
       var base = generation.baseSnapshot();
       // GenerationStore.install publishes the generation before SnapshotStore.publishInstalled
       // records the snapshot set; a crash in between leaves the base outside the retained set.
@@ -355,6 +356,9 @@ public final class ControllerNode implements AutoCloseable {
                 if (frame.version() == 2 && response instanceof DescribeQuorumReply described) {
                   response = new BrokerControlProtocol.DescribeReply(described.meta(), described.status(),
                       config.identity().voters(), config.identity().voterHash());
+                } else if (frame.version() == 1 && response instanceof BrokerControlProtocol.MetadataReply) {
+                  response = new Failure(new ReplyMeta(QuorumError.UNSUPPORTED_VERSION,
+                      "Cluster metadata requires v2", core.status().epoch(), core.status().leaderId()));
                 } else if (frame.version() == 2 && response instanceof MetadataReply) {
                   // Full cluster reads are enabled by the v2 formatted controller composition.
                   response = new Failure(new ReplyMeta(QuorumError.UNSUPPORTED_VERSION,
