@@ -18,10 +18,10 @@ import vn.huyqt.logbroker.storage.LogRecord;
  * synchronized only to advance the rotation cursor; the request itself runs asynchronously.
  */
 public final class Consumer {
-    private final BrokerClient client;
+    private final RequestClient client;
     private int rotation;
 
-    public Consumer(BrokerClient client) {
+    public Consumer(RequestClient client) {
         this.client = Objects.requireNonNull(client);
     }
 
@@ -52,6 +52,22 @@ public final class Consumer {
             offsets.put(entry.partition(), entry.offset());
         return client.request(new Protocol.Fetch(maxBytes, minBytes, maxWaitMs, ordered))
                 .thenApply(response -> {
+                    if (response instanceof vn.huyqt.logbroker.protocol.ClusterProtocol.FetchReply cluster) {
+                        var results = new ArrayList<PartitionRecords>();
+                        for (var partition : cluster.results()) {
+                            long requested = offsets.getOrDefault(partition.partition(), Long.MIN_VALUE);
+                            var records = new ArrayList<FetchedRecord>();
+                            for (var batch : partition.batches()) {
+                                long offset = batch.baseOffset();
+                                for (var record : batch.batch().records()) {
+                                    if (offset >= requested) records.add(new FetchedRecord(offset, record)); offset++;
+                                }
+                            }
+                            results.add(new PartitionRecords(partition.partition(), partition.error(), partition.logStartOffset(),
+                                    partition.highWatermark(), records));
+                        }
+                        return List.copyOf(results);
+                    }
                     if (!(response instanceof Protocol.FetchReply reply))
                         throw new IllegalStateException("Unexpected Fetch response: " + response);
                     var results = new ArrayList<PartitionRecords>();

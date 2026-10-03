@@ -20,12 +20,30 @@ tasks in [the implementation plan](2026-10-03-cluster-phase-4.md) still need exe
 | 10 Lifecycle and serving gate | Complete | `8ffddca` |
 | 11 Partition inventory/provisioning | Complete | `d420a4d` |
 | 12 Cluster broker composition/forwarding | Complete | `7345b17` |
-| 13 Data wire v2 and guarded I/O | Complete; WSL verification running | See Task 13 commit |
-| 14 Cluster client/routing/retries | Pending | |
+| 13 Data wire v2 and guarded I/O | Complete | `2f049ce` |
+| 14 Cluster client/routing/retries | Complete | See Task 14 commit |
 | 15 Cluster process/fault acceptance | Pending | |
 | 16 Operations/examples/documentation/final verification | Pending | |
 
 ## Verification evidence
+
+Task 14, 2026-10-03:
+
+- ClusterClient pins cluster identity, guards metadata offsets/topic UUID, replaces endpoint
+  connections and bounds operations, queued bytes and live connections. Produce routes by owner,
+  retries only safe rejected entries and preserves partial successful/UNKNOWN results in order.
+- Producer/Consumer now use RequestClient; original deadlines survive discovery/backoff/retry.
+  Fetch polls share one global budget/minimum, delegate the oversized exception once and retain offsets.
+- New regression reproduced application callbacks running under the routing lock. Futures now publish
+  after releasing that lock; metadata, Produce and close callback regressions pass.
+- Other regressions cover silent bootstrap failover, foreign cluster, single-flight refresh,
+  metadata regression/endpoint replacement, same-name different UUID, cancellation/bounds,
+  sent CreateTopic deadline UNKNOWN, partial UNKNOWN and ordered Producer retries.
+- Windows `mvn clean verify`: 416 tests, zero failures/errors, three strict process skips,
+  completed 23:04:52. Fresh WSL/ext4 `mvn clean verify`: 416 tests, zero failures/errors/skips,
+  completed 23:06:58. Evidence: `target/phase4-task14-wsl/` (ignored build output).
+- Real three-controller/three-broker data and fault acceptance remains Task 15. Task 16
+  still owns production examples/operator documentation and final acceptance.
 
 Task 13, 2026-10-03:
 
@@ -34,7 +52,8 @@ Task 13, 2026-10-03:
 - Focused Checkpoint B broker/protocol/lifecycle suite: 43 tests, zero failures/errors/skips,
   completed 22:34:12 before final additional regressions.
 - Final Windows `mvn clean verify`: 400 tests, zero failures/errors, three strict process skips,
-  completed 22:40:31. WSL/ext4 verification running on a fresh source copy.
+  completed 22:40:31. Fresh WSL/ext4 `mvn clean verify`: 400 tests, zero failures/errors/skips,
+  completed 22:41:35. Logs/reports: `target/phase4-task13-wsl/` (ignored output).
 - New regressions cover queued fencing, already-appended FLUSHED fencing, blocked append timeout,
   delayed mutation completion, partial multi-partition success, durable-prefix Fetch, delegated
   oversized batch, real TCP bootstrap/v1 rejection and malformed outcome/count bounds.
@@ -183,4 +202,4 @@ was stopped or user settings changed.
   production composition. Cluster roots/configs are refused by the transitional standalone launcher,
   so a formatted root cannot silently run with standalone semantics. Legacy launch fixtures remain
   until the Task 12/16 composition switch. Format tests use FaultFiles, not Windows durability claims.
-- Next: Task 13 data protocol v2 and guarded partition I/O.
+- Next: Task 15 real cluster process/fault acceptance.

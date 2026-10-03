@@ -26,7 +26,7 @@ import vn.huyqt.logbroker.transport.ClientTransport;
  * monitor is held, so stages already attached to them run on the completing thread (a transport
  * I/O thread, a scheduler thread, or the caller) with the monitor held.
  */
-public final class BrokerClient implements AutoCloseable {
+public final class BrokerClient implements AutoCloseable, RequestClient {
     private final ClientConfig config;
     private final ClientTransport transport;
     private final DeadlineScheduler clock;
@@ -61,7 +61,13 @@ public final class BrokerClient implements AutoCloseable {
      * not act on it.
      */
     public synchronized CompletableFuture<Protocol.Response> request(Protocol.Request body) {
+        return request(body, clock.nanoTime() + config.requestTimeout().toNanos());
+    }
+
+    /** Uses the caller's original absolute deadline; a reconnect never resets it. */
+    public synchronized CompletableFuture<Protocol.Response> request(Protocol.Request body, long deadlineNanos) {
         Objects.requireNonNull(body);
+        if (clock.nanoTime() >= deadlineNanos) return CompletableFuture.failedFuture(ClientException.notSent("Request deadline expired"));
         if (closed)
             return CompletableFuture.failedFuture(ClientException.notSent("Client closed"));
         if (pending.size() >= config.maxInFlight())
@@ -89,7 +95,7 @@ public final class BrokerClient implements AutoCloseable {
         var item = new Pending(frame, lease, generation);
         pending.put(id, item);
         // The deadline starts now, so time spent connecting counts against the request timeout.
-        item.timer = clock.schedule(clock.nanoTime() + config.requestTimeout().toNanos(),
+        item.timer = clock.schedule(deadlineNanos,
                 () -> timeout(id, item));
         item.result.whenComplete((ignored, error) -> {
             if (item.result.isCancelled())

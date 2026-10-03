@@ -13,6 +13,28 @@ import vn.huyqt.logbroker.support.LoopbackTransport;
 import vn.huyqt.logbroker.support.ManualScheduler;
 
 class ProducerTest {
+    @Test void clusterProducerKeepsItsLaneBusyThroughRoutingRetry() {
+        try (var h = new ClusterClientHarness()) {
+            h.replyMetadata(java.util.Map.of(1, List.of(0)));
+            var base = ClientConfig.defaults(new InetSocketAddress("127.0.0.1", 19091));
+            var config = new ClientConfig(base.address(), base.queuedBytes(), 32, 1, java.time.Duration.ZERO, base.requestTimeout());
+            try (var producer = new Producer(h.client(), config, h.clock)) {
+                var first = producer.send("orders", 0, new LogRecord(0, null, new byte[]{1}, List.of()), Protocol.AckMode.APPENDED);
+                h.runDue(); h.replyMetadata(java.util.Map.of(1, List.of(0))); h.runDue();
+                var second = producer.send("orders", 0, new LogRecord(0, null, new byte[]{2}, List.of()), Protocol.AckMode.APPENDED); h.runDue();
+                h.reply(1, new vn.huyqt.logbroker.protocol.ClusterProtocol.ProduceReply(Protocol.Error.none(), List.of(
+                        new vn.huyqt.logbroker.protocol.ClusterProtocol.ProduceResult(new Protocol.TopicPartition(ClusterClientHarness.TOPIC, 0),
+                                new Protocol.Error(vn.huyqt.logbroker.protocol.ErrorCode.OVERLOADED, "busy"),
+                                vn.huyqt.logbroker.protocol.ClusterProtocol.Outcome.REJECTED, -1, -1))));
+                assertFalse(first.isDone()); assertFalse(second.isDone());
+                assertEquals(1, h.requests(1).stream().filter(vn.huyqt.logbroker.protocol.ClusterProtocol.Produce.class::isInstance).count());
+                h.clock.advance(java.time.Duration.ofMillis(100)); h.runDue(); h.replyMetadata(java.util.Map.of(1, List.of(0)));
+                h.reply(1, ClusterClientRoutingTest.success(h.produceToPartition(0), 10));
+                assertEquals(10, first.join().offset()); assertFalse(second.isDone());
+                h.reply(1, ClusterClientRoutingTest.success(h.produceToPartition(0), 11)); assertEquals(11, second.join().offset());
+            }
+        }
+    }
     @Test void groupsRecordsByPartitionAndAckThenCompletesIndividualOffsets() {
         var transport = new LoopbackTransport();
         var config = ClientConfig.defaults(new InetSocketAddress("127.0.0.1", 9092));

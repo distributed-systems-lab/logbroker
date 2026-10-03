@@ -22,14 +22,15 @@ import vn.huyqt.logbroker.storage.RecordPayloadCodec;
  *
  * <p>Records are grouped per topic partition. Each partition has at most one Produce request in
  * flight, so sealed batches of a partition reach the broker in the order they were sealed. The
- * producer never retries a Produce; see {@link ClientException.Outcome#UNKNOWN}. Topic metadata
+ * producer keeps the lane occupied while its client retries explicitly rejected requests.
+ * An uncertain append is never retried; see {@link ClientException.Outcome#UNKNOWN}. Topic metadata
  * is looked up by name once and cached; a failed lookup is evicted so a later send tries again.
  *
- * <p>The producer shares the {@link BrokerClient} it is given and does not close it. All mutable
+ * <p>The producer shares the {@link RequestClient} it is given and does not close it. All mutable
  * state is guarded by the producer's monitor, so {@link #send} may be called from any thread.
  */
 public final class Producer implements AutoCloseable {
-    private final BrokerClient client;
+    private final RequestClient client;
     private final ClientConfig config;
     private final DeadlineScheduler clock;
     private final ResourceBudget queued;
@@ -39,7 +40,7 @@ public final class Producer implements AutoCloseable {
     private final Set<CompletableFuture<RecordMetadata>> outstanding = ConcurrentHashMap.newKeySet();
     private boolean closed;
 
-    public Producer(BrokerClient client, ClientConfig config, DeadlineScheduler clock) {
+    public Producer(RequestClient client, ClientConfig config, DeadlineScheduler clock) {
         this.client = Objects.requireNonNull(client);
         this.config = Objects.requireNonNull(config);
         this.clock = Objects.requireNonNull(clock);
@@ -99,7 +100,7 @@ public final class Producer implements AutoCloseable {
                 lease.close();
                 outstanding.remove(result);
             });
-            metadata = topics.computeIfAbsent(topic, this::lookup);
+            metadata = topics.computeIfAbsent(topic, name -> lookup(name, deadline));
         }
         metadata.whenComplete((info, error) -> {
             if (error != null) {
@@ -153,8 +154,15 @@ public final class Producer implements AutoCloseable {
         return result;
     }
 
-    private CompletableFuture<Protocol.TopicInfo> lookup(String topic) {
-        return client.request(new Protocol.Metadata(List.of(topic))).thenApply(reply -> {
+    private CompletableFuture<Protocol.TopicInfo> lookup(String topic, long deadline) {
+        return client.request(new Protocol.Metadata(List.of(topic)), deadline).thenApply(reply -> {
+            if (reply instanceof vn.huyqt.logbroker.protocol.ClusterProtocol.MetadataReply metadata) {
+                var found = metadata.topics().stream().filter(info -> info.name().equals(topic)).findFirst()
+                        .orElseThrow(() -> ClientException.notSent("Unknown topic"));
+                return new Protocol.TopicInfo(found.name(), found.id(), found.partitions().stream()
+                        .sorted(java.util.Comparator.comparingInt(vn.huyqt.logbroker.protocol.ClusterProtocol.PartitionInfo::partition))
+                        .map(partition -> new Protocol.PartitionInfo(partition.partition(), partition.error())).toList());
+            }
             if (!(reply instanceof Protocol.MetadataReply metadata))
                 throw ClientException.notSent("Metadata request failed");
             return metadata.topics().stream().filter(info -> info.name().equals(topic))
@@ -215,14 +223,23 @@ public final class Producer implements AutoCloseable {
             return;
         }
         lane.busy = true;
-        int timeout = (int) Math.min(Integer.MAX_VALUE, config.requestTimeout().toMillis());
+        long deadline = batch.sent.stream().mapToLong(BatchAccumulator.Item::deadline).min().orElseThrow();
+        int timeout = (int) Math.max(1, Math.min(30000, (deadline - clock.nanoTime()) / 1_000_000));
         client.request(new Protocol.Produce(batch.ack, timeout,
-                List.of(new Protocol.ProduceEntry(batch.partition, new Protocol.Batch(records)))))
+                List.of(new Protocol.ProduceEntry(batch.partition, new Protocol.Batch(records)))), deadline)
                 .whenComplete((reply, error) -> {
                     Protocol.ProduceResult outcome = null;
                     if (error == null && reply instanceof Protocol.ProduceReply produced
                             && !produced.results().isEmpty())
                         outcome = produced.results().getFirst();
+                    if (error == null && reply instanceof vn.huyqt.logbroker.protocol.ClusterProtocol.ProduceReply produced
+                            && produced.results().size() == 1 && produced.results().getFirst().partition().equals(batch.partition)) {
+                        var result = produced.results().getFirst();
+                        if (result.outcome() == vn.huyqt.logbroker.protocol.ClusterProtocol.Outcome.SUCCESS)
+                            outcome = new Protocol.ProduceResult(result.partition(), result.error(), result.firstOffset(), result.nextOffset());
+                        else error = new ClientException(result.retrySafe() ? ClientException.Outcome.NOT_SENT : ClientException.Outcome.UNKNOWN,
+                                result.error().code(), result.error().message(), null);
+                    }
                     // A reply without a result for our single entry leaves the outcome unknown.
                     if (error == null && outcome == null)
                         error = ClientException.unknown(new IllegalStateException("Missing Produce result"));
