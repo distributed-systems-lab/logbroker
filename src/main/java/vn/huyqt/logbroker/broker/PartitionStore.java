@@ -47,5 +47,9 @@ public interface PartitionStore extends AutoCloseable {
     @FunctionalInterface
     interface Factory {
         PartitionStore open(Path directory, LogConfig config) throws IOException;
+        /** Cluster callers provide strict creation/recovery policy; legacy injected factories keep their behavior. */
+        default PartitionStore open(Path directory,LogConfig config,vn.huyqt.logbroker.storage.LogOpenOptions options) throws IOException {
+            return open(directory,config);
+        }
     }
 }

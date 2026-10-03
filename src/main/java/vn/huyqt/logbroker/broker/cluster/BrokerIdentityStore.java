@@ -34,11 +34,7 @@ public final class BrokerIdentityStore implements AutoCloseable {
         files.writeNew(root.resolve(".broker.lock"),new byte[0]);
         Files.createDirectory(root.resolve("partitions")); files.syncDirectory(root.resolve("partitions"));
         ObserverStore.format(root.resolve("observer"),clusterId,files,LogConfig.defaults());
-        // INIT framing is shared with the inventory reader/provisioning implementation (Task 11).
-        byte[] init=new byte[39]; var out=ByteBuffer.wrap(init);
-        out.putInt(0x50494e32).putShort((short)2).putInt(init.length).putLong(1).put((byte)0);
-        out.putLong(identity.storageId().getMostSignificantBits()).putLong(identity.storageId().getLeastSignificantBits());
-        out.putInt(StateJournal.crc(init,0,init.length-4)); files.writeNew(root.resolve("partition-inventory.journal"),init);
+        PartitionInventory.format(root,identity.storageId(),files);
         files.syncDirectory(root);
         files.writeNew(root.resolve("broker-identity.bin"),encode(identity)); files.syncDirectory(root);
         if (root.toAbsolutePath().getParent()!=null) files.syncDirectory(root.toAbsolutePath().getParent());

@@ -106,6 +106,15 @@ public final class PartitionExecutor implements AutoCloseable {
         return result;
     }
 
+    /** One reserved barrier per lane, after its queued user/control tasks; callers stop new admission first. */
+    public synchronized CompletableFuture<Void> afterPending(TopicPartition key,Runnable action) {
+        Objects.requireNonNull(action); var lane=lane(key);
+        if(lane.afterPending!=null) throw new RejectedExecutionException("Lane barrier already pending");
+        var result=new CompletableFuture<Void>();
+        lane.afterPending=()-> { try { action.run(); result.complete(null); } catch(Throwable error) { result.completeExceptionally(error); } };
+        outstanding++; schedule(key,lane); return result;
+    }
+
     private Lane lane(TopicPartition key) {
         if (closed)
             throw new RejectedExecutionException("Partition executor closed");
@@ -132,8 +141,10 @@ public final class PartitionExecutor implements AutoCloseable {
             if (lane.control != null) {
                 task = lane.control;
                 lane.control = null;
-            } else {
+            } else if (!lane.userTasks.isEmpty()) {
                 task = lane.userTasks.removeFirst();
+            } else {
+                task=lane.afterPending; lane.afterPending=null;
             }
         }
         try {
@@ -141,7 +152,7 @@ public final class PartitionExecutor implements AutoCloseable {
         } finally {
             synchronized (this) {
                 outstanding--;
-                if (lane.control != null || !lane.userTasks.isEmpty()) {
+                if (lane.control != null || !lane.userTasks.isEmpty() || lane.afterPending != null) {
                     workers.execute(() -> runOne(key, lane));
                 } else {
                     lane.scheduled = false;
@@ -182,6 +193,7 @@ public final class PartitionExecutor implements AutoCloseable {
     private static final class Lane {
         final ArrayDeque<Runnable> userTasks = new ArrayDeque<>();
         Runnable control;
+        Runnable afterPending;
         boolean scheduled;
     }
 }

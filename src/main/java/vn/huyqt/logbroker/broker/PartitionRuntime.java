@@ -56,6 +56,7 @@ public final class PartitionRuntime implements AutoCloseable {
     private volatile long generation;
     private volatile boolean failed;
     private volatile boolean closed;
+    private CompletableFuture<Void> closeFuture;
     private DeadlineScheduler.Ticket flushTimer;
 
     /** Creates a runtime with a private waiter budget and a failure handler that does nothing. */
@@ -442,6 +443,16 @@ public final class PartitionRuntime implements AutoCloseable {
         synchronized (this) {
             listeners.clear();
         }
+    }
+
+    /** Stops admission immediately and finishes lane-owned waiters only after pending I/O drains. */
+    public synchronized CompletableFuture<Void> closeAsync() {
+        if(closeFuture!=null) return closeFuture;
+        closed=true; generation++;
+        if(flushTimer!=null) flushTimer.cancel();
+        try { closeFuture=executor.afterPending(partition,this::close); }
+        catch(RejectedExecutionException error) { closeFuture=CompletableFuture.failedFuture(error); }
+        return closeFuture;
     }
 
     private record Dirty(long nextOffset, int bytes, long atNanos) {

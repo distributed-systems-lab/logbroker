@@ -53,4 +53,18 @@ class PartitionExecutorTest {
             assertEquals(List.of("first", "flush", "second"), order);
         }
     }
+    @Test void reservedCloseBarrierWaitsForRunningAndQueuedTasks() throws Exception {
+        try(var executor=new PartitionExecutor(1,1,1)) {
+            var entered=new CountDownLatch(1); var release=new CountDownLatch(1);
+            List<String> order=java.util.Collections.synchronizedList(new ArrayList<>());
+            executor.submit(A,()-> { entered.countDown(); release.await(); order.add("running"); return null; });
+            assertTrue(entered.await(2,TimeUnit.SECONDS));
+            executor.submit(A,()-> { order.add("queued"); return null; });
+            executor.control(A,()->order.add("flush"));
+            var closed=executor.afterPending(A,()->order.add("close")); assertFalse(closed.isDone());
+            assertThrows(RejectedExecutionException.class,()->executor.afterPending(A,()->{}));
+            release.countDown(); closed.get(2,TimeUnit.SECONDS);
+            assertEquals(List.of("running","flush","queued","close"),order);
+        }
+    }
 }
