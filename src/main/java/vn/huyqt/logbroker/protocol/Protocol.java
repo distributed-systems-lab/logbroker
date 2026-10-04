@@ -1,14 +1,14 @@
 package vn.huyqt.logbroker.protocol;
 
+import vn.huyqt.logbroker.storage.LogRecord;
+
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
-import vn.huyqt.logbroker.storage.LogRecord;
 
 /** Transport-neutral version 1 request and response values. */
 public final class Protocol {
-    private Protocol() {
-    }
+    private Protocol() {}
 
     /** Partition reference: topic UUID plus partition ID, never the topic name. */
     public record TopicPartition(UUID topicId, int partition) {
@@ -22,7 +22,8 @@ public final class Protocol {
      * (wire 1) confirms the local durable end covers the batch. Neither implies replication.
      */
     public enum AckMode {
-        APPENDED, FLUSHED
+        APPENDED,
+        FLUSHED
     }
 
     /** Records of one wire batch. Offsets are not part of it; the broker assigns them. */
@@ -57,8 +58,8 @@ public final class Protocol {
     }
 
     /**
-     * Error scope of a response or of one entry. The message is diagnostic text capped at 512
-     * UTF-8 bytes on the wire; {@link ErrorCode#NONE} is expected to carry an empty message.
+     * Error scope of a response or of one entry. The message is diagnostic text capped at 512 UTF-8
+     * bytes on the wire; {@link ErrorCode#NONE} is expected to carry an empty message.
      */
     public record Error(ErrorCode code, String message) {
         public Error {
@@ -76,8 +77,8 @@ public final class Protocol {
      * Outcome for one Produce entry. On success {@code nextOffset} is exclusive; both offsets are
      * -1 when {@code error} is not {@code NONE}.
      */
-    public record ProduceResult(TopicPartition partition, Error error,
-            long firstOffset, long nextOffset) {
+    public record ProduceResult(
+            TopicPartition partition, Error error, long firstOffset, long nextOffset) {
         public ProduceResult {
             Objects.requireNonNull(partition);
             Objects.requireNonNull(error);
@@ -89,8 +90,12 @@ public final class Protocol {
      * data; both offsets are -1 when {@code error} is not {@code NONE}. An empty batch list is a
      * success and does not mean the end of the log was reached.
      */
-    public record FetchResult(TopicPartition partition, Error error, long logStartOffset,
-            long logEndOffset, List<FetchBatch> batches) {
+    public record FetchResult(
+            TopicPartition partition,
+            Error error,
+            long logStartOffset,
+            long logEndOffset,
+            List<FetchBatch> batches) {
         public FetchResult {
             Objects.requireNonNull(partition);
             Objects.requireNonNull(error);
@@ -114,16 +119,30 @@ public final class Protocol {
     }
 
     /** Request body; the frame's operation ID must match the body type. */
-    public sealed interface Request permits CreateTopic, Metadata, Produce, Fetch {
-    }
+    public sealed interface Request
+            permits CreateTopic,
+                    Metadata,
+                    Produce,
+                    Fetch,
+                    ClusterProtocol.CreateTopic,
+                    ClusterProtocol.Metadata,
+                    ClusterProtocol.Produce,
+                    ClusterProtocol.Fetch {}
 
     /**
      * Response body. A nonzero top-level error is encoded without the body and always decodes as
      * {@link Failure}.
      */
-    public sealed interface Response permits CreateTopicReply, MetadataReply,
-            ProduceReply, FetchReply, Failure {
-    }
+    public sealed interface Response
+            permits CreateTopicReply,
+                    MetadataReply,
+                    ProduceReply,
+                    FetchReply,
+                    Failure,
+                    ClusterProtocol.CreateTopicReply,
+                    ClusterProtocol.MetadataReply,
+                    ClusterProtocol.ProduceReply,
+                    ClusterProtocol.FetchReply {}
 
     public record CreateTopic(String name, int partitions) implements Request {
         public CreateTopic {
@@ -154,8 +173,8 @@ public final class Protocol {
      * Fetch request. {@code maxBytes} caps the whole response's batch bytes, {@code minBytes} is
      * the amount to wait for, and {@code maxWaitMs} bounds the wait.
      */
-    public record Fetch(int maxBytes, int minBytes, int maxWaitMs,
-            List<FetchEntry> entries) implements Request {
+    public record Fetch(int maxBytes, int minBytes, int maxWaitMs, List<FetchEntry> entries)
+            implements Request {
         public Fetch {
             entries = List.copyOf(entries);
         }
@@ -168,8 +187,8 @@ public final class Protocol {
         }
     }
 
-    public record MetadataReply(Error error, String host, int port,
-            List<TopicInfo> topics) implements Response {
+    public record MetadataReply(Error error, String host, int port, List<TopicInfo> topics)
+            implements Response {
         public MetadataReply {
             Objects.requireNonNull(error);
             Objects.requireNonNull(host);

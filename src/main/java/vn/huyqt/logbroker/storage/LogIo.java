@@ -7,8 +7,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
- * The mutating file operations used by storage, kept overridable so tests can inject short
- * writes, zero progress, and force or delete failures. Production code uses this class as is.
+ * The mutating file operations used by storage, kept overridable so tests can inject short writes,
+ * zero progress, and force or delete failures. Production code uses this class as is.
  */
 class LogIo {
     int write(FileChannel channel, ByteBuffer src, long position) throws IOException {

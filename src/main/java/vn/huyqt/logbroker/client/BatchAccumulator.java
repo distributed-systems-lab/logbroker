@@ -1,20 +1,21 @@
 package vn.huyqt.logbroker.client;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
 import vn.huyqt.logbroker.broker.DeadlineScheduler;
 import vn.huyqt.logbroker.broker.ResourceBudget;
 import vn.huyqt.logbroker.protocol.Protocol;
 import vn.huyqt.logbroker.storage.LogRecord;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+
 /**
  * One sealed wire batch and its individual record completions.
  *
- * <p>Owned by one {@link Producer} partition lane. Records are added and filtered while holding
- * the producer's monitor; {@code complete} runs from the Produce completion after the
- * {@code sent} list is fixed. Each item carries its own producer buffer lease; lease release is
- * idempotent, so every path that finishes an item closes it.
+ * <p>Owned by one {@link Producer} partition lane. Records are added and filtered while holding the
+ * producer's monitor; {@code complete} runs from the Produce completion after the {@code sent} list
+ * is fixed. Each item carries its own producer buffer lease; lease release is idempotent, so every
+ * path that finishes an item closes it.
  */
 final class BatchAccumulator {
     final Protocol.TopicPartition partition;
@@ -30,8 +31,12 @@ final class BatchAccumulator {
         this.ack = ack;
     }
 
-    void add(LogRecord record, CompletableFuture<Producer.RecordMetadata> result,
-            ResourceBudget.Lease lease, long deadline, int encodedBytes) {
+    void add(
+            LogRecord record,
+            CompletableFuture<Producer.RecordMetadata> result,
+            ResourceBudget.Lease lease,
+            long deadline,
+            int encodedBytes) {
         records.add(new Item(record, result, lease, deadline));
         bytes += encodedBytes;
     }
@@ -39,8 +44,8 @@ final class BatchAccumulator {
     /**
      * Returns the records to put on the wire and remembers them in {@code sent}. Records whose
      * future is already done (for example cancelled) are dropped, and records past their client
-     * deadline fail with {@link ClientException.Outcome#NOT_SENT}; both release their lease.
-     * Call at most once, just before sending.
+     * deadline fail with {@link ClientException.Outcome#NOT_SENT}; both release their lease. Call
+     * at most once, just before sending.
      */
     List<LogRecord> liveRecords(long now) {
         var live = new ArrayList<LogRecord>();
@@ -50,7 +55,8 @@ final class BatchAccumulator {
                 continue;
             }
             if (now >= item.deadline) {
-                item.result.completeExceptionally(ClientException.notSent("Record expired before send"));
+                item.result.completeExceptionally(
+                        ClientException.notSent("Record expired before send"));
                 item.lease.close();
             } else {
                 live.add(item.record);
@@ -77,18 +83,21 @@ final class BatchAccumulator {
                 offset++;
                 continue;
             }
-            if (error != null)
-                item.result.completeExceptionally(error);
+            if (error != null) item.result.completeExceptionally(error);
             else if (reply.error().code() != vn.huyqt.logbroker.protocol.ErrorCode.NONE)
-                item.result.completeExceptionally(new ClientException(
-                        ClientException.Outcome.UNKNOWN, reply.error().code(),
-                        reply.error().message(), null));
-            else
-                item.result.complete(new Producer.RecordMetadata(partition, offset++));
+                item.result.completeExceptionally(
+                        new ClientException(
+                                ClientException.Outcome.UNKNOWN,
+                                reply.error().code(),
+                                reply.error().message(),
+                                null));
+            else item.result.complete(new Producer.RecordMetadata(partition, offset++));
         }
     }
 
-    record Item(LogRecord record, CompletableFuture<Producer.RecordMetadata> result,
-            ResourceBudget.Lease lease, long deadline) {
-    }
+    record Item(
+            LogRecord record,
+            CompletableFuture<Producer.RecordMetadata> result,
+            ResourceBudget.Lease lease,
+            long deadline) {}
 }

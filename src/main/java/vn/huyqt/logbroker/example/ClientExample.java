@@ -1,69 +1,141 @@
 package vn.huyqt.logbroker.example;
 
-import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
 import vn.huyqt.logbroker.broker.DeadlineScheduler;
-import vn.huyqt.logbroker.client.BrokerClient;
 import vn.huyqt.logbroker.client.ClientConfig;
+import vn.huyqt.logbroker.client.ClusterClient;
+import vn.huyqt.logbroker.client.ClusterClientConfig;
 import vn.huyqt.logbroker.client.Consumer;
 import vn.huyqt.logbroker.client.Producer;
+import vn.huyqt.logbroker.protocol.ClusterProtocol;
 import vn.huyqt.logbroker.protocol.ErrorCode;
 import vn.huyqt.logbroker.protocol.Protocol;
 import vn.huyqt.logbroker.protocol.ProtocolLimits;
 import vn.huyqt.logbroker.storage.LogRecord;
 import vn.huyqt.logbroker.transport.netty.NettyClientTransport;
 
-/**
- * One durable Produce followed by an explicit-offset Fetch.
- *
- * <p>Runs against a broker started with {@code BrokerMain}; see {@code README.md} for the
- * commands. Prints {@code SUCCESS records=1} when the fetched record equals the produced one.
- */
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+/** Six durable partition writes and explicit-offset reads, discovered from bootstrap brokers. */
 public final class ClientExample {
     private ClientExample() {}
 
-    /** Expects {@code <host> <port> <topic>}. */
+    /** Expects {@code <host:port[,host:port...]> <topic>}. Owns and closes all client resources. */
     public static void main(String[] args) throws Exception {
-        if (args.length != 3) throw new IllegalArgumentException(
-                "Usage: ClientExample <host> <port> <topic>");
-        int count = run(args[0], Integer.parseInt(args[1]), args[2]);
-        System.out.println("SUCCESS records=" + count);
+        if (args.length != 2)
+            throw new IllegalArgumentException(
+                    "Usage: ClientExample <host:port[,host:port...]> <topic>");
+        var result = run(args[0], args[1]);
+        System.out.println("SUCCESS records=" + result.records() + " brokers=" + result.brokers());
     }
 
-    /**
-     * Creates {@code topic} with two partitions, produces one record to partition 0 with
-     * {@code FLUSHED}, and fetches it back from the returned offset. Each step waits at most 10
-     * seconds. An existing topic with two partitions is reused.
-     *
-     * @return the number of records fetched, which is 1 on success
-     * @throws IllegalStateException if CreateTopic returns an error, which includes the topic
-     *     already existing with a different partition count, or the fetched record differs
-     */
-    public static int run(String host, int port, String topic) throws Exception {
-        var config = ClientConfig.defaults(new InetSocketAddress(host, port));
+    /** Creates/reuses six RF1 partitions and verifies a FLUSHED record on each owner. */
+    public static Result run(String bootstrap, String topic) throws Exception {
+        var endpoints =
+                Arrays.stream(bootstrap.split(",", -1))
+                        .map(
+                                value -> {
+                                    int separator = value.lastIndexOf(':');
+                                    if (separator <= 0)
+                                        throw new IllegalArgumentException(
+                                                "Expected host:port: " + value);
+                                    return new InetSocketAddress(
+                                            value.substring(0, separator),
+                                            Integer.parseInt(value.substring(separator + 1)));
+                                })
+                        .toList();
+        var wire = ClientConfig.defaults(endpoints.getFirst());
         try (var clock = DeadlineScheduler.system();
-             var client = new BrokerClient(config, new NettyClientTransport(
-                     ProtocolLimits.defaults()), clock);
-             var producer = new Producer(client, config, clock)) {
-            var created = (Protocol.CreateTopicReply) client.request(
-                    new Protocol.CreateTopic(topic, 2)).get(10, TimeUnit.SECONDS);
-            if (created.error().code() != ErrorCode.NONE)
-                throw new IllegalStateException("CreateTopic: " + created.error());
-            var record = new LogRecord(System.currentTimeMillis(),
-                    "sample".getBytes(StandardCharsets.UTF_8),
-                    "hello-log-broker".getBytes(StandardCharsets.UTF_8), List.of());
-            var result = producer.send(topic, 0, record, Protocol.AckMode.FLUSHED)
-                    .get(10, TimeUnit.SECONDS);
+                var client =
+                        new ClusterClient(
+                                ClusterClientConfig.defaults(endpoints),
+                                wire,
+                                unused -> new NettyClientTransport(ProtocolLimits.defaults()),
+                                clock);
+                var producer = new Producer(client, wire, clock)) {
+            long deadline = clock.nanoTime() + Duration.ofSeconds(30).toNanos();
+            Protocol.Response response;
+            do {
+                response =
+                        client.request(new Protocol.CreateTopic(topic, 6), deadline)
+                                .get(35, TimeUnit.SECONDS);
+                if (!(response instanceof Protocol.Failure failure)
+                        || failure.error().code() != ErrorCode.NO_ELIGIBLE_BROKER) break;
+                Thread.sleep(50);
+            } while (clock.nanoTime() < deadline);
+            if (!(response instanceof ClusterProtocol.CreateTopicReply created)
+                    || created.error().code() != ErrorCode.NONE)
+                throw new IllegalStateException("CreateTopic: " + response);
+            // A committed controller command can precede the bootstrap observer applying it.
+            // Wait for that UUID and its ready assignments before resolving names in Producer.
+            deadline = clock.nanoTime() + Duration.ofSeconds(30).toNanos();
+            boolean ready = false;
+            do {
+                var image = client.refresh(deadline).get(35, TimeUnit.SECONDS);
+                ready =
+                        image.topics().stream()
+                                .filter(t -> t.id().equals(created.topicId()))
+                                .anyMatch(
+                                        t ->
+                                                t.partitions().size() == 6
+                                                        && t.partitions().stream()
+                                                                .allMatch(
+                                                                        p ->
+                                                                                p.error().code()
+                                                                                        == ErrorCode
+                                                                                                .NONE));
+                if (!ready) Thread.sleep(50);
+            } while (!ready && clock.nanoTime() < deadline);
+            if (!ready) throw new IllegalStateException("Topic assignments did not become ready");
             var consumer = new Consumer(client);
-            var fetched = consumer.fetch(List.of(new Protocol.FetchEntry(result.partition(),
-                    result.offset(), 1024 * 1024)), 1024 * 1024, 0, 0)
-                    .get(10, TimeUnit.SECONDS);
-            int count = fetched.getFirst().records().size();
-            if (count != 1 || !record.equals(fetched.getFirst().records().getFirst().record()))
-                throw new IllegalStateException("Fetched record differs from produced record");
-            return count;
+            int count = 0;
+            for (int partition = 0; partition < 6; partition++) {
+                var record =
+                        new LogRecord(
+                                System.currentTimeMillis(),
+                                null,
+                                ("hello-partition-" + partition).getBytes(StandardCharsets.UTF_8),
+                                List.of());
+                var result =
+                        producer.send(topic, partition, record, Protocol.AckMode.FLUSHED)
+                                .get(35, TimeUnit.SECONDS);
+                var fetched =
+                        consumer.fetch(
+                                        List.of(
+                                                new Protocol.FetchEntry(
+                                                        result.partition(),
+                                                        result.offset(),
+                                                        1024 * 1024)),
+                                        1024 * 1024,
+                                        0,
+                                        0)
+                                .get(35, TimeUnit.SECONDS)
+                                .getFirst();
+                if (fetched.error().code() != ErrorCode.NONE
+                        || fetched.records().size() != 1
+                        || !record.equals(fetched.records().getFirst().record()))
+                    throw new IllegalStateException(
+                            "Fetched record differs on partition " + partition);
+                count++;
+            }
+            var metadata =
+                    client.refresh(clock.nanoTime() + Duration.ofSeconds(30).toNanos())
+                            .get(35, TimeUnit.SECONDS);
+            var owners = new HashSet<Integer>();
+            metadata.topics().stream()
+                    .filter(t -> t.id().equals(created.topicId()))
+                    .findFirst()
+                    .orElseThrow()
+                    .partitions()
+                    .forEach(partition -> owners.add(partition.leaderId()));
+            return new Result(count, owners.size());
         }
     }
+
+    public record Result(int records, int brokers) {}
 }

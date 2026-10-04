@@ -2,9 +2,10 @@ package vn.huyqt.logbroker.broker;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import org.junit.jupiter.api.Test;
+
 import java.nio.file.Path;
 import java.time.Duration;
-import org.junit.jupiter.api.Test;
 
 class BrokerConfigTest {
     @Test

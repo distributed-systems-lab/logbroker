@@ -2,7 +2,7 @@
 
 Ngày: 2026-10-02
 
-Cập nhật: 2026-10-03. Người dùng đồng ý chuyển sang tiếp tục phục vụ khi chỉ mất liên lạc controller, sau review thiết kế. Bản này thay thế quyết định tự dừng theo heartbeat ngày 2026-10-02; đã cập nhật record granularity, epoch, version và tiêu chí kiểm chứng. Bản tổng hợp sửa đổi chờ review trước implementation plan; chưa triển khai Phase 4.
+Cập nhật: 2026-10-03. Người dùng đồng ý chuyển sang tiếp tục phục vụ khi chỉ mất liên lạc controller, sau review thiết kế. Bản này thay thế quyết định tự dừng theo heartbeat ngày 2026-10-02; đã cập nhật record granularity, epoch, version và tiêu chí kiểm chứng. Đã chuyển sang lập [implementation plan](../plans/2026-10-03-cluster-phase-4.md) theo yêu cầu người dùng ngày 2026-10-03; chưa triển khai Phase 4.
 
 ## 1. Mục tiêu và các quyết định
 

@@ -34,14 +34,12 @@ final class LogSegment implements AutoCloseable {
     static LogSegment open(Path path, long baseOffset, LogIo io) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(io, "io");
-        if (baseOffset < 0)
-            throw new IllegalArgumentException("Negative base offset");
+        if (baseOffset < 0) throw new IllegalArgumentException("Negative base offset");
         return new LogSegment(path, baseOffset, io, FileChannel.open(path, READ, WRITE, CREATE));
     }
 
     static Path dataPath(Path directory, long baseOffset) {
-        if (baseOffset < 0)
-            throw new IllegalArgumentException("Negative base offset");
+        if (baseOffset < 0) throw new IllegalArgumentException("Negative base offset");
         return directory.resolve(String.format(Locale.ROOT, "%020d.log", baseOffset));
     }
 
@@ -75,8 +73,7 @@ final class LogSegment implements AutoCloseable {
             if (n < 0 || (n == 0 && ++zeroProgress >= 16)) {
                 throw new IOException("Write made no progress at " + path + ":" + position);
             }
-            if (n > 0)
-                zeroProgress = 0;
+            if (n > 0) zeroProgress = 0;
             try {
                 position = Math.addExact(position, n);
             } catch (ArithmeticException e) {
@@ -92,16 +89,13 @@ final class LogSegment implements AutoCloseable {
      * @throws EOFException if the file ends first
      */
     byte[] readBytes(long position, int length) throws IOException {
-        if (position < 0 || length < 0)
-            throw new IllegalArgumentException("Invalid read range");
+        if (position < 0 || length < 0) throw new IllegalArgumentException("Invalid read range");
         ByteBuffer buffer = ByteBuffer.allocate(length);
         int zeroProgress = 0;
         while (buffer.hasRemaining()) {
             int n = channel.read(buffer, position);
-            if (n < 0)
-                throw new EOFException("EOF at " + path + ":" + position);
-            if (n == 0 && ++zeroProgress >= 16)
-                throw new IOException("Read made no progress");
+            if (n < 0) throw new EOFException("EOF at " + path + ":" + position);
+            if (n == 0 && ++zeroProgress >= 16) throw new IOException("Read made no progress");
             if (n > 0) {
                 zeroProgress = 0;
                 position += n;

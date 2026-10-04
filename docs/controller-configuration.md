@@ -1,5 +1,12 @@
 # Metadata quorum configuration and example
 
+Phase 4 controller metadata and CLI admin wire now default to version 2. Use
+[cluster configuration](cluster-configuration.md) for six-node setup. Existing version 1
+roots require `metadata.version=1` and CLI `--metadata-version 1`; format does not migrate roots.
+
+The quorum-only commands below intentionally use version 1 and `config/controller-{0,1,2}.properties`.
+Version 2 CreateTopic requires eligible brokers; use `config/cluster/` for the Phase 4 setup.
+
 Java 21, Maven 3.9, Linux/WSL on a filesystem supporting directory force are required for strict controllers. Use WSL ext4 (for example a project under `/tmp` or your Linux home), then follow the commands below in Bash. See [operation and failure contract](controller-operation.md). Keep controller roots separate from Phase 2 broker directories. Do not reuse existing user data.
 
 Properties are strict: unknown keys fail startup. Relative `data.dir` is relative to the process working directory. All three voters must use identical cluster UUID and voter list, different node IDs, and unique roots. The sample UUID is an example only; replace it in all three files with the newly generated UUID **before formatting or starting**.
@@ -42,9 +49,9 @@ MAIN=vn.huyqt.logbroker.controller.ControllerMain
 cluster=$(java -cp "$CP" "$CLI" generate-cluster-id)
 voters='0@127.0.0.1:19090,1@127.0.0.1:19091,2@127.0.0.1:19092'
 sed -i "s/^cluster.id=.*/cluster.id=$cluster/" config/controller-{0,1,2}.properties
-java -cp "$CP" "$CLI" format --data target/controller-0 --node 0 --cluster "$cluster" --voters "$voters"
-java -cp "$CP" "$CLI" format --data target/controller-1 --node 1 --cluster "$cluster" --voters "$voters"
-java -cp "$CP" "$CLI" format --data target/controller-2 --node 2 --cluster "$cluster" --voters "$voters"
+java -cp "$CP" "$CLI" format --metadata-version 1 --data target/controller-0 --node 0 --cluster "$cluster" --voters "$voters"
+java -cp "$CP" "$CLI" format --metadata-version 1 --data target/controller-1 --node 1 --cluster "$cluster" --voters "$voters"
+java -cp "$CP" "$CLI" format --metadata-version 1 --data target/controller-2 --node 2 --cluster "$cluster" --voters "$voters"
 ```
 
 Start each node in its own terminal from the same project directory:
@@ -58,10 +65,10 @@ java -cp 'target/classes:target/dependency/*' vn.huyqt.logbroker.controller.Cont
 Admin terminal (reuse `cluster`, `voters`, `CP`, `CLI`):
 
 ```bash
-java -cp "$CP" "$CLI" create-topic --cluster "$cluster" --voters "$voters" --name orders --partitions 3
-java -cp "$CP" "$CLI" metadata --cluster "$cluster" --voters "$voters"
-java -cp "$CP" "$CLI" local-metadata --cluster "$cluster" --voters "$voters" --node 1
-java -cp "$CP" "$CLI" describe-quorum --cluster "$cluster" --voters "$voters" --node 0
+java -cp "$CP" "$CLI" create-topic --metadata-version 1 --cluster "$cluster" --voters "$voters" --name orders --partitions 3
+java -cp "$CP" "$CLI" metadata --metadata-version 1 --cluster "$cluster" --voters "$voters"
+java -cp "$CP" "$CLI" local-metadata --metadata-version 1 --cluster "$cluster" --voters "$voters" --node 1
+java -cp "$CP" "$CLI" describe-quorum --metadata-version 1 --cluster "$cluster" --voters "$voters" --node 0
 ```
 
 Create prints `CREATED topicId=<UUID>`; retry with the same name/count returns the same UUID. Metadata prints `consistency=LINEARIZABLE` only after a fresh committed barrier; local read prints `consistency=LOCAL node=1` and may lag. Both expose epoch, leader, exclusive commit and applied offsets, followed by topic descriptors. Describe adds role, exclusive log/durable/snapshot ends, readiness and leader-observed durable matches. Timeout after possible transmission is `UNKNOWN`; read metadata or retry the same create name/count to resolve it.

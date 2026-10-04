@@ -10,8 +10,8 @@ public interface DeadlineScheduler extends AutoCloseable {
     long nanoTime();
 
     /**
-     * Runs {@code action} once at or after {@code deadlineNanos} on {@link #nanoTime()}'s scale.
-     * A deadline already in the past runs as soon as possible.
+     * Runs {@code action} once at or after {@code deadlineNanos} on {@link #nanoTime()}'s scale. A
+     * deadline already in the past runs as soon as possible.
      */
     Ticket schedule(long deadlineNanos, Runnable action);
 
@@ -34,16 +34,18 @@ public interface DeadlineScheduler extends AutoCloseable {
     }
 
     /**
-     * Single-threaded scheduler; all callbacks run serially on the {@code broker-deadlines}
-     * thread. {@link #close()} discards pending actions.
+     * Single-threaded scheduler; all callbacks run serially on the {@code broker-deadlines} thread.
+     * {@link #close()} discards pending actions.
      */
     final class SystemScheduler implements DeadlineScheduler {
-        private final ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1,
-                action -> {
-                    var thread = new Thread(action, "broker-deadlines");
-                    thread.setDaemon(true);
-                    return thread;
-                });
+        private final ScheduledThreadPoolExecutor executor =
+                new ScheduledThreadPoolExecutor(
+                        1,
+                        action -> {
+                            var thread = new Thread(action, "broker-deadlines");
+                            thread.setDaemon(true);
+                            return thread;
+                        });
 
         private SystemScheduler() {
             executor.setRemoveOnCancelPolicy(true);

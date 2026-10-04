@@ -1,5 +1,12 @@
 package vn.huyqt.logbroker.broker;
 
+import vn.huyqt.logbroker.broker.cluster.BrokerClusterConfig;
+import vn.huyqt.logbroker.broker.cluster.BrokerIdentityStore;
+import vn.huyqt.logbroker.broker.cluster.BrokerStatus;
+import vn.huyqt.logbroker.controller.persistence.DurableFiles;
+import vn.huyqt.logbroker.protocol.ProtocolLimits;
+import vn.huyqt.logbroker.storage.LogConfig;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -7,37 +14,114 @@ import java.time.Duration;
 import java.util.HashSet;
 import java.util.Properties;
 import java.util.Set;
-import java.util.concurrent.CountDownLatch;
-import vn.huyqt.logbroker.protocol.ProtocolLimits;
-import vn.huyqt.logbroker.storage.LogConfig;
 
 /**
- * CLI entry point for one local broker.
+ * CLI entry point for a formatted cluster broker.
  *
  * <p>Options and properties are described in {@code docs/broker-configuration.md}.
  */
 public final class BrokerMain {
-    private BrokerMain() {
-    }
+    private BrokerMain() {}
 
     /**
      * Starts a broker, prints {@code READY <port>} on standard output once the listener is bound,
      * and blocks until the process exits. A JVM shutdown hook closes the broker.
      */
     public static void main(String[] args) throws Exception {
+        if (args.length > 0 && args[0].equals("format")) {
+            var identity =
+                    format(java.util.Arrays.copyOfRange(args, 1, args.length), new DurableFiles());
+            System.out.println(
+                    "FORMATTED broker="
+                            + identity.brokerId()
+                            + " storageId="
+                            + identity.storageId());
+            return;
+        }
         BrokerConfig config = parse(args);
+        BrokerClusterConfig cluster = clusterConfig(args);
         var logger = System.getLogger(BrokerMain.class.getName());
-        Broker broker = Broker.start(config);
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            try {
-                broker.close();
-            } catch (RuntimeException error) {
-                logger.log(System.Logger.Level.ERROR, "Broker shutdown failed", error);
-            }
-        }, "broker-shutdown-hook"));
+        Broker broker = Broker.start(config, cluster);
+        Runtime.getRuntime()
+                .addShutdownHook(
+                        new Thread(
+                                () -> {
+                                    try {
+                                        broker.close();
+                                    } catch (RuntimeException error) {
+                                        logger.log(
+                                                System.Logger.Level.ERROR,
+                                                "Broker shutdown failed",
+                                                error);
+                                    }
+                                },
+                                "broker-shutdown-hook"));
         System.out.println("READY " + broker.address().getPort());
         System.out.flush();
-        new CountDownLatch(1).await();
+        var previous = broker.status().lifecycle();
+        long nextReport = 0;
+        try {
+            while (true) {
+                var status = broker.status();
+                long now = System.nanoTime();
+                if (status.lifecycle() != previous || now >= nextReport) {
+                    System.out.println(statusLine(status));
+                    System.out.flush();
+                    previous = status.lifecycle();
+                    nextReport = now + Duration.ofSeconds(5).toNanos();
+                }
+                if (status.lifecycle()
+                                == vn.huyqt.logbroker.broker.cluster.BrokerLifecycle.State.FAILED
+                        || status.lifecycle()
+                                == vn.huyqt.logbroker.broker.cluster.BrokerLifecycle.State.STOPPING)
+                    throw new IllegalStateException("Broker failed; see preceding diagnostic");
+                Thread.sleep(100);
+            }
+        } finally {
+            broker.close();
+        }
+    }
+
+    static String statusLine(BrokerStatus status) {
+        return "STATUS broker="
+                + status.identity().brokerId()
+                + " storageId="
+                + status.identity().storageId()
+                + " session="
+                + status.session()
+                + " state="
+                + status.lifecycle()
+                + " controllerHint="
+                + status.controllerHint()
+                + " heartbeatAgeMillis="
+                + status.heartbeatAgeMillis()
+                + " appliedOffset="
+                + status.appliedOffset()
+                + " durableOffset="
+                + status.durableOffset()
+                + " snapshotEnd="
+                + status.snapshotEnd()
+                + " generation="
+                + status.observerGeneration()
+                + " partitions="
+                + status.partitionCounts()
+                + " budgets="
+                + status.budgetUsage()
+                + " failedPartitions="
+                + status.partitionFailures().keySet();
+    }
+
+    static BrokerClusterConfig clusterConfig(String[] args) throws IOException {
+        for (int i = 0; i + 1 < args.length; i += 2) {
+            if (args[i].equals("--config")) {
+                var settings = new Properties();
+                try (var input = Files.newInputStream(Path.of(args[i + 1]))) {
+                    settings.load(input);
+                }
+                return BrokerClusterConfig.fromProperties(settings);
+            }
+        }
+        throw new IllegalArgumentException("Cluster startup requires --config");
     }
 
     // Fail closed: unknown or duplicate options and unknown property keys abort startup instead
@@ -47,8 +131,7 @@ public final class BrokerMain {
         String host = null;
         Integer port = null;
         var seen = new HashSet<String>();
-        if (args.length % 2 != 0)
-            throw new IllegalArgumentException("Options need values");
+        if (args.length % 2 != 0) throw new IllegalArgumentException("Options need values");
         for (int i = 0; i < args.length; i += 2) {
             if (!seen.add(args[i]))
                 throw new IllegalArgumentException("Duplicate option " + args[i]);
@@ -60,43 +143,73 @@ public final class BrokerMain {
                 default -> throw new IllegalArgumentException("Unknown option " + args[i]);
             }
         }
-        if (data == null)
-            throw new IllegalArgumentException("--data is required");
+        if (data == null) throw new IllegalArgumentException("--data is required");
         var defaults = BrokerConfig.defaults(data);
         var properties = new Properties();
         if (propertyFile != null)
             try (var input = Files.newInputStream(propertyFile)) {
                 properties.load(input);
             }
-        Set<String> allowed = Set.of("host", "port", "flushIntervalMs", "flushBytes",
-                "maxFetchBytes", "maxFrameBytes", "maxWireBatchBytes",
-                "maxStorageBatchBytes", "maxPartitionEntries", "maxRecordsPerBatch",
-                "segmentBytes", "maxBatchBytes", "indexIntervalBytes", "dataWorkers",
-                "validationWorkers", "maxConnections", "maxTasksPerPartition",
-                "maxValidationTasks", "maxQueuedRequestBytes",
-                "maxOutboundPerConnection", "maxOutboundTotal", "maxRequestContexts",
-                "maxFlushedWaiters", "maxTopics", "maxPartitions", "shutdownTimeoutMs");
+        Set<String> allowed =
+                new HashSet<>(
+                        Set.of(
+                                "host",
+                                "port",
+                                "flushIntervalMs",
+                                "flushBytes",
+                                "maxFetchBytes",
+                                "maxFrameBytes",
+                                "maxWireBatchBytes",
+                                "maxStorageBatchBytes",
+                                "maxPartitionEntries",
+                                "maxRecordsPerBatch",
+                                "segmentBytes",
+                                "maxBatchBytes",
+                                "indexIntervalBytes",
+                                "dataWorkers",
+                                "validationWorkers",
+                                "maxConnections",
+                                "maxTasksPerPartition",
+                                "maxValidationTasks",
+                                "maxQueuedRequestBytes",
+                                "maxOutboundPerConnection",
+                                "maxOutboundTotal",
+                                "maxRequestContexts",
+                                "maxFlushedWaiters",
+                                "maxTopics",
+                                "maxPartitions",
+                                "shutdownTimeoutMs"));
+        allowed.addAll(BrokerClusterConfig.PROPERTY_KEYS);
         for (String key : properties.stringPropertyNames())
             if (!allowed.contains(key))
                 throw new IllegalArgumentException("Unknown property " + key);
         var protocol = defaults.protocolLimits();
-        protocol = new ProtocolLimits(integer(properties, "maxFrameBytes", protocol.maxFrameBytes()),
-                integer(properties, "maxWireBatchBytes", protocol.maxWireBatchBytes()),
-                integer(properties, "maxStorageBatchBytes", protocol.maxStorageBatchBytes()),
-                integer(properties, "maxPartitionEntries", protocol.maxPartitionEntries()),
-                integer(properties, "maxRecordsPerBatch", protocol.maxRecordsPerBatch()));
+        protocol =
+                new ProtocolLimits(
+                        integer(properties, "maxFrameBytes", protocol.maxFrameBytes()),
+                        integer(properties, "maxWireBatchBytes", protocol.maxWireBatchBytes()),
+                        integer(
+                                properties,
+                                "maxStorageBatchBytes",
+                                protocol.maxStorageBatchBytes()),
+                        integer(properties, "maxPartitionEntries", protocol.maxPartitionEntries()),
+                        integer(properties, "maxRecordsPerBatch", protocol.maxRecordsPerBatch()));
         var storage = defaults.logConfig();
-        storage = new LogConfig(number(properties, "segmentBytes", storage.segmentBytes()),
-                integer(properties, "maxBatchBytes", storage.maxBatchBytes()),
-                integer(properties, "indexIntervalBytes", storage.indexIntervalBytes()));
-        return new BrokerConfig(data,
+        storage =
+                new LogConfig(
+                        number(properties, "segmentBytes", storage.segmentBytes()),
+                        integer(properties, "maxBatchBytes", storage.maxBatchBytes()),
+                        integer(properties, "indexIntervalBytes", storage.indexIntervalBytes()));
+        return new BrokerConfig(
+                data,
                 host != null ? host : properties.getProperty("host", defaults.host()),
                 port != null ? port : integer(properties, "port", defaults.port()),
-                Duration.ofMillis(number(properties, "flushIntervalMs",
-                        defaults.flushInterval().toMillis())),
+                Duration.ofMillis(
+                        number(properties, "flushIntervalMs", defaults.flushInterval().toMillis())),
                 number(properties, "flushBytes", defaults.flushBytes()),
                 integer(properties, "maxFetchBytes", defaults.maxFetchBytes()),
-                protocol, storage,
+                protocol,
+                storage,
                 integer(properties, "dataWorkers", defaults.dataWorkers()),
                 integer(properties, "validationWorkers", defaults.validationWorkers()),
                 integer(properties, "maxConnections", defaults.maxConnections()),
@@ -109,8 +222,32 @@ public final class BrokerMain {
                 integer(properties, "maxFlushedWaiters", defaults.maxFlushedWaiters()),
                 integer(properties, "maxTopics", defaults.maxTopics()),
                 integer(properties, "maxPartitions", defaults.maxPartitions()),
-                Duration.ofMillis(number(properties, "shutdownTimeoutMs",
-                        defaults.shutdownTimeout().toMillis())));
+                Duration.ofMillis(
+                        number(
+                                properties,
+                                "shutdownTimeoutMs",
+                                defaults.shutdownTimeout().toMillis())));
+    }
+
+    static BrokerIdentityStore.Identity format(String[] args, DurableFiles files)
+            throws IOException {
+        var options =
+                vn.huyqt.logbroker.controller.ControllerOptions.parse(
+                        args, 0, Set.of("config", "data"));
+        var path =
+                Path.of(
+                        vn.huyqt.logbroker.controller.ControllerOptions.required(
+                                options, "config"));
+        var root =
+                Path.of(vn.huyqt.logbroker.controller.ControllerOptions.required(options, "data"));
+        var properties = new Properties();
+        try (var input = Files.newInputStream(path)) {
+            properties.load(input);
+        }
+        var cluster = BrokerClusterConfig.fromProperties(properties);
+        // Also validate data-plane limits and unknown properties before creating any files.
+        parse(args);
+        return BrokerIdentityStore.format(root, cluster.clusterId(), cluster.brokerId(), files);
     }
 
     private static int integer(Properties properties, String key, int fallback) {

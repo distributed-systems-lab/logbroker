@@ -11,6 +11,18 @@ import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
+
+import vn.huyqt.logbroker.broker.BrokerConfig;
+import vn.huyqt.logbroker.broker.DeadlineScheduler;
+import vn.huyqt.logbroker.broker.RequestContext;
+import vn.huyqt.logbroker.broker.RequestDispatcher;
+import vn.huyqt.logbroker.broker.ResourceBudget;
+import vn.huyqt.logbroker.protocol.ErrorCode;
+import vn.huyqt.logbroker.protocol.Protocol;
+import vn.huyqt.logbroker.protocol.ProtocolCodec;
+import vn.huyqt.logbroker.protocol.ProtocolException;
+import vn.huyqt.logbroker.transport.ServerTransport;
+
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
@@ -24,27 +36,16 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import vn.huyqt.logbroker.broker.BrokerConfig;
-import vn.huyqt.logbroker.broker.DeadlineScheduler;
-import vn.huyqt.logbroker.broker.RequestContext;
-import vn.huyqt.logbroker.broker.RequestDispatcher;
-import vn.huyqt.logbroker.broker.ResourceBudget;
-import vn.huyqt.logbroker.protocol.ErrorCode;
-import vn.huyqt.logbroker.protocol.Protocol;
-import vn.huyqt.logbroker.protocol.ProtocolCodec;
-import vn.huyqt.logbroker.protocol.ProtocolException;
-import vn.huyqt.logbroker.transport.ServerTransport;
 
 /**
  * Bounded Netty TCP adapter. All storage work is delegated outside event loops.
  *
- * <p>Event loops only frame bytes with {@link BoundedFrameDecoder}. Request decoding and
- * response encoding run on a fixed validation pool with a bounded queue; dispatch goes to the
- * {@link RequestDispatcher}. Limits from {@link BrokerConfig} (see
- * {@code docs/broker-configuration.md}) cover connections, frame and decoded request bytes,
- * validation tasks, live request contexts, and outbound bytes per connection and in total.
- * Exceeding a limit, or any malformed framing, closes the offending connection; requests are
- * never queued without bound.
+ * <p>Event loops only frame bytes with {@link BoundedFrameDecoder}. Request decoding and response
+ * encoding run on a fixed validation pool with a bounded queue; dispatch goes to the {@link
+ * RequestDispatcher}. Limits from {@link BrokerConfig} (see {@code docs/broker-configuration.md})
+ * cover connections, frame and decoded request bytes, validation tasks, live request contexts, and
+ * outbound bytes per connection and in total. Exceeding a limit, or any malformed framing, closes
+ * the offending connection; requests are never queued without bound.
  *
  * <p>{@link #start}, {@link #stopAccepting} and {@link #closeAsync} are synchronized.
  */
@@ -70,28 +71,38 @@ public final class NettyServerTransport implements ServerTransport {
     }
 
     /**
-     * @param inputBudget caller-supplied budget for framed and decoded request bytes, used
-     *     instead of one sized from {@link BrokerConfig#maxQueuedRequestBytes()}
+     * @param inputBudget caller-supplied budget for framed and decoded request bytes, used instead
+     *     of one sized from {@link BrokerConfig#maxQueuedRequestBytes()}
      */
-    public NettyServerTransport(BrokerConfig config, DeadlineScheduler clock,
-            ResourceBudget inputBudget) {
+    public NettyServerTransport(
+            BrokerConfig config, DeadlineScheduler clock, ResourceBudget inputBudget) {
         this.config = config;
         this.clock = clock;
-        codec = new ProtocolCodec(config.protocolLimits());
+        codec =
+                new ProtocolCodec(
+                        config.protocolLimits(),
+                        new vn.huyqt.logbroker.controller.metadata.MetadataLimits(
+                                32, config.maxTopics(), config.maxPartitions(), 64 * 1024 * 1024));
         connectionBudget = new ResourceBudget(config.maxConnections());
         this.inputBudget = inputBudget;
         outboundBudget = new ResourceBudget(config.maxOutboundTotal());
         contextBudget = new ResourceBudget(config.maxRequestContexts());
-        validation = new ThreadPoolExecutor(config.validationWorkers(), config.validationWorkers(),
-                // Bounded queue with AbortPolicy: a full queue surfaces as
-                // RejectedExecutionException, which closes the connection instead of blocking.
-                0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(config.maxValidationTasks()),
-                task -> {
-                    var thread = new Thread(task, "broker-validation");
-                    thread.setDaemon(true);
-                    return thread;
-                },
-                new ThreadPoolExecutor.AbortPolicy());
+        validation =
+                new ThreadPoolExecutor(
+                        config.validationWorkers(),
+                        config.validationWorkers(),
+                        // Bounded queue with AbortPolicy: a full queue surfaces as
+                        // RejectedExecutionException, which closes the connection instead of
+                        // blocking.
+                        0,
+                        TimeUnit.MILLISECONDS,
+                        new ArrayBlockingQueue<>(config.maxValidationTasks()),
+                        task -> {
+                            var thread = new Thread(task, "broker-validation");
+                            thread.setDaemon(true);
+                            return thread;
+                        },
+                        new ThreadPoolExecutor.AbortPolicy());
     }
 
     /**
@@ -103,90 +114,106 @@ public final class NettyServerTransport implements ServerTransport {
      * @throws IllegalStateException if the transport was already started
      */
     @Override
-    public synchronized InetSocketAddress start(InetSocketAddress bind,
-            RequestDispatcher dispatcher)
-            throws IOException {
-        if (listener != null)
-            throw new IllegalStateException("Transport already started");
+    public synchronized InetSocketAddress start(
+            InetSocketAddress bind, RequestDispatcher dispatcher) throws IOException {
+        if (listener != null) throw new IllegalStateException("Transport already started");
         this.dispatcher = dispatcher;
         boss = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
         loops = new MultiThreadIoEventLoopGroup(2, NioIoHandler.newFactory());
         try {
-            var bootstrap = new ServerBootstrap().group(boss, loops)
-                    .channel(NioServerSocketChannel.class)
-                    .childHandler(new ChannelInitializer<SocketChannel>() {
-                        @Override
-                        protected void initChannel(SocketChannel channel) {
-                            channel.pipeline().addLast(new BoundedFrameDecoder(
-                                    config.protocolLimits(), inputBudget, clock));
-                            channel.pipeline().addLast(new ConnectionHandler());
-                        }
-                    });
+            var bootstrap =
+                    new ServerBootstrap()
+                            .group(boss, loops)
+                            .channel(NioServerSocketChannel.class)
+                            .childHandler(
+                                    new ChannelInitializer<SocketChannel>() {
+                                        @Override
+                                        protected void initChannel(SocketChannel channel) {
+                                            channel.pipeline()
+                                                    .addLast(
+                                                            new BoundedFrameDecoder(
+                                                                    config.protocolLimits(),
+                                                                    inputBudget,
+                                                                    clock));
+                                            channel.pipeline().addLast(new ConnectionHandler());
+                                        }
+                                    });
             ChannelFuture bound = bootstrap.bind(bind).syncUninterruptibly();
-            if (!bound.isSuccess())
-                throw new IOException("Cannot bind broker", bound.cause());
+            if (!bound.isSuccess()) throw new IOException("Cannot bind broker", bound.cause());
             listener = bound.channel();
             return (InetSocketAddress) listener.localAddress();
         } catch (RuntimeException | IOException error) {
             boss.shutdownGracefully(0, 5, TimeUnit.SECONDS);
             loops.shutdownGracefully(0, 5, TimeUnit.SECONDS);
-            if (error instanceof IOException io)
-                throw io;
+            if (error instanceof IOException io) throw io;
             throw new IOException("Broker listener failed", error);
         }
     }
 
     @Override
     public synchronized void stopAccepting() {
-        if (listener != null)
-            listener.close();
+        if (listener != null) listener.close();
+    }
+
+    public java.util.Map<String, Long> budgetUsage() {
+        return java.util.Map.of(
+                "connections",
+                connectionBudget.used(),
+                "requestBytes",
+                inputBudget.used(),
+                "outboundBytes",
+                outboundBudget.used(),
+                "requestContexts",
+                contextBudget.used());
     }
 
     /**
      * {@inheritDoc}
      *
-     * <p>Runs on the common pool: closes the listener and every connection, waits up to
-     * {@link BrokerConfig#shutdownTimeout()} for validation tasks before forcing them to stop,
-     * then shuts down the event loops. Responses not yet written when a connection closes are
-     * dropped. The future completes exceptionally if the closing thread is interrupted.
+     * <p>Runs on the common pool: closes the listener and every connection, waits up to {@link
+     * BrokerConfig#shutdownTimeout()} for validation tasks before forcing them to stop, then shuts
+     * down the event loops. Responses not yet written when a connection closes are dropped. The
+     * future completes exceptionally if the closing thread is interrupted.
      */
     @Override
     public synchronized CompletableFuture<Void> closeAsync() {
-        if (closing != null)
-            return closing;
-        closing = CompletableFuture.runAsync(() -> {
-            stopAccepting();
-            for (Channel channel : Set.copyOf(connections))
-                channel.close();
-            validation.shutdown();
-            try {
-                if (!validation.awaitTermination(config.shutdownTimeout().toMillis(),
-                        TimeUnit.MILLISECONDS))
-                    validation.shutdownNow();
-                if (loops != null)
-                    loops.shutdownGracefully(0, 5, TimeUnit.SECONDS).sync();
-                if (boss != null)
-                    boss.shutdownGracefully(0, 5, TimeUnit.SECONDS).sync();
-            } catch (InterruptedException error) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException("Interrupted closing Netty transport", error);
-            }
-        });
+        if (closing != null) return closing;
+        closing =
+                CompletableFuture.runAsync(
+                        () -> {
+                            stopAccepting();
+                            for (Channel channel : Set.copyOf(connections)) channel.close();
+                            validation.shutdown();
+                            try {
+                                if (!validation.awaitTermination(
+                                        config.shutdownTimeout().toMillis(), TimeUnit.MILLISECONDS))
+                                    validation.shutdownNow();
+                                if (loops != null)
+                                    loops.shutdownGracefully(0, 5, TimeUnit.SECONDS).sync();
+                                if (boss != null)
+                                    boss.shutdownGracefully(0, 5, TimeUnit.SECONDS).sync();
+                            } catch (InterruptedException error) {
+                                Thread.currentThread().interrupt();
+                                throw new IllegalStateException(
+                                        "Interrupted closing Netty transport", error);
+                            }
+                        });
         return closing;
     }
 
     /**
-     * Per-connection request pipeline. Frames are decoded one at a time on the validation pool,
-     * in arrival order, so requests from one connection reach the dispatcher in the order they
-     * were received. Responses may still complete and be written out of order. The frame queue
-     * and decoding flag are guarded by this handler's monitor because they are touched from
-     * both the event loop and validation threads.
+     * Per-connection request pipeline. Frames are decoded one at a time on the validation pool, in
+     * arrival order, so requests from one connection reach the dispatcher in the order they were
+     * received. Responses may still complete and be written out of order. The frame queue and
+     * decoding flag are guarded by this handler's monitor because they are touched from both the
+     * event loop and validation threads.
      */
     private final class ConnectionHandler extends ChannelInboundHandlerAdapter {
         private final long id = connectionIds.incrementAndGet();
         private final ArrayDeque<BoundedFrameDecoder.OwnedFrame> received = new ArrayDeque<>();
         private final Set<Long> activeIds = ConcurrentHashMap.newKeySet();
-        private final ResourceBudget perConnectionOutbound = new ResourceBudget(config.maxOutboundPerConnection());
+        private final ResourceBudget perConnectionOutbound =
+                new ResourceBudget(config.maxOutboundPerConnection());
         private ResourceBudget.Lease connectionLease;
         private boolean decoding;
 
@@ -220,24 +247,24 @@ public final class NettyServerTransport implements ServerTransport {
         }
 
         private synchronized void scheduleDecode(ChannelHandlerContext context) {
-            if (decoding || received.isEmpty())
-                return;
+            if (decoding || received.isEmpty()) return;
             decoding = true;
             var frame = received.removeFirst();
             try {
                 // The next frame is scheduled only after this one is dispatched, which keeps
                 // per-connection order while decoding runs off the event loop.
-                validation.execute(() -> {
-                    try {
-                        decode(context, frame);
-                    } finally {
-                        frame.close();
-                        synchronized (ConnectionHandler.this) {
-                            decoding = false;
-                            scheduleDecode(context);
-                        }
-                    }
-                });
+                validation.execute(
+                        () -> {
+                            try {
+                                decode(context, frame);
+                            } finally {
+                                frame.close();
+                                synchronized (ConnectionHandler.this) {
+                                    decoding = false;
+                                    scheduleDecode(context);
+                                }
+                            }
+                        });
             } catch (RejectedExecutionException rejected) {
                 decoding = false;
                 frame.close();
@@ -249,8 +276,8 @@ public final class NettyServerTransport implements ServerTransport {
             byte[] bytes = owned.bytes();
             // Decoded objects are charged to the same input budget before decoding, and the
             // lease lives until the request completes, so in-process requests count as queued.
-            ResourceBudget.Lease decoded = inputBudget.reserve(
-                    codec.estimatedDecodedBytes(bytes)).orElse(null);
+            ResourceBudget.Lease decoded =
+                    inputBudget.reserve(codec.estimatedDecodedBytes(bytes)).orElse(null);
             if (decoded == null) {
                 context.close();
                 return;
@@ -271,9 +298,15 @@ public final class NettyServerTransport implements ServerTransport {
                         context.close();
                         return;
                     }
-                    respond(context, new Protocol.ResponseFrame(operation, version, requestId,
-                            new Protocol.Failure(new Protocol.Error(malformed.code(),
-                                    malformed.getMessage()))));
+                    respond(
+                            context,
+                            new Protocol.ResponseFrame(
+                                    operation,
+                                    version,
+                                    requestId,
+                                    new Protocol.Failure(
+                                            new Protocol.Error(
+                                                    malformed.code(), malformed.getMessage()))));
                     return;
                 }
                 // At most 32 requests in flight per connection. IDs must be unique while in
@@ -290,58 +323,73 @@ public final class NettyServerTransport implements ServerTransport {
                 }
                 // Broker processing deadline starts after the request is received and admitted.
                 long deadline = clock.nanoTime() + Duration.ofSeconds(30).toNanos();
-                var requestContext = new RequestContext(id, request.requestId(), deadline);
-                dispatcher.handle(requestContext, request.body()).whenComplete((reply, error) -> {
-                    activeIds.remove(request.requestId());
-                    contextLease.close();
-                    decoded.close();
-                    // Failures are mapped to a generic STORAGE_ERROR so every admitted request
-                    // gets a reply while the connection is open.
-                    if (!context.channel().isActive())
-                        return;
-                    Protocol.Response response = error == null ? reply
-                            : new Protocol.Failure(new Protocol.Error(ErrorCode.STORAGE_ERROR,
-                                    "Broker request failed"));
-                    respond(context, new Protocol.ResponseFrame(request.operation(),
-                            request.version(), request.requestId(), response));
-                });
+                var requestContext =
+                        new RequestContext(id, request.requestId(), deadline, request.version());
+                dispatcher
+                        .handle(requestContext, request.body())
+                        .whenComplete(
+                                (reply, error) -> {
+                                    activeIds.remove(request.requestId());
+                                    contextLease.close();
+                                    decoded.close();
+                                    // Failures are mapped to a generic STORAGE_ERROR so every
+                                    // admitted request
+                                    // gets a reply while the connection is open.
+                                    if (!context.channel().isActive()) return;
+                                    Protocol.Response response =
+                                            error == null
+                                                    ? reply
+                                                    : new Protocol.Failure(
+                                                            new Protocol.Error(
+                                                                    ErrorCode.STORAGE_ERROR,
+                                                                    "Broker request failed"));
+                                    respond(
+                                            context,
+                                            new Protocol.ResponseFrame(
+                                                    request.operation(),
+                                                    request.version(),
+                                                    request.requestId(),
+                                                    response));
+                                });
                 transferred = true;
             } finally {
-                if (!transferred)
-                    decoded.close();
+                if (!transferred) decoded.close();
             }
         }
 
         private void respond(ChannelHandlerContext context, Protocol.ResponseFrame reply) {
             try {
-                validation.execute(() -> {
-                    if (!context.channel().isActive())
-                        return;
-                    // Encoding stays off the event loop. Outbound bytes are held against both
-                    // budgets until the write completes, so a slow reader that exhausts either
-                    // one is disconnected rather than buffered without bound.
-                    try {
-                        byte[] bytes = codec.encodeResponse(reply);
-                        ResourceBudget.Lease global = outboundBudget.reserve(bytes.length).orElse(null);
-                        ResourceBudget.Lease local = perConnectionOutbound.reserve(bytes.length).orElse(null);
-                        if (global == null || local == null) {
-                            if (global != null)
-                                global.close();
-                            if (local != null)
-                                local.close();
-                            context.close();
-                            return;
-                        }
-                        context.writeAndFlush(Unpooled.wrappedBuffer(bytes)).addListener(done -> {
-                            local.close();
-                            global.close();
-                            if (!done.isSuccess())
+                validation.execute(
+                        () -> {
+                            if (!context.channel().isActive()) return;
+                            // Encoding stays off the event loop. Outbound bytes are held against
+                            // both
+                            // budgets until the write completes, so a slow reader that exhausts
+                            // either
+                            // one is disconnected rather than buffered without bound.
+                            try {
+                                byte[] bytes = codec.encodeResponse(reply);
+                                ResourceBudget.Lease global =
+                                        outboundBudget.reserve(bytes.length).orElse(null);
+                                ResourceBudget.Lease local =
+                                        perConnectionOutbound.reserve(bytes.length).orElse(null);
+                                if (global == null || local == null) {
+                                    if (global != null) global.close();
+                                    if (local != null) local.close();
+                                    context.close();
+                                    return;
+                                }
+                                context.writeAndFlush(Unpooled.wrappedBuffer(bytes))
+                                        .addListener(
+                                                done -> {
+                                                    local.close();
+                                                    global.close();
+                                                    if (!done.isSuccess()) context.close();
+                                                });
+                            } catch (ProtocolException failure) {
                                 context.close();
+                            }
                         });
-                    } catch (ProtocolException failure) {
-                        context.close();
-                    }
-                });
             } catch (RejectedExecutionException overloaded) {
                 context.close();
             }
@@ -353,10 +401,8 @@ public final class NettyServerTransport implements ServerTransport {
         public synchronized void channelInactive(ChannelHandlerContext context) {
             dispatcher.disconnect(id);
             connections.remove(context.channel());
-            if (connectionLease != null)
-                connectionLease.close();
-            while (!received.isEmpty())
-                received.removeFirst().close();
+            if (connectionLease != null) connectionLease.close();
+            while (!received.isEmpty()) received.removeFirst().close();
             context.fireChannelInactive();
         }
 
