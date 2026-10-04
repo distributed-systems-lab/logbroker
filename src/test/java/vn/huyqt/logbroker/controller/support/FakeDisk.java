@@ -51,6 +51,7 @@ public final class FakeDisk {
   public void failNextForce() {
     failForce = true;
   }
+  public void clearInjectedFailure() { failForce = false; }
 
   public long epoch() {
     return epoch;

@@ -26,6 +26,10 @@ public final class ThreeControllerProcesses implements AutoCloseable {
   private ControllerClient client;
 
   public ThreeControllerProcesses(Path root) throws Exception {
+    this(root, (short) 1);
+  }
+
+  public ThreeControllerProcesses(Path root, short metadataVersion) throws Exception {
     this.root = root;
     Files.createDirectories(root);
     new DurableFiles().verifySupport(root);
@@ -50,7 +54,7 @@ public final class ThreeControllerProcesses implements AutoCloseable {
               .collect(java.util.stream.Collectors.joining(","));
       for (int i = 0; i < 3; i++) {
         QuorumStateStore.format(
-            data(i), new ClusterIdentity(cluster, i, voters), new DurableFiles());
+            data(i), new ClusterIdentity(cluster, i, voters, metadataVersion), new DurableFiles());
         Files.writeString(
             config(i),
             "cluster.id="
@@ -61,7 +65,14 @@ public final class ThreeControllerProcesses implements AutoCloseable {
                 + membership
                 + "\ndata.dir="
                 + data(i)
-                + "\nfetch.idle.wait.ms=20\nrpc.timeout.ms=100\nelection.min.ms=300\nelection.max.ms=600\nleader.contact.timeout.ms=1000\nsnapshot.trigger.bytes=100\nlog.segment.bytes=512\nlog.max.batch.bytes=336\nlog.index.interval.bytes=64\n");
+                + "\nmetadata.version=" + metadataVersion
+                + (metadataVersion == 1
+                    ? "\nfetch.idle.wait.ms=20\nrpc.timeout.ms=100\nelection.min.ms=300\nelection.max.ms=600\nleader.contact.timeout.ms=1000\n"
+                    : "\nfetch.idle.wait.ms=100\nrpc.timeout.ms=1000\nelection.min.ms=1500\nelection.max.ms=3000\nleader.contact.timeout.ms=3000\n")
+                + "snapshot.trigger.bytes=100\n"
+                + (metadataVersion == 1 ? "log.segment.bytes=512\nlog.max.batch.bytes=336\n"
+                    : "max.topics=32\nmax.partitions=32\nlog.segment.bytes=4096\nlog.max.batch.bytes=4096\n")
+                + "log.index.interval.bytes=64\n");
       }
     } catch (Exception error) {
       close();
@@ -81,6 +92,18 @@ public final class ThreeControllerProcesses implements AutoCloseable {
     return client;
   }
 
+  public UUID clusterId() { return cluster; }
+  public List<ClusterIdentity.Voter> voters() { return List.copyOf(voters); }
+  public void blockBrokerControl(boolean blocked) {
+    for (var proxy : proxies) proxy.blockBrokers(blocked);
+  }
+  public boolean brokerControlBlocked() {
+    return Arrays.stream(proxies).allMatch(ControllerFaultProxy::brokersBlocked);
+  }
+  public long blockedBrokerFrames() {
+    return Arrays.stream(proxies).mapToLong(ControllerFaultProxy::blockedBrokerFrames).sum();
+  }
+
   public void startAll() throws Exception {
     for (int i = 0; i < 3; i++) restart(i);
   }
@@ -91,6 +114,7 @@ public final class ThreeControllerProcesses implements AutoCloseable {
     children[node] =
         new ProcessBuilder(
                 Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                "-Xms32m", "-Xmx256m",
                 "-cp",
                 System.getProperty("java.class.path"),
                 ControllerProcessMain.class.getName(),
@@ -215,6 +239,8 @@ public final class ThreeControllerProcesses implements AutoCloseable {
     Path retained =
         Path.of("target", "controller-process-logs", root.getFileName() + "-" + cluster);
     Files.createDirectories(retained);
+    for (int i = 0; i < 3; i++) if (proxies[i] != null)
+      Files.write(retained.resolve("proxy-" + i + ".log"), proxies[i].trace());
     for (int i = 0; i < 3; i++)
       for (String kind : List.of("stdout", "stderr")) {
         Path log = root.resolve(kind + "-" + i + ".log");

@@ -159,7 +159,7 @@ public final class QuorumHarness {
     }
   }
 
-  private void deliverOne() {
+  public void deliverOne() {
     var envelope = transport.next();
     if (envelope != null) {
       history.add(

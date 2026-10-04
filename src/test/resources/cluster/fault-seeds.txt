@@ -1,0 +1,5 @@
+# Default replay seeds. Additional seeds use index * 7919, starting with index 4.
+1
+7
+42
+20261003

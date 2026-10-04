@@ -13,6 +13,9 @@ public final class ControllerFaultProxy implements AutoCloseable {
   private final ServerSocket listener;
   private final Set<Session> sessions = ConcurrentHashMap.newKeySet();
   private volatile boolean closed;
+  private volatile boolean blockBrokers;
+  private final java.util.concurrent.atomic.AtomicLong blockedBrokerFrames = new java.util.concurrent.atomic.AtomicLong();
+  private final Deque<String> trace = new ConcurrentLinkedDeque<>();
 
   public ControllerFaultProxy(int node, int backend, Set<Integer> isolated) throws IOException {
     this.node = node;
@@ -58,8 +61,24 @@ public final class ControllerFaultProxy implements AutoCloseable {
           throw new IOException("Invalid proxy frame length");
         byte[] bytes = source.readNBytes(size);
         if (bytes.length != size) throw new EOFException();
-        if (inbound && session.sender == -2) session.sender = ByteBuffer.wrap(bytes).getInt(21);
-        if (blocked(session)) return;
+        if (inbound && session.sender == -2) {
+          session.sender = ByteBuffer.wrap(bytes).getInt(21);
+          session.broker = ByteBuffer.wrap(bytes).getShort(2) == 2 && bytes[25] == 2;
+        }
+        if (blocked(session)) {
+          if (inbound && session.broker) blockedBrokerFrames.incrementAndGet();
+          return;
+        }
+        if (session.broker) {
+          try {
+            byte[] raw = ByteBuffer.allocate(size + 4).putInt(size).put(bytes).array();
+            var frame = vn.huyqt.logbroker.controller.protocol.QuorumCodec.decode(raw,
+                vn.huyqt.logbroker.controller.protocol.QuorumCodec.WireLimits.observer(
+                    vn.huyqt.logbroker.controller.metadata.MetadataLimits.defaults()));
+            trace.addLast((inbound ? "IN " : "OUT ") + frame.operation() + " " + frame.message());
+            while (trace.size() > 128) trace.pollFirst();
+          } catch (IOException error) { trace.addLast("decode: " + error); }
+        }
         target.writeInt(size);
         target.write(bytes);
         target.flush();
@@ -72,8 +91,14 @@ public final class ControllerFaultProxy implements AutoCloseable {
   }
 
   private boolean blocked(Session session) {
-    return session.sender >= 0 && (isolated.contains(node) || isolated.contains(session.sender));
+    return session.broker ? blockBrokers
+        : session.sender >= 0 && (isolated.contains(node) || isolated.contains(session.sender));
   }
+
+  public void blockBrokers(boolean blocked) { blockBrokers = blocked; refreshIsolation(); }
+  public boolean brokersBlocked() { return blockBrokers; }
+  public long blockedBrokerFrames() { return blockedBrokerFrames.get(); }
+  public List<String> trace() { return List.copyOf(trace); }
 
   public void refreshIsolation() {
     for (var session : sessions) if (blocked(session)) session.close();
@@ -88,6 +113,7 @@ public final class ControllerFaultProxy implements AutoCloseable {
   private static final class Session {
     final Socket front, back;
     volatile int sender = -2;
+    volatile boolean broker;
 
     Session(Socket front, Socket back) {
       this.front = front;
