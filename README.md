@@ -27,6 +27,10 @@ Phase 2 có broker một node, wire protocol version 1, Netty TCP transport, Jav
 
 ## Yêu cầu và chạy thử
 
+GitHub Actions kiểm tra Java 21/Maven 3.9.x trên Ubuntu và Windows cho pull request
+và push lên `main`. Workflow mở rộng chạy fault campaigns 100 seeds và demo cluster
+hằng ngày hoặc thủ công. Xem [CI, evidence và branch checks](docs/ci.md).
+
 - Java 21
 - Maven 3.9.x
 

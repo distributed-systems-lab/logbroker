@@ -1,0 +1,48 @@
+name: Extended verification
+
+on:
+  schedule:
+    - cron: '0 19 * * *' # 02:00 Asia/Saigon, next calendar day
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extended-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    name: acceptance-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      MAVEN_OPTS: -Xms32m -Xmx512m
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Test report validation
+        run: python -B -m unittest discover -s scripts/tests -v
+      - name: Full suite, fault campaigns, process acceptance and demo
+        run: python -B scripts/ci.py extended
+      - name: Retain verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: extended-linux-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/logbroker-ci-evidence/
+            target/ci-demo/**/*.log
+          if-no-files-found: warn
+          retention-days: 14

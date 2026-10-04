@@ -1,2 +1,5 @@
 scripts/*.sh text eol=lf
 src/**/*.java text eol=lf
+.github/**/*.yml text eol=lf
+scripts/*.py text eol=lf
+scripts/tests/*.py text eol=lf

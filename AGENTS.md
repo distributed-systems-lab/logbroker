@@ -16,6 +16,7 @@ Use JDK 21 and Maven 3.9.x from the repository root:
 - `mvn verify dependency:copy-dependencies`: verify and prepare dependencies for local launches.
 - `mvn spotless:apply`: format all production and test Java sources.
 - `mvn spotless:check`: check formatting without changing files; also runs during `verify`.
+- `python -B -m unittest discover -s scripts/tests -v`: verify CI report validation.
 
 Start a broker in PowerShell:
 
@@ -34,6 +35,7 @@ Match surrounding Java code: four-space indentation, same-line opening braces, `
 Use JUnit Jupiter 5 and Maven Surefire. Name test classes `*Test` and methods descriptively, such as `labDefaultsRespectFrameAndFetchBudgets`. Add regression coverage for changed behavior; reuse deterministic schedulers, fault harnesses, and checked-in vectors. No numeric coverage threshold is configured.
 
 Run strict controller durability/process verification from Linux/WSL ext4; native Windows tests do not establish durability support. See `docs/controller-verification.md` for fault campaigns and platform limitations.
+GitHub CI and extended acceptance use `scripts/ci.py`; see `docs/ci.md` for profiles, expected report checks and evidence retention.
 
 ## Commit & Pull Request Guidelines
 
