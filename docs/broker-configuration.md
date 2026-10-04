@@ -1,8 +1,12 @@
-# Broker configuration (Phase 2)
+# Broker configuration
 
 This is the historical Phase 2 contract. Production standalone startup has been
 replaced by the [cluster broker composition](cluster-broker-composition.md).
 The data-plane limit properties below still apply to cluster brokers.
+
+Production requires both `--config` and `--data`, an explicitly formatted identity,
+and reachable controller bootstrap endpoints. Follow [cluster configuration](cluster-configuration.md)
+for format/start commands and [operations](cluster-operation.md) for lifecycle/status semantics.
 
 `BrokerMain` requires `--data <directory>`. It binds `127.0.0.1:9092` by default. `--host` and `--port` override the corresponding properties from `--config <properties-file>`. Unknown options, unknown properties, invalid numeric values, and incompatible limits fail startup. A broker holds an exclusive `.broker.lock` in its data directory until storage has closed.
 

@@ -37,19 +37,16 @@ mvn clean verify
 java -cp target/classes vn.huyqt.logbroker.storage.example.StorageExample target/example-log
 ```
 
-Chạy broker và client ví dụ trong hai terminal PowerShell:
+Chạy demo cluster trên Linux/WSL ext4:
 
-```powershell
+```bash
 mvn clean verify dependency:copy-dependencies
-java -cp "target/classes;target/dependency/*" vn.huyqt.logbroker.broker.BrokerMain --data target/broker-data --port 9092
-java -cp "target/classes;target/dependency/*" vn.huyqt.logbroker.example.ClientExample 127.0.0.1 9092 demo
+bash scripts/cluster-demo.sh /tmp/logbroker-demo-new
 ```
 
-Broker có thể nhận thêm `--config broker.properties`; xem [bảng cấu hình](docs/broker-configuration.md). Dừng broker bằng Ctrl+C. Ví dụ client in `SUCCESS records=1` sau khi Produce FLUSHED và Fetch lại đúng record.
+Phase 4 production requires explicit formatting and cluster configuration. Use Linux/WSL ext4 for strict controller durability. The example bootstraps from one broker and prints `SUCCESS records=6 brokers=3` after verifying all six partitions. See [cluster setup](docs/cluster-configuration.md), [operations](docs/cluster-operation.md), and [verification](docs/cluster-verification.md). PowerShell classpaths use `;`.
 
-Ví dụ chỉ chấp nhận thư mục chưa tồn tại hoặc đang rỗng. Dùng tên thư mục mới nếu chạy lại.
-
-Phase 3 implements a fixed three-voter KRaft-style metadata quorum with durable elections, replication, snapshots, a separate admin client and CLI. Strict controllers run on Linux/WSL. See [configuration and three-node commands](docs/controller-configuration.md) and [operation contract](docs/controller-operation.md). Broker/partition provisioning remains a later phase.
+Phase 3 implements a fixed three-voter KRaft-style metadata quorum with durable elections, replication, snapshots, a separate admin client and CLI. Strict controllers run on Linux/WSL. See [configuration and three-node commands](docs/controller-configuration.md) and [operation contract](docs/controller-operation.md). Phase 4 adds broker observers, durable partition provisioning and cluster routing; final acceptance is tracked separately.
 
 
 Phase 3 acceptance passed on WSL/ext4: 262 tests with no failures, errors or skips, real three-process crash/restart/snapshot catch-up, and production CLI smoke. See [verification evidence and limitations](docs/controller-verification.md).

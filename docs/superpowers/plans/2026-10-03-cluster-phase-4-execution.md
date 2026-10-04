@@ -3,8 +3,8 @@
 Branch: `feat/phase-4-cluster`. Execution uses the existing checkout, inline, with no
 Git worktree, as requested on 2026-10-03. Baseline: `1f7f498`.
 
-This is an implementation progress record, not Phase 4 acceptance. The remaining
-tasks in [the implementation plan](2026-10-03-cluster-phase-4.md) still need execution.
+This is an implementation progress record, not Phase 4 acceptance. Final strict
+acceptance is deferred at the user's request on 2026-10-04.
 
 | Task | Status | Commit |
 |---|---|---|
@@ -21,11 +21,122 @@ tasks in [the implementation plan](2026-10-03-cluster-phase-4.md) still need exe
 | 11 Partition inventory/provisioning | Complete | `d420a4d` |
 | 12 Cluster broker composition/forwarding | Complete | `7345b17` |
 | 13 Data wire v2 and guarded I/O | Complete | `2f049ce` |
-| 14 Cluster client/routing/retries | Complete | See Task 14 commit |
-| 15 Cluster process/fault acceptance | Pending | |
-| 16 Operations/examples/documentation/final verification | Pending | |
+| 14 Cluster client/routing/retries | Complete | `5608e5a` |
+| 15 Cluster process/fault acceptance | Implemented; recorded ext4 process/campaign evidence passed | `cebe75a`; diagnostics `1c294d4` |
+| 16 Operations/examples/documentation/final verification | Implemented; final fresh ext4 acceptance deferred by user | `1c294d4` plus this documentation commit |
 
 ## Verification evidence
+
+Ruling: On 2026-10-04 the user requested no further WSL testing for now and asked
+to free test data on C, then continue implementation. Finish implementation and
+commits with a fresh Windows verification, preserving the existing ext4 evidence.
+Do not mark strict Phase 4 acceptance complete; cost: the final full ext4 gate is
+deferred until WSL is recovered and disk space is available.
+
+Disk inspection: C had 5,050,249,216 bytes free (about 4.70 GiB). Ubuntu's registered
+root is C:/Users/Huy/AppData/Local/Packages/CanonicalGroupLimited.Ubuntu_79rhkp1fndgsc/LocalState;
+its ext4.vhdx is 4,528,799,744 bytes (about 4.22 GiB). Test scripts created build roots
+under Ubuntu /tmp/logbroker-phase4-*; their exact retained size cannot be measured
+while WslService remains StopPending. No project-specific JUnit/logbroker temporary
+directories were found in Windows TEMP. No unrelated installer/cache files or distro
+disk were removed. WSL cleanup remains blocked; deleting the VHD would destroy Ubuntu.
+The fresh Windows verification uses a separate build and TEMP/TMP under repository
+target on D, retaining existing WSL evidence and avoiding additional C test data.
+
+Final Windows verification, 2026-10-04 10:27:50 Asia/Saigon: Java 21/Maven 3.9.12,
+fresh source copy under target/phase4-windows-final-src, bounded heaps, `clean verify
+dependency:copy-dependencies`: BUILD SUCCESS; 430 tests in 132 classes, zero failures,
+zero errors, 11 explicit platform skips. Surefire XML totals were inspected. Log:
+target/phase4-windows-final.log. This verifies the final Java changes; it does not
+establish native Windows durability or replace the deferred fresh ext4 acceptance.
+
+Ruling: Split the final changes into operator/status implementation, process/fault
+verification, and documentation/config commits, rather than hiding production CLI
+changes inside a docs-only commit. Task 15 diagnostics and Task 16 operator changes
+share the status API. Cost: three final commits instead of the plan's two.
+
+Retained final ext4 evidence, 2026-10-04 Asia/Saigon, before WSL stalled:
+full suite 430 tests / 132 classes at 00:25:11; cluster 100-seed campaign 3 tests at
+00:26:13; quorum 100-seed/history campaign 7 tests at 00:26:27; six selected
+process/CLI classes 9 tests at 00:29:27. Each group had zero failures/errors/skips.
+The actual demo exited zero with SUCCESS records=6 brokers=3. Evidence is retained
+under target/phase4-final-wsl. The final BrokerMain finally-close refinement was
+compiled and exercised by those later campaign/process/demo runs; the redundant
+full rerun stalled and is excluded. Review findings were fixed with regression
+coverage as recorded below. Spec/roadmap acceptance status is not marked complete.
+
+Environment continuation: after the user freed applications, Windows reported about
+5 GiB free physical memory and 11.6 GiB free commit. Ubuntu still did not respond to
+status/ps commands. The last redundant full verification has no completion evidence;
+it must not be counted as passing. Restarting Ubuntu requires user approval because
+it stops all distro processes, including unrelated user work. Earlier verified full
+430-test, 100-seed campaign, process/CLI and demo evidence remains retained.
+
+The user authorized restarting Ubuntu. `wsl --terminate Ubuntu` did not complete.
+Ordinary WslService restart lacked Administrator rights; an elevated UAC request
+was issued, after which the service remained StopPending. Automatic approval review
+rejected force-killing wslservice because it would affect all distributions and
+unflushed workloads beyond the Ubuntu restart approval. No forced kill was executed;
+broader explicit authorization or user-managed recovery is pending.
+
+Tasks 15–16 continuation, 2026-10-04 (Asia/Saigon):
+
+- WSL/ext4 missing-COMPLETE-log process test passed: direct v2 Fetch reports
+  PARTITION_UNAVAILABLE and no missing log is recreated.
+- Production example now verifies six FLUSHED writes/reads from one bootstrap and computes
+  owners from metadata. RED CLI/observer-lag failures led to a bounded wait for the created UUID
+  and ready assignments before Producer name lookup.
+- Combined WSL run completed 00:07:41: 10 tests, one restart failure, no errors/skips.
+  The 100-seed campaign passed. Proxy trace showed election churn through epoch 14 preventing
+  old-session fencing under 300–600 ms historical fixture timing. V2 fixtures now use production
+  timing defaults; deadlines/assertions are unchanged.
+- Full WSL run completed 00:16:03: 428 tests, one failure, zero errors/skips. All Phase 4
+  processes passed, including restart. Historical ControllerNodeClusterTest CLI needed explicit
+  metadata version 1 after the v2 default switch; assertions are preserved.
+- Read-only review found terminal CLI shutdown, partial-batch oracle and unbounded demo cleanup
+  issues. Real duplicate-identity CLI reproduced immortal STOPPING. Main now exits terminal
+  states and closes in finally. An interior TopicRecord publication escaped the old oracle
+  (observed RED); committed batch-end checks now reject interior applied/durable offsets.
+  Demo cleanup has ten-second grace followed by KILL/reap. Reviewer confirmed the fixes.
+- Focused clean Windows verification at 00:19:39: 11 tests, zero failures/errors/skips,
+  covering the new partial-batch oracle, legacy controller CLI, status and TCP budget saturation.
+- Configs, demo and operator docs are implemented. Final full WSL/ext4 suite, cluster/quorum
+  100-seed campaigns, process/CLI acceptance and demo remain in progress.
+
+Task 15 in progress, 2026-10-03:
+
+- Initial real six-process WSL/ext4 suite passed four tests: routing all six partitions to
+  three owners, controller majority loss, broker control isolation/restart, and whole-cluster
+  restart preserving UUIDs, broker epoch lineage and FLUSHED data. Completed 23:24:15,
+  zero failures/errors/skips. This preceded the latest status and snapshot fixture changes.
+- Process acceptance found ObserverFetch decode using the voter Fetch idle limit (20 ms)
+  instead of the independent 100 ms observer bound. New regression reproduced the refusal;
+  corrected codec plus lifecycle/control/observer/role tests: 29 tests, zero failures/errors/skips,
+  completed 23:22:07. An earlier voter-hash hypothesis was disproved and reverted.
+- BrokerStatus API now exposes identity/session/lifecycle, controller hint, heartbeat age,
+  observer applied/durable/snapshot/generation, partition counts/failures and transport/disk usage.
+  Focused status/manager/transport tests: 11 tests, zero failures/errors/skips, 23:25:44.
+- Four-seed campaign now runs actual three quorum cores/FakeDisk, three broker lifecycle and
+  journal observers, real control codecs, controlled network/worker queues and a real lost-response
+  ClusterClient. Independent committed-entry model checks observer contents/atomic topics/grants;
+  injected duplicate retry, uncommitted apply and stale unfence are detected. Two campaign tests
+  passed 23:37:23; 100 seeds and final durability/platform checks still pending.
+- Snapshot process acceptance passed on WSL/ext4 at 23:44:21: actual segment prefix deletion,
+  nonzero snapshot end, new observer generation, identical broker/topic/partition image and retained
+  FLUSHED data. That run included two campaign tests (three total, zero failures/errors/skips),
+  before the latest controller disk crash/force-fault campaign extensions.
+  Initial large segments prevented deletion; small v2 limits require both maxTopics/maxPartitions to agree. Transient
+  NO_ELIGIBLE_BROKER after leader election is retried only as an explicit pre-admission refusal,
+  retaining the original deadline. UNKNOWN is not retried.
+- Controller power loss/restart, force faults and paused disk are now campaign actions. The healthy
+  suffix explicitly disables future injected faults before restarting FAILED nodes. Four default
+  seeds plus broken-oracle tests passed 23:42:55; the 100-seed attempt failed before test execution
+  because the Windows JVM could not reserve its automatic initial heap. Owned process heaps now
+  use 32 MiB initial / 256 MiB maximum; test JVM will use a bounded heap for the rerun.
+- Remaining: provisioning process verification, 100-seed run, migrated production CLI/example
+  tests, operator configs/scripts/docs and final review. One previous process startup stopped
+  broker 2 during election churn without a retained fatal reason; fatal composition callbacks now
+  log that reason. Latest snapshot run passed, but final suites still need to establish stability.
 
 Task 14, 2026-10-03:
 

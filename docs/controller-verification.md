@@ -27,3 +27,7 @@ Process kills test process crash with the OS page cache retained. Simulated powe
 Scope remains three fixed voters and metadata descriptors only. Broker integration, partition assignment/replication, dynamic membership, TLS/authentication, rolling upgrades and recovery of a permanently lost voter are later phases. Journal compaction is not implemented: reaching its 64 MiB cap fails explicitly. Epoch indexes rebuild after append; optimization is future work. Client attempts use fresh channels and can incur connection churn.
 
 Deferred minor: bounded role-transition/failure logging and DescribeQuorum pending/queue/budget counters are incomplete. Current status remains observable, but overload and election diagnosis needs further instrumentation.
+# Phase 4 extension
+
+The historical Phase 3 evidence below does not establish Phase 4 acceptance.
+See [cluster verification](cluster-verification.md) for the full/campaign/process/CLI gates.
