@@ -2,13 +2,14 @@ package vn.huyqt.logbroker.controller.persistence;
 
 import static java.nio.file.StandardOpenOption.*;
 
+import vn.huyqt.logbroker.controller.ClusterIdentity;
+import vn.huyqt.logbroker.storage.*;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
 import java.nio.file.*;
 import java.util.*;
-import vn.huyqt.logbroker.controller.ClusterIdentity;
-import vn.huyqt.logbroker.storage.*;
 
 /**
  * Owns root lock and persisted voting identity independently of log generations.

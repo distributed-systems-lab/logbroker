@@ -1,12 +1,15 @@
 package vn.huyqt.logbroker.controller.consensus;
 
 import static org.junit.jupiter.api.Assertions.*;
-import java.time.Duration;
-import java.util.*;
+
 import org.junit.jupiter.api.Test;
-import vn.huyqt.logbroker.controller.support.QuorumHarness;
+
 import vn.huyqt.logbroker.controller.metadata.ClusterRecords.*;
 import vn.huyqt.logbroker.controller.protocol.BrokerControlProtocol.*;
+import vn.huyqt.logbroker.controller.support.QuorumHarness;
+
+import java.time.Duration;
+import java.util.*;
 
 class BrokerFencingTest {
     @Test

@@ -1,22 +1,23 @@
 package vn.huyqt.logbroker.broker;
 
+import vn.huyqt.logbroker.broker.cluster.ServingGate;
+import vn.huyqt.logbroker.broker.metadata.BrokerMetadata;
+import vn.huyqt.logbroker.controller.client.ControllerClientException;
+import vn.huyqt.logbroker.controller.metadata.MetadataImage;
+import vn.huyqt.logbroker.protocol.ClusterProtocol;
+import vn.huyqt.logbroker.protocol.ErrorCode;
+import vn.huyqt.logbroker.protocol.Protocol.*;
+import vn.huyqt.logbroker.protocol.Protocol.Error;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
-import vn.huyqt.logbroker.broker.metadata.BrokerMetadata;
-import vn.huyqt.logbroker.protocol.ErrorCode;
-import vn.huyqt.logbroker.protocol.Protocol.*;
-import vn.huyqt.logbroker.protocol.Protocol.Error;
-import java.util.UUID;
-import vn.huyqt.logbroker.protocol.ClusterProtocol;
-import vn.huyqt.logbroker.broker.cluster.ServingGate;
-import vn.huyqt.logbroker.controller.metadata.MetadataImage;
-import vn.huyqt.logbroker.controller.client.ControllerClientException;
 
 /**
  * Dispatches requests and preserves independent partition outcomes.

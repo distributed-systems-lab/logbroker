@@ -1,10 +1,13 @@
 package vn.huyqt.logbroker.controller.metadata;
 
 import static org.junit.jupiter.api.Assertions.*;
-import java.util.*;
+
 import org.junit.jupiter.api.Test;
-import vn.huyqt.logbroker.controller.protocol.*;
+
 import vn.huyqt.logbroker.controller.log.*;
+import vn.huyqt.logbroker.controller.protocol.*;
+
+import java.util.*;
 
 class ClusterControlManagerTest {
     @Test

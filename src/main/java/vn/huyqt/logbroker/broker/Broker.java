@@ -1,14 +1,15 @@
 package vn.huyqt.logbroker.broker;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.time.Duration;
-import java.util.concurrent.CompletableFuture;
 import vn.huyqt.logbroker.broker.cluster.BrokerClusterConfig;
 import vn.huyqt.logbroker.broker.cluster.ClusterBrokerRuntime;
 import vn.huyqt.logbroker.broker.metadata.BrokerMetadata;
 import vn.huyqt.logbroker.controller.client.ControllerClientTransport;
 import vn.huyqt.logbroker.controller.persistence.DurableFiles;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
 
 /** Owns the formatted broker root, observer, listener and assigned partition resources. */
 public final class Broker implements AutoCloseable {

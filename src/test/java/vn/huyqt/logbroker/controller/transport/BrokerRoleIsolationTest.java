@@ -1,15 +1,19 @@
 package vn.huyqt.logbroker.controller.transport;
 
 import static org.junit.jupiter.api.Assertions.*;
-import io.netty.channel.embedded.EmbeddedChannel;
+
 import io.netty.buffer.Unpooled;
-import java.util.*;
+import io.netty.channel.embedded.EmbeddedChannel;
+
 import org.junit.jupiter.api.Test;
+
 import vn.huyqt.logbroker.broker.ResourceBudget;
 import vn.huyqt.logbroker.controller.ControllerConfig;
 import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.controller.support.ControllerTestSupport;
+
+import java.util.*;
 
 class BrokerRoleIsolationTest {
     private final ControllerConfig config =

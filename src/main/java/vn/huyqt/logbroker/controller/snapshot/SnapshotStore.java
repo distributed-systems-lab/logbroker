@@ -3,15 +3,16 @@ package vn.huyqt.logbroker.controller.snapshot;
 import static java.nio.file.StandardOpenOption.*;
 import static java.nio.file.StandardOpenOption.READ;
 
+import vn.huyqt.logbroker.controller.ClusterIdentity;
+import vn.huyqt.logbroker.controller.metadata.*;
+import vn.huyqt.logbroker.controller.persistence.*;
+import vn.huyqt.logbroker.controller.protocol.QuorumError;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.*;
 import java.util.*;
-import vn.huyqt.logbroker.controller.ClusterIdentity;
-import vn.huyqt.logbroker.controller.metadata.*;
-import vn.huyqt.logbroker.controller.persistence.*;
-import vn.huyqt.logbroker.controller.protocol.QuorumError;
 
 /**
  * Immutable snapshots are visible only through a forced journal publication.

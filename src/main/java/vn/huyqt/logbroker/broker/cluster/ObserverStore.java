@@ -1,15 +1,16 @@
 package vn.huyqt.logbroker.broker.cluster;
 
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.file.*;
-import java.util.*;
-import java.util.function.BooleanSupplier;
 import vn.huyqt.logbroker.controller.log.*;
 import vn.huyqt.logbroker.controller.metadata.*;
 import vn.huyqt.logbroker.controller.persistence.*;
 import vn.huyqt.logbroker.controller.snapshot.*;
 import vn.huyqt.logbroker.storage.LogConfig;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.file.*;
+import java.util.*;
+import java.util.function.BooleanSupplier;
 
 /**
  * Single ordered-worker owner of a committed observer cache; never persists votes or voter epochs.

@@ -1,15 +1,16 @@
 package vn.huyqt.logbroker.broker.cluster;
 
-import java.net.InetSocketAddress;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.function.Consumer;
 import vn.huyqt.logbroker.controller.ClusterIdentity;
 import vn.huyqt.logbroker.controller.client.ControllerClientTransport;
 import vn.huyqt.logbroker.controller.metadata.MetadataLimits;
 import vn.huyqt.logbroker.controller.protocol.*;
-import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.controller.protocol.BrokerControlProtocol.SenderRole;
+import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
+
+import java.net.InetSocketAddress;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.Consumer;
 
 final class ScriptedControlTransport implements ControllerClientTransport {
     static final ClusterIdentity ID =

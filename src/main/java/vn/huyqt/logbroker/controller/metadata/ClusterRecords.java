@@ -1,10 +1,11 @@
 package vn.huyqt.logbroker.controller.metadata;
 
+import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
+
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
-import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
 
 /** Validated, immutable payloads of metadata schema v2. IDs have role-specific namespaces. */
 public final class ClusterRecords {

@@ -1,6 +1,7 @@
 package vn.huyqt.logbroker.broker.cluster;
 
 import org.junit.jupiter.api.Test;
+
 import java.util.*;
 
 class ClusterFaultCampaignTest {

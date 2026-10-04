@@ -1,10 +1,11 @@
 package vn.huyqt.logbroker.controller.metadata;
 
-import java.io.IOException;
-import java.util.*;
 import vn.huyqt.logbroker.broker.metadata.TopicCatalog;
 import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
 import vn.huyqt.logbroker.controller.log.*;
+
+import java.io.IOException;
+import java.util.*;
 
 /**
  * Consensus supplies only committed batches; applying a bad batch publishes no partial image.

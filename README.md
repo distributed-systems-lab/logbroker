@@ -37,6 +37,23 @@ mvn clean verify
 java -cp target/classes vn.huyqt.logbroker.storage.example.StorageExample target/example-log
 ```
 
+Format toàn bộ Java source và test bằng Spotless (AOSP, indent 4 spaces):
+
+```powershell
+mvn spotless:apply
+mvn spotless:check
+# Script tự tìm thư mục gốc repository:
+powershell -NoProfile -File scripts/format.ps1 apply
+powershell -NoProfile -File scripts/format.ps1 check
+```
+
+Trên Bash dùng `bash scripts/format.sh apply` hoặc `bash scripts/format.sh check`.
+`check` chỉ kiểm tra, không sửa file; `mvn verify` cũng chạy bước này. Formatter
+và phiên bản được cố định trong `pom.xml`, chuẩn hóa import, bỏ import không dùng,
+giữ nguyên string literals và dùng line ending LF. Chỉ áp dụng cho
+`src/main/java/**/*.java` và `src/test/java/**/*.java`,
+không format output trong `target/`. Lần đầu cần Maven tải plugin/dependencies.
+
 Chạy demo cluster trên Linux/WSL ext4:
 
 ```bash

@@ -2,14 +2,16 @@ package vn.huyqt.logbroker.client;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import java.net.InetSocketAddress;
-import java.util.List;
-import java.util.UUID;
 import org.junit.jupiter.api.Test;
+
 import vn.huyqt.logbroker.protocol.Protocol;
 import vn.huyqt.logbroker.storage.LogRecord;
 import vn.huyqt.logbroker.support.LoopbackTransport;
 import vn.huyqt.logbroker.support.ManualScheduler;
+
+import java.net.InetSocketAddress;
+import java.util.List;
+import java.util.UUID;
 
 class ConsumerTest {
     @Test

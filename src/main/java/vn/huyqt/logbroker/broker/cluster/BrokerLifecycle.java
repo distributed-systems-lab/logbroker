@@ -1,9 +1,5 @@
 package vn.huyqt.logbroker.broker.cluster;
 
-import java.io.IOException;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.function.Consumer;
 import vn.huyqt.logbroker.broker.DeadlineScheduler;
 import vn.huyqt.logbroker.controller.client.ControllerClientException;
 import vn.huyqt.logbroker.controller.metadata.*;
@@ -11,6 +7,11 @@ import vn.huyqt.logbroker.controller.metadata.ClusterRecords.Session;
 import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.BrokerControlProtocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
+
+import java.io.IOException;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.Consumer;
 
 /**
  * Lifecycle of one process incarnation, serialized by this object's monitor.

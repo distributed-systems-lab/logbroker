@@ -1,11 +1,6 @@
 package vn.huyqt.logbroker.broker;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
-import java.util.function.Function;
+import vn.huyqt.logbroker.protocol.ClusterProtocol;
 import vn.huyqt.logbroker.protocol.ErrorCode;
 import vn.huyqt.logbroker.protocol.Protocol.Error;
 import vn.huyqt.logbroker.protocol.Protocol.Fetch;
@@ -14,7 +9,13 @@ import vn.huyqt.logbroker.protocol.Protocol.FetchReply;
 import vn.huyqt.logbroker.protocol.Protocol.FetchResult;
 import vn.huyqt.logbroker.protocol.Protocol.TopicPartition;
 import vn.huyqt.logbroker.protocol.WireBatchCodec;
-import vn.huyqt.logbroker.protocol.ClusterProtocol;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Function;
 
 /**
  * Assembles independent partition results under one wire-byte budget.

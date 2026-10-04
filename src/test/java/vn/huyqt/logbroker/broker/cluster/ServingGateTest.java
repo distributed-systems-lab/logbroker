@@ -1,9 +1,12 @@
 package vn.huyqt.logbroker.broker.cluster;
 
 import static org.junit.jupiter.api.Assertions.*;
-import java.util.UUID;
+
 import org.junit.jupiter.api.Test;
+
 import vn.huyqt.logbroker.controller.metadata.ClusterRecords.Session;
+
+import java.util.UUID;
 
 class ServingGateTest {
     static Session session(long epoch) {

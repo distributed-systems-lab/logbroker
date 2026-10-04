@@ -1,21 +1,22 @@
 package vn.huyqt.logbroker.broker.cluster;
 
+import vn.huyqt.logbroker.controller.client.ControllerClientTransport;
+import vn.huyqt.logbroker.controller.log.QuorumEntry;
+import vn.huyqt.logbroker.controller.metadata.*;
+import vn.huyqt.logbroker.controller.metadata.ClusterRecords.*;
+import vn.huyqt.logbroker.controller.protocol.*;
+import vn.huyqt.logbroker.controller.protocol.BrokerControlProtocol.SenderRole;
+import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
+import vn.huyqt.logbroker.controller.support.*;
+import vn.huyqt.logbroker.storage.LogConfig;
+import vn.huyqt.logbroker.support.ManualScheduler;
+
 import java.net.InetSocketAddress;
 import java.nio.file.*;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.Consumer;
-import vn.huyqt.logbroker.controller.client.ControllerClientTransport;
-import vn.huyqt.logbroker.controller.log.QuorumEntry;
-import vn.huyqt.logbroker.controller.metadata.*;
-import vn.huyqt.logbroker.controller.metadata.ClusterRecords.*;
-import vn.huyqt.logbroker.controller.protocol.*;
-import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
-import vn.huyqt.logbroker.controller.protocol.BrokerControlProtocol.SenderRole;
-import vn.huyqt.logbroker.controller.support.*;
-import vn.huyqt.logbroker.storage.LogConfig;
-import vn.huyqt.logbroker.support.ManualScheduler;
 
 /** Real quorum transitions, lifecycle, observer journal and codecs under controlled delivery. */
 final class ClusterFaultHarness implements AutoCloseable {

@@ -2,9 +2,10 @@ package vn.huyqt.logbroker.controller;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import org.junit.jupiter.api.Test;
+
 import java.util.List;
 import java.util.UUID;
-import org.junit.jupiter.api.Test;
 
 class ControllerConfigTest {
     @Test

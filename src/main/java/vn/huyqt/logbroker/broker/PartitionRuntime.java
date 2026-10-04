@@ -1,17 +1,5 @@
 package vn.huyqt.logbroker.broker;
 
-import java.io.IOException;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.function.Consumer;
-import java.util.function.BooleanSupplier;
 import vn.huyqt.logbroker.protocol.ClusterProtocol;
 import vn.huyqt.logbroker.protocol.ErrorCode;
 import vn.huyqt.logbroker.protocol.Protocol.AckMode;
@@ -22,9 +10,22 @@ import vn.huyqt.logbroker.protocol.Protocol.FetchEntry;
 import vn.huyqt.logbroker.protocol.Protocol.FetchResult;
 import vn.huyqt.logbroker.protocol.Protocol.ProduceResult;
 import vn.huyqt.logbroker.protocol.Protocol.TopicPartition;
+import vn.huyqt.logbroker.protocol.WireBatchCodec;
 import vn.huyqt.logbroker.storage.AppendResult;
 import vn.huyqt.logbroker.storage.RecordPayloadCodec;
-import vn.huyqt.logbroker.protocol.WireBatchCodec;
+
+import java.io.IOException;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 /**
  * Serial partition operations and local durability acknowledgments.

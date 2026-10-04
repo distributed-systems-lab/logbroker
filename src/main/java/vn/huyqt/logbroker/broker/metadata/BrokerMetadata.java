@@ -1,8 +1,9 @@
 package vn.huyqt.logbroker.broker.metadata;
 
+import vn.huyqt.logbroker.controller.metadata.MetadataImage;
+
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import vn.huyqt.logbroker.controller.metadata.MetadataImage;
 
 /** Local committed observer view and commands forwarded to its quorum authority. */
 public interface BrokerMetadata {

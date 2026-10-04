@@ -2,14 +2,16 @@ package vn.huyqt.logbroker.controller;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import java.io.*;
-import java.nio.file.*;
-import java.util.*;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+
 import vn.huyqt.logbroker.controller.client.ControllerCli;
 import vn.huyqt.logbroker.controller.persistence.*;
 import vn.huyqt.logbroker.controller.support.*;
+
+import java.io.*;
+import java.nio.file.*;
+import java.util.*;
 
 class ControllerCliTest {
     @TempDir Path root;

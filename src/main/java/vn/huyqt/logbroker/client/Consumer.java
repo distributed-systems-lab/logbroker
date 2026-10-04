@@ -1,13 +1,14 @@
 package vn.huyqt.logbroker.client;
 
+import vn.huyqt.logbroker.protocol.Protocol;
+import vn.huyqt.logbroker.storage.LogRecord;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
-import vn.huyqt.logbroker.protocol.Protocol;
-import vn.huyqt.logbroker.storage.LogRecord;
 
 /**
  * Explicit-offset Fetch; no commit, reset, or group state.

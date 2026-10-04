@@ -14,6 +14,8 @@ Use JDK 21 and Maven 3.9.x from the repository root:
 - `mvn test`: run tests without cleaning build output.
 - `mvn -Dtest=BrokerConfigTest test`: run a focused test class.
 - `mvn verify dependency:copy-dependencies`: verify and prepare dependencies for local launches.
+- `mvn spotless:apply`: format all production and test Java sources.
+- `mvn spotless:check`: check formatting without changing files; also runs during `verify`.
 
 Start a broker in PowerShell:
 
@@ -25,7 +27,7 @@ Use `:` instead of `;` for Unix classpaths. Follow `docs/controller-configuratio
 
 ## Coding Style & Naming Conventions
 
-Match surrounding Java code: four-space indentation, same-line opening braces, `PascalCase` types, `camelCase` methods/fields, and `UPPER_SNAKE_CASE` constants. Keep packages beneath `vn.huyqt.logbroker`. Document public contracts, durability guarantees, and resource ownership in Javadoc. No formatter or lint plugin is configured in `pom.xml`; avoid unrelated reformatting.
+Match surrounding Java code: four-space indentation, same-line opening braces, `PascalCase` types, `camelCase` methods/fields, and `UPPER_SNAKE_CASE` constants. Keep packages beneath `vn.huyqt.logbroker`. Document public contracts, durability guarantees, and resource ownership in Javadoc. Spotless in `pom.xml` pins google-java-format with AOSP style and LF line endings; it orders imports and removes unused imports. Use `scripts/format.ps1` or `scripts/format.sh` with `apply` or `check`, and avoid unrelated manual reformatting.
 
 ## Testing Guidelines
 

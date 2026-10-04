@@ -1,20 +1,23 @@
 package vn.huyqt.logbroker.broker.cluster;
 
 import static org.junit.jupiter.api.Assertions.*;
-import java.time.Duration;
-import java.util.*;
-import java.io.*;
-import java.net.*;
-import java.util.concurrent.*;
+
 import org.junit.jupiter.api.Test;
+
+import vn.huyqt.logbroker.broker.DeadlineScheduler;
+import vn.huyqt.logbroker.controller.client.NettyControllerClientTransport;
 import vn.huyqt.logbroker.controller.consensus.QuorumStatus;
 import vn.huyqt.logbroker.controller.metadata.*;
 import vn.huyqt.logbroker.controller.metadata.ClusterRecords.Endpoint;
 import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.support.ManualScheduler;
-import vn.huyqt.logbroker.broker.DeadlineScheduler;
-import vn.huyqt.logbroker.controller.client.NettyControllerClientTransport;
+
+import java.io.*;
+import java.net.*;
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.*;
 
 class BrokerControlClientTest {
     static BrokerClusterConfig config() {

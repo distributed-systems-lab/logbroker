@@ -1,10 +1,11 @@
 package vn.huyqt.logbroker.controller.metadata;
 
-import java.util.*;
-import java.util.function.IntPredicate;
 import vn.huyqt.logbroker.controller.log.*;
 import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
+
+import java.util.*;
+import java.util.function.IntPredicate;
 
 /** Loop-owned admission/reservations; consensus alone appends, commits and supplies images. */
 public final class ClusterControlManager {

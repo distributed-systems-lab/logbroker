@@ -1,9 +1,10 @@
 package vn.huyqt.logbroker.controller.client;
 
+import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.Frame;
+
 import java.net.InetSocketAddress;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
-import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.Frame;
 
 /**
  * One control connection. Admin callers use a fresh connection per attempt; broker callers may

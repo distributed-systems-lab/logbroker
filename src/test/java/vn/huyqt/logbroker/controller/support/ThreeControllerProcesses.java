@@ -1,11 +1,5 @@
 package vn.huyqt.logbroker.controller.support;
 
-import java.io.*;
-import java.net.*;
-import java.nio.file.*;
-import java.time.Duration;
-import java.util.*;
-import java.util.concurrent.*;
 import vn.huyqt.logbroker.broker.DeadlineScheduler;
 import vn.huyqt.logbroker.controller.*;
 import vn.huyqt.logbroker.controller.client.*;
@@ -13,6 +7,13 @@ import vn.huyqt.logbroker.controller.consensus.QuorumStatus;
 import vn.huyqt.logbroker.controller.persistence.*;
 import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
+
+import java.io.*;
+import java.net.*;
+import java.nio.file.*;
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.*;
 
 /**
  * Owns three controller child JVMs and their fault proxies, retaining process logs on close.

@@ -6,17 +6,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Thread-safe capacity reservation with single-release leases.
  *
- * <p>Callers reserve before queuing or allocating and close the lease on every completion,
- * error and cancellation path. Reservation never blocks; when the budget is exhausted the caller
- * rejects the work, for example with {@code OVERLOADED} or by closing the connection.
+ * <p>Callers reserve before queuing or allocating and close the lease on every completion, error
+ * and cancellation path. Reservation never blocks; when the budget is exhausted the caller rejects
+ * the work, for example with {@code OVERLOADED} or by closing the connection.
  */
 public final class ResourceBudget {
     private final long capacity;
     private long used;
 
     public ResourceBudget(long capacity) {
-        if (capacity < 0)
-            throw new IllegalArgumentException("Negative capacity");
+        if (capacity < 0) throw new IllegalArgumentException("Negative capacity");
         this.capacity = capacity;
     }
 
@@ -27,10 +26,8 @@ public final class ResourceBudget {
      * @throws IllegalArgumentException if {@code amount} is negative
      */
     public synchronized Optional<Lease> reserve(long amount) {
-        if (amount < 0)
-            throw new IllegalArgumentException("Negative reservation");
-        if (amount > capacity - used)
-            return Optional.empty();
+        if (amount < 0) throw new IllegalArgumentException("Negative reservation");
+        if (amount > capacity - used) return Optional.empty();
         used += amount;
         return Optional.of(new Lease(amount));
     }

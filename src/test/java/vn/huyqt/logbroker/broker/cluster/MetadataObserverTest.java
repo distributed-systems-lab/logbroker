@@ -1,14 +1,17 @@
 package vn.huyqt.logbroker.broker.cluster;
 
 import static org.junit.jupiter.api.Assertions.*;
-import java.nio.file.Path;
-import java.util.*;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+
 import vn.huyqt.logbroker.controller.metadata.MetadataImage;
 import vn.huyqt.logbroker.controller.protocol.BrokerControlProtocol;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.SnapshotRequired;
 import vn.huyqt.logbroker.controller.snapshot.SnapshotId;
+
+import java.nio.file.Path;
+import java.util.*;
 
 class MetadataObserverTest {
     @TempDir Path root;

@@ -2,16 +2,17 @@ package vn.huyqt.logbroker.controller.client;
 
 import static vn.huyqt.logbroker.controller.client.ControllerClientException.Outcome.*;
 
-import java.net.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.function.Function;
 import vn.huyqt.logbroker.broker.DeadlineScheduler;
 import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
 import vn.huyqt.logbroker.controller.ClusterIdentity;
 import vn.huyqt.logbroker.controller.consensus.QuorumStatus;
 import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
+
+import java.net.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.Function;
 
 /**
  * One connection and correlation per attempt; one scheduled action per invocation. The injected

@@ -2,12 +2,14 @@ package vn.huyqt.logbroker.controller.log;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import org.junit.jupiter.api.Test;
+
+import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
+
 import java.io.IOException;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
-import org.junit.jupiter.api.Test;
-import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
 
 class QuorumEntryCodecTest {
     @Test

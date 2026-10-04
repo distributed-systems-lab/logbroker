@@ -1,13 +1,14 @@
 package vn.huyqt.logbroker.client;
 
-import java.net.InetSocketAddress;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.function.Function;
 import vn.huyqt.logbroker.broker.*;
 import vn.huyqt.logbroker.protocol.*;
 import vn.huyqt.logbroker.protocol.Protocol.Error;
 import vn.huyqt.logbroker.transport.ClientTransport;
+
+import java.net.InetSocketAddress;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.Function;
 
 /**
  * Bounded cluster routing. Owns endpoint clients, borrows the scheduler. All asynchronous

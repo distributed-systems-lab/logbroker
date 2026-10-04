@@ -1,5 +1,8 @@
 package vn.huyqt.logbroker.protocol;
 
+import vn.huyqt.logbroker.protocol.Protocol.*;
+import vn.huyqt.logbroker.protocol.Protocol.Error;
+
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -14,8 +17,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
-import vn.huyqt.logbroker.protocol.Protocol.*;
-import vn.huyqt.logbroker.protocol.Protocol.Error;
 
 /**
  * Bounded version 1 and 2 request/response codec independent of Netty.

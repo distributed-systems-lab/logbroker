@@ -1,5 +1,7 @@
 package vn.huyqt.logbroker.broker;
 
+import vn.huyqt.logbroker.protocol.Protocol.TopicPartition;
+
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -12,7 +14,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import vn.huyqt.logbroker.protocol.Protocol.TopicPartition;
 
 /**
  * Runs at most one task per partition while sharing a bounded worker pool.

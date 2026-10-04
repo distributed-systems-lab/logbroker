@@ -1,11 +1,12 @@
 package vn.huyqt.logbroker.controller.snapshot;
 
-import java.util.*;
-import java.util.function.*;
 import vn.huyqt.logbroker.controller.consensus.*;
 import vn.huyqt.logbroker.controller.consensus.QuorumEvent.*;
 import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
+
+import java.util.*;
+import java.util.function.*;
 
 /**
  * One loop-owned download. RPC correlation and disk completion gate every next step.

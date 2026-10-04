@@ -1,8 +1,9 @@
 package vn.huyqt.logbroker.controller.log;
 
-import java.util.Objects;
-import vn.huyqt.logbroker.controller.metadata.ClusterRecords;
 import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
+import vn.huyqt.logbroker.controller.metadata.ClusterRecords;
+
+import java.util.Objects;
 
 /**
  * One record of the metadata quorum log. Wire and storage encoding is defined by {@link

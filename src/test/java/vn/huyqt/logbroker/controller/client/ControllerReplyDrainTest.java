@@ -1,6 +1,16 @@
 package vn.huyqt.logbroker.controller.client;
 
 import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+import vn.huyqt.logbroker.broker.DeadlineScheduler;
+import vn.huyqt.logbroker.broker.cluster.BrokerClusterConfig;
+import vn.huyqt.logbroker.controller.metadata.ClusterRecords.Endpoint;
+import vn.huyqt.logbroker.controller.metadata.MetadataLimits;
+import vn.huyqt.logbroker.controller.protocol.*;
+import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
+
 import java.io.DataInputStream;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -8,13 +18,6 @@ import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.*;
-import org.junit.jupiter.api.Test;
-import vn.huyqt.logbroker.broker.DeadlineScheduler;
-import vn.huyqt.logbroker.broker.cluster.BrokerClusterConfig;
-import vn.huyqt.logbroker.controller.metadata.ClusterRecords.Endpoint;
-import vn.huyqt.logbroker.controller.metadata.MetadataLimits;
-import vn.huyqt.logbroker.controller.protocol.*;
-import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 
 class ControllerReplyDrainTest {
     @Test

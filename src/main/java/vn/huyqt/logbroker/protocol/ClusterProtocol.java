@@ -1,11 +1,12 @@
 package vn.huyqt.logbroker.protocol;
 
+import vn.huyqt.logbroker.controller.metadata.ClusterRecords.Endpoint;
+import vn.huyqt.logbroker.protocol.Protocol.*;
+import vn.huyqt.logbroker.protocol.Protocol.Error;
+
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
-import vn.huyqt.logbroker.controller.metadata.ClusterRecords.Endpoint;
-import vn.huyqt.logbroker.protocol.Protocol.Error;
-import vn.huyqt.logbroker.protocol.Protocol.*;
 
 /** Data wire v2 values. Route epochs are authorities from one committed metadata image. */
 public final class ClusterProtocol {

@@ -1,8 +1,9 @@
 package vn.huyqt.logbroker.controller;
 
+import vn.huyqt.logbroker.storage.LogConfig;
+
 import java.time.Duration;
 import java.util.Objects;
-import vn.huyqt.logbroker.storage.LogConfig;
 
 /**
  * Immutable controller limits, validated together so progress cannot require an oversized frame.

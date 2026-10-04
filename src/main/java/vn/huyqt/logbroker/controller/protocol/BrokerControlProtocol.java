@@ -1,12 +1,13 @@
 package vn.huyqt.logbroker.controller.protocol;
 
-import java.util.*;
 import vn.huyqt.logbroker.controller.ClusterIdentity.Voter;
 import vn.huyqt.logbroker.controller.consensus.QuorumStatus;
 import vn.huyqt.logbroker.controller.metadata.ClusterRecords.*;
 import vn.huyqt.logbroker.controller.metadata.MetadataImage;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.controller.snapshot.SnapshotId;
+
+import java.util.*;
 
 /** Schema-v2 broker control messages. Observer traffic never establishes voter contact. */
 public final class BrokerControlProtocol {

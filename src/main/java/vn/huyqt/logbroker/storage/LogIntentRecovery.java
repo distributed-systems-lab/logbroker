@@ -13,98 +13,100 @@ import java.util.*;
  * lock.
  */
 public final class LogIntentRecovery {
-  private LogIntentRecovery() {}
+    private LogIntentRecovery() {}
 
-  /**
-   * Completes a truncation to {@code target} directly on the files of a closed log.
-   *
-   * <p>Validates every batch below {@code target}, deletes later segments and their indexes from
-   * the last one backwards, truncates the segment holding the boundary, forces it and syncs the
-   * directory. Indexes are not rewritten; the normal {@link PartitionLog} open that follows
-   * rebuilds them. Repeating the call after a crash is safe.
-   *
-   * @param start base offset the first data segment must have
-   * @param committed committed floor; {@code target} may not be below it
-   * @param target exclusive end offset to keep; must be a batch boundary
-   * @throws CorruptLogException if {@code target} is below {@code start} or {@code committed},
-   *     is not a batch boundary, or the bytes before it are missing or invalid
-   */
-  public static void truncate(
-      Path directory,
-      LogConfig config,
-      long start,
-      long committed,
-      long target,
-      DirectoryDurability directories)
-      throws IOException {
-    if (target < committed || target < start)
-      throw new CorruptLogException("Truncate intent crosses committed prefix");
-    List<Path> paths;
-    try (var stream = Files.list(directory)) {
-      paths =
-          stream
-              .filter(p -> p.getFileName().toString().matches("[0-9]{20}\\.log"))
-              .sorted(Comparator.comparing(p -> p.getFileName().toString()))
-              .toList();
-    }
-    long expected = start;
-    Path retained = null;
-    long retainedPosition = 0;
-    for (var path : paths) {
-      long base = Long.parseLong(path.getFileName().toString().substring(0, 20));
-      if (base != expected) throw new CorruptLogException("Intent recovery segment gap");
-      try (var channel = FileChannel.open(path, READ)) {
-        long position = 0;
-        if (expected == target) {
-          retained = path;
-          retainedPosition = 0;
-          break;
+    /**
+     * Completes a truncation to {@code target} directly on the files of a closed log.
+     *
+     * <p>Validates every batch below {@code target}, deletes later segments and their indexes from
+     * the last one backwards, truncates the segment holding the boundary, forces it and syncs the
+     * directory. Indexes are not rewritten; the normal {@link PartitionLog} open that follows
+     * rebuilds them. Repeating the call after a crash is safe.
+     *
+     * @param start base offset the first data segment must have
+     * @param committed committed floor; {@code target} may not be below it
+     * @param target exclusive end offset to keep; must be a batch boundary
+     * @throws CorruptLogException if {@code target} is below {@code start} or {@code committed}, is
+     *     not a batch boundary, or the bytes before it are missing or invalid
+     */
+    public static void truncate(
+            Path directory,
+            LogConfig config,
+            long start,
+            long committed,
+            long target,
+            DirectoryDurability directories)
+            throws IOException {
+        if (target < committed || target < start)
+            throw new CorruptLogException("Truncate intent crosses committed prefix");
+        List<Path> paths;
+        try (var stream = Files.list(directory)) {
+            paths =
+                    stream.filter(p -> p.getFileName().toString().matches("[0-9]{20}\\.log"))
+                            .sorted(Comparator.comparing(p -> p.getFileName().toString()))
+                            .toList();
         }
-        while (position < channel.size()) {
-          if (channel.size() - position < 30)
-            throw new CorruptLogException("Committed intent prefix incomplete");
-          byte[] header = read(channel, position, 30);
-          BatchCodec.validateHeaderPrefix(header, config.maxBatchBytes());
-          int length = ByteBuffer.wrap(header).getInt(6);
-          if (length > channel.size() - position)
-            throw new CorruptLogException("Intent prefix incomplete");
-          var batch = BatchCodec.decode(read(channel, position, length), config.maxBatchBytes());
-          if (batch.baseOffset() != expected || batch.nextOffset() > target)
-            throw new CorruptLogException("Intent target not batch boundary");
-          expected = batch.nextOffset();
-          position += length;
-          if (expected == target) {
-            retained = path;
-            retainedPosition = position;
-            break;
-          }
+        long expected = start;
+        Path retained = null;
+        long retainedPosition = 0;
+        for (var path : paths) {
+            long base = Long.parseLong(path.getFileName().toString().substring(0, 20));
+            if (base != expected) throw new CorruptLogException("Intent recovery segment gap");
+            try (var channel = FileChannel.open(path, READ)) {
+                long position = 0;
+                if (expected == target) {
+                    retained = path;
+                    retainedPosition = 0;
+                    break;
+                }
+                while (position < channel.size()) {
+                    if (channel.size() - position < 30)
+                        throw new CorruptLogException("Committed intent prefix incomplete");
+                    byte[] header = read(channel, position, 30);
+                    BatchCodec.validateHeaderPrefix(header, config.maxBatchBytes());
+                    int length = ByteBuffer.wrap(header).getInt(6);
+                    if (length > channel.size() - position)
+                        throw new CorruptLogException("Intent prefix incomplete");
+                    var batch =
+                            BatchCodec.decode(
+                                    read(channel, position, length), config.maxBatchBytes());
+                    if (batch.baseOffset() != expected || batch.nextOffset() > target)
+                        throw new CorruptLogException("Intent target not batch boundary");
+                    expected = batch.nextOffset();
+                    position += length;
+                    if (expected == target) {
+                        retained = path;
+                        retainedPosition = position;
+                        break;
+                    }
+                }
+                if (retained != null) break;
+            }
         }
-        if (retained != null) break;
-      }
+        if (retained == null) throw new CorruptLogException("Truncate intent prefix missing");
+        // Deleting from the end keeps a contiguous prefix if this is interrupted. Zero-padded names
+        // make string order equal offset order.
+        for (var path : paths.reversed()) {
+            if (path.getFileName().toString().compareTo(retained.getFileName().toString()) <= 0)
+                break;
+            Files.delete(path);
+            Files.deleteIfExists(
+                    path.resolveSibling(path.getFileName().toString().replace(".log", ".index")));
+        }
+        try (var channel = FileChannel.open(retained, WRITE)) {
+            channel.truncate(retainedPosition);
+            channel.force(true);
+        }
+        directories.sync(directory);
     }
-    if (retained == null) throw new CorruptLogException("Truncate intent prefix missing");
-    // Deleting from the end keeps a contiguous prefix if this is interrupted. Zero-padded names
-    // make string order equal offset order.
-    for (var path : paths.reversed()) {
-      if (path.getFileName().toString().compareTo(retained.getFileName().toString()) <= 0) break;
-      Files.delete(path);
-      Files.deleteIfExists(
-          path.resolveSibling(path.getFileName().toString().replace(".log", ".index")));
-    }
-    try (var channel = FileChannel.open(retained, WRITE)) {
-      channel.truncate(retainedPosition);
-      channel.force(true);
-    }
-    directories.sync(directory);
-  }
 
-  private static byte[] read(FileChannel channel, long position, int size) throws IOException {
-    var buffer = ByteBuffer.allocate(size);
-    while (buffer.hasRemaining()) {
-      int n = channel.read(buffer, position);
-      if (n <= 0) throw new IOException("No intent recovery read progress");
-      position += n;
+    private static byte[] read(FileChannel channel, long position, int size) throws IOException {
+        var buffer = ByteBuffer.allocate(size);
+        while (buffer.hasRemaining()) {
+            int n = channel.read(buffer, position);
+            if (n <= 0) throw new IOException("No intent recovery read progress");
+            position += n;
+        }
+        return buffer.array();
     }
-    return buffer.array();
-  }
 }

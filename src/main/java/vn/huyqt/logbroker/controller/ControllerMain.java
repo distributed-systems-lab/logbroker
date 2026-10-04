@@ -1,11 +1,12 @@
 package vn.huyqt.logbroker.controller;
 
+import vn.huyqt.logbroker.controller.persistence.DurableFiles;
+
 import java.io.*;
 import java.nio.file.*;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
-import vn.huyqt.logbroker.controller.persistence.DurableFiles;
 
 /**
  * Process entry point: {@code --config FILE} starts one controller from a properties file and runs

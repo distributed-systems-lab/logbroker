@@ -1,9 +1,10 @@
 package vn.huyqt.logbroker.protocol;
 
+import vn.huyqt.logbroker.storage.LogRecord;
+
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
-import vn.huyqt.logbroker.storage.LogRecord;
 
 /** Transport-neutral version 1 request and response values. */
 public final class Protocol {

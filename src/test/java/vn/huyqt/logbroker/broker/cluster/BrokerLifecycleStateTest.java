@@ -1,17 +1,20 @@
 package vn.huyqt.logbroker.broker.cluster;
 
 import static org.junit.jupiter.api.Assertions.*;
-import java.nio.file.Path;
-import java.time.Duration;
-import java.util.*;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+
+import vn.huyqt.logbroker.controller.log.*;
 import vn.huyqt.logbroker.controller.metadata.*;
 import vn.huyqt.logbroker.controller.metadata.ClusterRecords.*;
 import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.BrokerControlProtocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
-import vn.huyqt.logbroker.controller.log.*;
+
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.*;
 
 class BrokerLifecycleStateTest {
     @TempDir Path root;

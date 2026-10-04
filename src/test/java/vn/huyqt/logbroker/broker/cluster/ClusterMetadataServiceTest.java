@@ -1,15 +1,18 @@
 package vn.huyqt.logbroker.broker.cluster;
 
 import static org.junit.jupiter.api.Assertions.*;
-import java.util.*;
-import java.util.concurrent.*;
+
 import org.junit.jupiter.api.Test;
+
 import vn.huyqt.logbroker.broker.metadata.ClusterMetadataService;
 import vn.huyqt.logbroker.controller.metadata.MetadataImage;
 import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.BrokerControlProtocol;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.support.ManualScheduler;
+
+import java.util.*;
+import java.util.concurrent.*;
 
 class ClusterMetadataServiceTest {
     @Test

@@ -1,11 +1,14 @@
 package vn.huyqt.logbroker.controller.protocol;
 
 import static org.junit.jupiter.api.Assertions.*;
-import java.util.UUID;
+
 import org.junit.jupiter.api.Test;
+
 import vn.huyqt.logbroker.controller.metadata.MetadataLimits;
-import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.controller.protocol.BrokerControlProtocol.SenderRole;
+import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
+
+import java.util.UUID;
 
 class ObserverWireLimitsTest {
     @Test

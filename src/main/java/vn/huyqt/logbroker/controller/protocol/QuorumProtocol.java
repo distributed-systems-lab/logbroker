@@ -1,10 +1,11 @@
 package vn.huyqt.logbroker.controller.protocol;
 
-import java.util.*;
 import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
 import vn.huyqt.logbroker.controller.consensus.QuorumStatus;
 import vn.huyqt.logbroker.controller.log.QuorumBatch;
 import vn.huyqt.logbroker.controller.snapshot.SnapshotId;
+
+import java.util.*;
 
 /**
  * Controller protocol v1 message model. Field order and widths follow {@code

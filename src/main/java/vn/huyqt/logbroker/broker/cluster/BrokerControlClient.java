@@ -1,15 +1,16 @@
 package vn.huyqt.logbroker.broker.cluster;
 
-import java.net.InetSocketAddress;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.function.DoubleSupplier;
 import vn.huyqt.logbroker.broker.DeadlineScheduler;
 import vn.huyqt.logbroker.controller.ClusterIdentity;
 import vn.huyqt.logbroker.controller.client.*;
 import vn.huyqt.logbroker.controller.protocol.*;
-import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.controller.protocol.BrokerControlProtocol.*;
+import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
+
+import java.net.InetSocketAddress;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.DoubleSupplier;
 
 /** Bounded, serialized broker RPCs on one reusable controller connection; never casts a vote. */
 public final class BrokerControlClient implements AutoCloseable {

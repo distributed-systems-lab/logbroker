@@ -3,9 +3,9 @@ package vn.huyqt.logbroker.storage;
 /**
  * Size limits for data segments, encoded batches, and sparse index spacing.
  *
- * <p>Requires {@code segmentBytes >= maxBatchBytes >= 50} (50 is the smallest valid encoded
- * batch) and {@code indexIntervalBytes > 0}. When a log is reopened, {@code maxBatchBytes} must
- * still admit every stored batch, otherwise recovery reports corruption. See {@code
+ * <p>Requires {@code segmentBytes >= maxBatchBytes >= 50} (50 is the smallest valid encoded batch)
+ * and {@code indexIntervalBytes > 0}. When a log is reopened, {@code maxBatchBytes} must still
+ * admit every stored batch, otherwise recovery reports corruption. See {@code
  * docs/storage-format-v1.md}.
  *
  * @param segmentBytes maximum data segment size; an append that would exceed it starts a new

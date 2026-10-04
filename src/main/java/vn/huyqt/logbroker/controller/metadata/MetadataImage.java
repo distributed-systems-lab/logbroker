@@ -1,7 +1,8 @@
 package vn.huyqt.logbroker.controller.metadata;
 
-import java.util.*;
 import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
+
+import java.util.*;
 
 /** Immutable metadata at an exclusive committed batch boundary. Maps and lists are copied. */
 public record MetadataImage(

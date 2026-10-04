@@ -1,7 +1,5 @@
 package vn.huyqt.logbroker.broker.cluster;
 
-import java.nio.file.*;
-import java.util.*;
 import vn.huyqt.logbroker.controller.log.*;
 import vn.huyqt.logbroker.controller.metadata.*;
 import vn.huyqt.logbroker.controller.metadata.ClusterRecords.Session;
@@ -10,6 +8,9 @@ import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.controller.support.FaultFiles;
 import vn.huyqt.logbroker.storage.LogConfig;
 import vn.huyqt.logbroker.support.ManualScheduler;
+
+import java.nio.file.*;
+import java.util.*;
 
 final class ObserverHarness implements AutoCloseable {
     final ManualScheduler clock = new ManualScheduler();

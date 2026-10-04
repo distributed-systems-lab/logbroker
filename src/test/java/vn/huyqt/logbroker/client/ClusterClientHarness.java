@@ -1,12 +1,13 @@
 package vn.huyqt.logbroker.client;
 
+import vn.huyqt.logbroker.controller.metadata.ClusterRecords.Endpoint;
+import vn.huyqt.logbroker.protocol.*;
+import vn.huyqt.logbroker.storage.LogRecord;
+import vn.huyqt.logbroker.support.*;
+
 import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.*;
-import vn.huyqt.logbroker.protocol.*;
-import vn.huyqt.logbroker.controller.metadata.ClusterRecords.Endpoint;
-import vn.huyqt.logbroker.support.*;
-import vn.huyqt.logbroker.storage.LogRecord;
 
 final class ClusterClientHarness implements AutoCloseable {
     static final UUID CLUSTER = new UUID(0, 1), TOPIC = new UUID(0, 7);

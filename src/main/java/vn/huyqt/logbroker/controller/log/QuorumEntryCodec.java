@@ -1,5 +1,9 @@
 package vn.huyqt.logbroker.controller.log;
 
+import vn.huyqt.logbroker.broker.metadata.MetadataEventCodec;
+import vn.huyqt.logbroker.controller.metadata.ClusterRecords;
+import vn.huyqt.logbroker.controller.metadata.MetadataLimits;
+
 import java.io.IOException;
 import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
@@ -8,9 +12,6 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.UUID;
-import vn.huyqt.logbroker.controller.metadata.ClusterRecords;
-import vn.huyqt.logbroker.controller.metadata.MetadataLimits;
-import vn.huyqt.logbroker.broker.metadata.MetadataEventCodec;
 
 /**
  * Versioned encoding of one {@link QuorumEntry}, used both as a storage record value and inside

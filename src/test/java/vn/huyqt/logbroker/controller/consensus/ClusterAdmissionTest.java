@@ -1,9 +1,12 @@
 package vn.huyqt.logbroker.controller.consensus;
 
 import static org.junit.jupiter.api.Assertions.*;
-import java.time.Duration;
+
 import org.junit.jupiter.api.Test;
+
 import vn.huyqt.logbroker.controller.support.QuorumHarness;
+
+import java.time.Duration;
 
 class ClusterAdmissionTest {
     @Test

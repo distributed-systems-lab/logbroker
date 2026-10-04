@@ -1,9 +1,5 @@
 package vn.huyqt.logbroker.broker.cluster;
 
-import java.io.IOException;
-import java.util.Objects;
-import java.util.concurrent.*;
-import java.util.function.Consumer;
 import vn.huyqt.logbroker.broker.DeadlineScheduler;
 import vn.huyqt.logbroker.controller.metadata.*;
 import vn.huyqt.logbroker.controller.metadata.ClusterRecords.Session;
@@ -11,6 +7,11 @@ import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.BrokerControlProtocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.controller.snapshot.SnapshotId;
+
+import java.io.IOException;
+import java.util.Objects;
+import java.util.concurrent.*;
+import java.util.function.Consumer;
 
 /** Committed metadata pull loop. All storage work runs on the supplied ordered worker. */
 public final class MetadataObserver {

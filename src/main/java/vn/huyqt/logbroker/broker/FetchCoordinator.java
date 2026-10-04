@@ -1,5 +1,13 @@
 package vn.huyqt.logbroker.broker;
 
+import vn.huyqt.logbroker.protocol.ClusterProtocol;
+import vn.huyqt.logbroker.protocol.ErrorCode;
+import vn.huyqt.logbroker.protocol.Protocol.Error;
+import vn.huyqt.logbroker.protocol.Protocol.Fetch;
+import vn.huyqt.logbroker.protocol.Protocol.FetchReply;
+import vn.huyqt.logbroker.protocol.Protocol.TopicPartition;
+import vn.huyqt.logbroker.protocol.WireBatchCodec;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -9,13 +17,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
-import vn.huyqt.logbroker.protocol.ErrorCode;
-import vn.huyqt.logbroker.protocol.Protocol.Error;
-import vn.huyqt.logbroker.protocol.Protocol.Fetch;
-import vn.huyqt.logbroker.protocol.Protocol.FetchReply;
-import vn.huyqt.logbroker.protocol.Protocol.TopicPartition;
-import vn.huyqt.logbroker.protocol.WireBatchCodec;
-import vn.huyqt.logbroker.protocol.ClusterProtocol;
 
 /**
  * Event-driven long polling without occupying a partition worker while waiting.

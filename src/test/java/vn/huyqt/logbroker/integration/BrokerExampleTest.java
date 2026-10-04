@@ -2,12 +2,14 @@ package vn.huyqt.logbroker.integration;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import vn.huyqt.logbroker.broker.LegacyBrokerFixture;
+
 import vn.huyqt.logbroker.broker.BrokerConfig;
+import vn.huyqt.logbroker.broker.LegacyBrokerFixture;
 import vn.huyqt.logbroker.example.LegacyClientExample;
+
+import java.nio.file.Path;
 
 class BrokerExampleTest {
     @TempDir Path directory;

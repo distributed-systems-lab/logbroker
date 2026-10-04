@@ -1,11 +1,10 @@
 package vn.huyqt.logbroker.broker.cluster;
 
 import static org.junit.jupiter.api.Assertions.*;
-import java.nio.file.*;
-import java.util.*;
-import java.util.concurrent.*;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+
 import vn.huyqt.logbroker.broker.*;
 import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
 import vn.huyqt.logbroker.controller.metadata.*;
@@ -13,6 +12,10 @@ import vn.huyqt.logbroker.controller.metadata.ClusterRecords.*;
 import vn.huyqt.logbroker.controller.support.FaultFiles;
 import vn.huyqt.logbroker.protocol.Protocol.TopicPartition;
 import vn.huyqt.logbroker.support.ManualScheduler;
+
+import java.nio.file.*;
+import java.util.*;
+import java.util.concurrent.*;
 
 class ClusterPartitionManagerTest {
     @TempDir Path root;

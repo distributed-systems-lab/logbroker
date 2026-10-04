@@ -1,13 +1,14 @@
 package vn.huyqt.logbroker.broker.metadata;
 
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.function.Supplier;
 import vn.huyqt.logbroker.broker.DeadlineScheduler;
 import vn.huyqt.logbroker.broker.cluster.BrokerControlClient;
 import vn.huyqt.logbroker.controller.client.ControllerClientException;
 import vn.huyqt.logbroker.controller.metadata.MetadataImage;
 import vn.huyqt.logbroker.controller.protocol.*;
+
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.Supplier;
 
 /**
  * No local metadata writes: topic identity and assignments come from committed controller replies.

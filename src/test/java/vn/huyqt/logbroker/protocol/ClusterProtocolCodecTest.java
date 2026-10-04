@@ -1,10 +1,12 @@
 package vn.huyqt.logbroker.protocol;
 
 import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
 import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
-import org.junit.jupiter.api.Test;
 
 class ClusterProtocolCodecTest {
     @Test

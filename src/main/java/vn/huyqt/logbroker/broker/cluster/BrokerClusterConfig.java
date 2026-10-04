@@ -1,9 +1,10 @@
 package vn.huyqt.logbroker.broker.cluster;
 
-import java.time.Duration;
-import java.util.*;
 import vn.huyqt.logbroker.controller.metadata.ClusterRecords.Endpoint;
 import vn.huyqt.logbroker.controller.metadata.MetadataLimits;
+
+import java.time.Duration;
+import java.util.*;
 
 /** Immutable control-plane settings. Heartbeat timings never constitute a data-serving lease. */
 public record BrokerClusterConfig(

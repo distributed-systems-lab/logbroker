@@ -2,15 +2,17 @@ package vn.huyqt.logbroker.controller;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import vn.huyqt.logbroker.controller.consensus.QuorumStatus;
+import vn.huyqt.logbroker.controller.persistence.*;
+import vn.huyqt.logbroker.controller.support.FaultFiles;
+
 import java.nio.file.*;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-import vn.huyqt.logbroker.controller.consensus.QuorumStatus;
-import vn.huyqt.logbroker.controller.persistence.*;
-import vn.huyqt.logbroker.controller.support.FaultFiles;
 
 class ControllerNodeClusterTest {
     @TempDir Path root;

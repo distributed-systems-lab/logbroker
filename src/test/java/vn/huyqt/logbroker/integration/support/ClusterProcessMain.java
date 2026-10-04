@@ -1,9 +1,10 @@
 package vn.huyqt.logbroker.integration.support;
 
-import java.nio.file.*;
-import java.util.Properties;
 import vn.huyqt.logbroker.broker.*;
 import vn.huyqt.logbroker.broker.cluster.BrokerClusterConfig;
+
+import java.nio.file.*;
+import java.util.Properties;
 
 /** Process fixture publishes diagnostics from the actual production broker composition. */
 public final class ClusterProcessMain {

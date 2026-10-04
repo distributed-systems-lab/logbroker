@@ -1,11 +1,12 @@
 package vn.huyqt.logbroker.controller.consensus;
 
-import java.util.*;
 import vn.huyqt.logbroker.controller.consensus.QuorumEvent.DiskToken;
 import vn.huyqt.logbroker.controller.log.*;
 import vn.huyqt.logbroker.controller.metadata.MetadataImage;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.controller.snapshot.SnapshotId;
+
+import java.util.*;
 
 /**
  * Side effect requested by {@link QuorumStateMachine#on}; the caller interprets it outside the

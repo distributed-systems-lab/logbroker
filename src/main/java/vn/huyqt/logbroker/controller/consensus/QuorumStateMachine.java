@@ -1,21 +1,22 @@
 package vn.huyqt.logbroker.controller.consensus;
 
-import java.util.*;
-import java.util.function.Consumer;
-import java.util.function.LongSupplier;
-import java.util.random.RandomGenerator;
 import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
 import vn.huyqt.logbroker.controller.ControllerConfig;
 import vn.huyqt.logbroker.controller.consensus.QuorumEvent.*;
 import vn.huyqt.logbroker.controller.log.*;
-import vn.huyqt.logbroker.controller.metadata.MetadataImage;
 import vn.huyqt.logbroker.controller.metadata.ClusterControlManager;
-import vn.huyqt.logbroker.controller.metadata.HeartbeatTracker;
-import vn.huyqt.logbroker.controller.metadata.ObserverReadService;
 import vn.huyqt.logbroker.controller.metadata.ClusterRecords.Session;
+import vn.huyqt.logbroker.controller.metadata.HeartbeatTracker;
+import vn.huyqt.logbroker.controller.metadata.MetadataImage;
+import vn.huyqt.logbroker.controller.metadata.ObserverReadService;
 import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.controller.snapshot.*;
+
+import java.util.*;
+import java.util.function.Consumer;
+import java.util.function.LongSupplier;
+import java.util.random.RandomGenerator;
 
 /**
  * Pure transitions; I/O effects are interpreted outside this state owner.

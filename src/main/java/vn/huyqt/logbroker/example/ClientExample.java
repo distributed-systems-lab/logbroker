@@ -1,12 +1,5 @@
 package vn.huyqt.logbroker.example;
 
-import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
 import vn.huyqt.logbroker.broker.DeadlineScheduler;
 import vn.huyqt.logbroker.client.ClientConfig;
 import vn.huyqt.logbroker.client.ClusterClient;
@@ -19,6 +12,14 @@ import vn.huyqt.logbroker.protocol.Protocol;
 import vn.huyqt.logbroker.protocol.ProtocolLimits;
 import vn.huyqt.logbroker.storage.LogRecord;
 import vn.huyqt.logbroker.transport.netty.NettyClientTransport;
+
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /** Six durable partition writes and explicit-offset reads, discovered from bootstrap brokers. */
 public final class ClientExample {

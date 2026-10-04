@@ -54,6 +54,20 @@ target/phase4-format-final.log. No WSL tests were run; the deferred ext4 gate is
 
 ## Previous implementation verification
 
+Repository-wide formatting automation, approved 2026-10-04: added Spotless Maven 2.43.0
+with pinned google-java-format 1.19.2/AOSP, LF, import cleanup and no string reflow.
+Scope is all 275 main/test Java sources; target output is excluded. Added PowerShell/Bash
+apply/check wrappers and bound read-only check to verify. README/AGENTS document usage.
+The initial check failed on actual format violations; apply then check passed. Git Bash
+syntax, invalid-mode exit 2 and real check passed without WSL. PowerShell check from
+outside the repository passed without changing any source hash. The JDK scanner confirms
+identical Java tokens outside comments and import declarations in all 275 files; imports
+are deliberately sorted/cleaned and the full javac build verifies their resolution.
+Fresh isolated Windows clean verify completed at 10:45:00 Asia/Saigon, exit 0, BUILD SUCCESS:
+430 tests, zero failures/errors, 11 platform skips; uncached verify format gate checked
+all 275 files and found zero violations. Log: target/all-java-format-verify.log.
+Build/TEMP remained on D, and no WSL acceptance was rerun.
+
 Ruling: On 2026-10-04 the user requested no further WSL testing for now and asked
 to free test data on C, then continue implementation. Finish implementation and
 commits with a fresh Windows verification, preserving the existing ext4 evidence.

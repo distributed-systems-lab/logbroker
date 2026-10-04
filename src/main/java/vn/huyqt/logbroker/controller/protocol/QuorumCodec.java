@@ -2,19 +2,20 @@ package vn.huyqt.logbroker.controller.protocol;
 
 import static vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 
+import vn.huyqt.logbroker.broker.metadata.*;
+import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
+import vn.huyqt.logbroker.controller.ClusterIdentity;
+import vn.huyqt.logbroker.controller.ControllerConfig;
+import vn.huyqt.logbroker.controller.consensus.QuorumStatus;
+import vn.huyqt.logbroker.controller.log.*;
+import vn.huyqt.logbroker.controller.metadata.*;
+import vn.huyqt.logbroker.controller.persistence.StateJournal;
+import vn.huyqt.logbroker.controller.snapshot.SnapshotId;
+
 import java.io.*;
 import java.nio.*;
 import java.nio.charset.*;
 import java.util.*;
-import vn.huyqt.logbroker.broker.metadata.*;
-import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
-import vn.huyqt.logbroker.controller.ControllerConfig;
-import vn.huyqt.logbroker.controller.ClusterIdentity;
-import vn.huyqt.logbroker.controller.metadata.*;
-import vn.huyqt.logbroker.controller.consensus.QuorumStatus;
-import vn.huyqt.logbroker.controller.log.*;
-import vn.huyqt.logbroker.controller.persistence.StateJournal;
-import vn.huyqt.logbroker.controller.snapshot.SnapshotId;
 
 /**
  * Two-pass bounded decoder: preflight validates sizes without materializing batch/chunk payloads.

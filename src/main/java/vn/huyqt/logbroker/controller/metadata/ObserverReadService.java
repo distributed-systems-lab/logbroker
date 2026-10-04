@@ -1,7 +1,8 @@
 package vn.huyqt.logbroker.controller.metadata;
 
-import java.util.*;
 import vn.huyqt.logbroker.controller.log.QuorumBatch;
+
+import java.util.*;
 
 /** Whole, contiguous committed batches; observers never reconcile by truncating applied history. */
 public final class ObserverReadService {

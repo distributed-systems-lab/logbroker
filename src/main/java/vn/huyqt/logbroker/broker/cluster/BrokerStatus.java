@@ -1,8 +1,9 @@
 package vn.huyqt.logbroker.broker.cluster;
 
-import java.util.*;
 import vn.huyqt.logbroker.controller.metadata.ClusterRecords.Session;
 import vn.huyqt.logbroker.protocol.Protocol.TopicPartition;
+
+import java.util.*;
 
 /**
  * Immutable best-effort diagnostics; this snapshot never grants serving permission.

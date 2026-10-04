@@ -1,9 +1,5 @@
 package vn.huyqt.logbroker.example;
 
-import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
 import vn.huyqt.logbroker.broker.DeadlineScheduler;
 import vn.huyqt.logbroker.client.BrokerClient;
 import vn.huyqt.logbroker.client.ClientConfig;
@@ -14,6 +10,11 @@ import vn.huyqt.logbroker.protocol.Protocol;
 import vn.huyqt.logbroker.protocol.ProtocolLimits;
 import vn.huyqt.logbroker.storage.LogRecord;
 import vn.huyqt.logbroker.transport.netty.NettyClientTransport;
+
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * One durable Produce followed by an explicit-offset Fetch.

@@ -1,9 +1,10 @@
 package vn.huyqt.logbroker.controller.snapshot;
 
+import vn.huyqt.logbroker.controller.persistence.StateJournal;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
-import vn.huyqt.logbroker.controller.persistence.StateJournal;
 
 /** Borrowed journal publication contract, independent of voter identity and voting hard state. */
 public interface SnapshotJournal {

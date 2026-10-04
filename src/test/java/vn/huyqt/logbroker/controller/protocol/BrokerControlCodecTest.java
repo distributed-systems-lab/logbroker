@@ -1,13 +1,16 @@
 package vn.huyqt.logbroker.controller.protocol;
 
 import static org.junit.jupiter.api.Assertions.*;
-import java.util.*;
-import java.io.IOException;
+
 import org.junit.jupiter.api.Test;
+
 import vn.huyqt.logbroker.controller.ControllerConfig;
 import vn.huyqt.logbroker.controller.metadata.ClusterRecords;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.controller.support.ControllerTestSupport;
+
+import java.io.IOException;
+import java.util.*;
 
 class BrokerControlCodecTest {
     @Test

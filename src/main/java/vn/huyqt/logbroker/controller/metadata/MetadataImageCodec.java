@@ -1,13 +1,14 @@
 package vn.huyqt.logbroker.controller.metadata;
 
-import java.io.*;
-import java.util.ArrayList;
-import java.util.*;
-import java.nio.charset.StandardCharsets;
-import java.nio.charset.CodingErrorAction;
-import java.nio.ByteBuffer;
 import vn.huyqt.logbroker.broker.metadata.MetadataEventCodec;
 import vn.huyqt.logbroker.broker.metadata.TopicCatalog.TopicCreated;
+
+import java.io.*;
+import java.nio.ByteBuffer;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.ArrayList;
 
 /**
  * Binary form of a {@link MetadataImage}: applied offset i64, topic count i32, then each topic as a

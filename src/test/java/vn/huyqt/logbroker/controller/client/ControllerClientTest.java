@@ -2,16 +2,18 @@ package vn.huyqt.logbroker.controller.client;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import java.net.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.function.*;
 import org.junit.jupiter.api.Test;
+
 import vn.huyqt.logbroker.controller.*;
 import vn.huyqt.logbroker.controller.protocol.*;
 import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.controller.support.ControllerTestSupport;
 import vn.huyqt.logbroker.support.ManualScheduler;
+
+import java.net.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.*;
 
 class ControllerClientTest {
     @Test

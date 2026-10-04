@@ -2,14 +2,16 @@ package vn.huyqt.logbroker.controller.persistence;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import vn.huyqt.logbroker.controller.ClusterIdentity;
+import vn.huyqt.logbroker.controller.support.FaultFiles;
+
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.List;
 import java.util.UUID;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-import vn.huyqt.logbroker.controller.ClusterIdentity;
-import vn.huyqt.logbroker.controller.support.FaultFiles;
 
 class IdentityFormatTest {
     @TempDir Path temporary;

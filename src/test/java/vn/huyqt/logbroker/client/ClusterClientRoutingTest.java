@@ -1,9 +1,12 @@
 package vn.huyqt.logbroker.client;
 
 import static org.junit.jupiter.api.Assertions.*;
-import java.util.*;
+
 import org.junit.jupiter.api.Test;
+
 import vn.huyqt.logbroker.protocol.*;
+
+import java.util.*;
 
 class ClusterClientRoutingTest {
     @Test

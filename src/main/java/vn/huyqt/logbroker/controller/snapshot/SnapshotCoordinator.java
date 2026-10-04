@@ -1,10 +1,11 @@
 package vn.huyqt.logbroker.controller.snapshot;
 
-import java.util.*;
-import java.util.function.*;
 import vn.huyqt.logbroker.controller.consensus.*;
 import vn.huyqt.logbroker.controller.consensus.QuorumEvent.*;
 import vn.huyqt.logbroker.controller.metadata.*;
+
+import java.util.*;
+import java.util.function.*;
 
 /**
  * Loop-owned trigger; a single immutable bounded image crosses to the disk worker.

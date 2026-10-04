@@ -2,14 +2,16 @@ package vn.huyqt.logbroker.broker;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import org.junit.jupiter.api.Test;
+
+import vn.huyqt.logbroker.protocol.Protocol.TopicPartition;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
-import org.junit.jupiter.api.Test;
-import vn.huyqt.logbroker.protocol.Protocol.TopicPartition;
 
 class PartitionExecutorTest {
     private static final TopicPartition A = new TopicPartition(new UUID(1, 1), 0);

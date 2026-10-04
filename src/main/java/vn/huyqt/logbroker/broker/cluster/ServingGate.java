@@ -1,7 +1,8 @@
 package vn.huyqt.logbroker.broker.cluster;
 
-import java.util.Objects;
 import vn.huyqt.logbroker.controller.metadata.ClusterRecords.Session;
+
+import java.util.Objects;
 
 /** Admission permission from applied lifecycle decisions only; elapsed time never revokes it. */
 public final class ServingGate implements AutoCloseable {

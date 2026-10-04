@@ -1,7 +1,8 @@
 package vn.huyqt.logbroker.controller.metadata;
 
-import java.util.*;
 import vn.huyqt.logbroker.controller.metadata.ClusterRecords.Session;
+
+import java.util.*;
 
 /** Loop-owned, volatile liveness. Duplicate sequences never renew contact or authorize serving. */
 public final class HeartbeatTracker {

@@ -1,9 +1,12 @@
 package vn.huyqt.logbroker.controller.metadata;
 
 import static org.junit.jupiter.api.Assertions.*;
-import java.util.*;
+
 import org.junit.jupiter.api.Test;
+
 import vn.huyqt.logbroker.controller.log.*;
+
+import java.util.*;
 
 class ObserverReadServiceTest {
     @Test

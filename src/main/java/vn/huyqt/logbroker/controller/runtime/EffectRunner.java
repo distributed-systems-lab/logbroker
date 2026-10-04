@@ -1,13 +1,14 @@
 package vn.huyqt.logbroker.controller.runtime;
 
-import java.io.IOException;
-import java.util.List;
-import java.util.function.Consumer;
 import vn.huyqt.logbroker.controller.consensus.*;
 import vn.huyqt.logbroker.controller.consensus.QuorumEvent.*;
 import vn.huyqt.logbroker.controller.metadata.MetadataStateMachine;
 import vn.huyqt.logbroker.controller.persistence.*;
 import vn.huyqt.logbroker.controller.snapshot.SnapshotStore;
+
+import java.io.IOException;
+import java.util.List;
+import java.util.function.Consumer;
 
 /**
  * Executes disk work off-loop, but applies committed metadata on the state-owning loop.

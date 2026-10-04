@@ -1,13 +1,16 @@
 package vn.huyqt.logbroker.broker.cluster;
 
 import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import vn.huyqt.logbroker.controller.persistence.DurableFiles;
+import vn.huyqt.logbroker.controller.support.FaultFiles;
+
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-import vn.huyqt.logbroker.controller.persistence.DurableFiles;
-import vn.huyqt.logbroker.controller.support.FaultFiles;
 
 class BrokerIdentityStoreTest {
     @TempDir Path temporary;
