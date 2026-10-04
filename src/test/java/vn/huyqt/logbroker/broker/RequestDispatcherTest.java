@@ -22,29 +22,42 @@ class RequestDispatcherTest {
     void keepsSuccessfulPartitionWhenAnotherIsUnknown() throws Exception {
         var config = BrokerConfig.defaults(directory);
         try (var clock = new ManualScheduler();
-             var workers = new PartitionExecutor(2, 2, 8);
-             var registry = new PartitionRegistry(config, FilePartitionStore::open);
-             var metadata = LegacyMetadataFixture.open(directory, config, registry)) {
+                var workers = new PartitionExecutor(2, 2, 8);
+                var registry = new PartitionRegistry(config, FilePartitionStore::open);
+                var metadata = LegacyMetadataFixture.open(directory, config, registry)) {
             UUID id = metadata.create("orders", 1).get().topicId();
             var known = new TopicPartition(id, 0);
             var missing = new TopicPartition(new UUID(5, 6), 0);
-            var runtime = new PartitionRuntime(known, registry.require(known),
-                    workers, clock, config);
+            var runtime =
+                    new PartitionRuntime(known, registry.require(known), workers, clock, config);
             var runtimes = Map.of(known, runtime);
-            var fetch = new FetchCoordinator(new FetchPlanner(runtimes, config),
-                    runtimes::get, clock, new ResourceBudget(8));
+            var fetch =
+                    new FetchCoordinator(
+                            new FetchPlanner(runtimes, config),
+                            runtimes::get,
+                            clock,
+                            new ResourceBudget(8));
             var dispatcher = new RequestDispatcher(metadata, runtimes::get, fetch, clock);
             var batch = new Batch(List.of(new LogRecord(0, null, null, List.of())));
             var context = new RequestContext(1, 7, TimeUnit.SECONDS.toNanos(1));
-            var reply = (ProduceReply) dispatcher.handle(context,
-                    new Produce(AckMode.APPENDED, 1000, List.of(
-                            new ProduceEntry(known, batch), new ProduceEntry(missing, batch))))
-                    .get(2, TimeUnit.SECONDS);
+            var reply =
+                    (ProduceReply)
+                            dispatcher
+                                    .handle(
+                                            context,
+                                            new Produce(
+                                                    AckMode.APPENDED,
+                                                    1000,
+                                                    List.of(
+                                                            new ProduceEntry(known, batch),
+                                                            new ProduceEntry(missing, batch))))
+                                    .get(2, TimeUnit.SECONDS);
             assertEquals(ErrorCode.NONE, reply.results().get(0).error().code());
             assertEquals(ErrorCode.UNKNOWN_PARTITION, reply.results().get(1).error().code());
             assertEquals(1, registry.require(known).logEndOffset());
             dispatcher.beginShutdown();
-            fetch.close(); runtime.close();
+            fetch.close();
+            runtime.close();
         }
     }
 }

@@ -20,9 +20,14 @@ class PartitionExecutorTest {
         try (var executor = new PartitionExecutor(2, 2, 2)) {
             var entered = new CountDownLatch(1);
             var release = new CountDownLatch(1);
-            var first = executor.submit(A, () -> {
-                entered.countDown(); release.await(); return 1;
-            });
+            var first =
+                    executor.submit(
+                            A,
+                            () -> {
+                                entered.countDown();
+                                release.await();
+                                return 1;
+                            });
             assertTrue(entered.await(2, TimeUnit.SECONDS));
             var second = executor.submit(A, () -> 3);
             assertFalse(second.isDone());
@@ -39,13 +44,24 @@ class PartitionExecutorTest {
             var entered = new CountDownLatch(1);
             var release = new CountDownLatch(1);
             List<String> order = java.util.Collections.synchronizedList(new ArrayList<>());
-            var first = executor.submit(A, () -> {
-                entered.countDown(); release.await(); order.add("first"); return 1;
-            });
+            var first =
+                    executor.submit(
+                            A,
+                            () -> {
+                                entered.countDown();
+                                release.await();
+                                order.add("first");
+                                return 1;
+                            });
             assertTrue(entered.await(2, TimeUnit.SECONDS));
-            var second = executor.submit(A, () -> { order.add("second"); return 2; });
-            assertThrows(RejectedExecutionException.class,
-                    () -> executor.submit(A, () -> 3));
+            var second =
+                    executor.submit(
+                            A,
+                            () -> {
+                                order.add("second");
+                                return 2;
+                            });
+            assertThrows(RejectedExecutionException.class, () -> executor.submit(A, () -> 3));
             executor.control(A, () -> order.add("flush"));
             release.countDown();
             first.get(2, TimeUnit.SECONDS);
@@ -53,18 +69,36 @@ class PartitionExecutorTest {
             assertEquals(List.of("first", "flush", "second"), order);
         }
     }
-    @Test void reservedCloseBarrierWaitsForRunningAndQueuedTasks() throws Exception {
-        try(var executor=new PartitionExecutor(1,1,1)) {
-            var entered=new CountDownLatch(1); var release=new CountDownLatch(1);
-            List<String> order=java.util.Collections.synchronizedList(new ArrayList<>());
-            executor.submit(A,()-> { entered.countDown(); release.await(); order.add("running"); return null; });
-            assertTrue(entered.await(2,TimeUnit.SECONDS));
-            executor.submit(A,()-> { order.add("queued"); return null; });
-            executor.control(A,()->order.add("flush"));
-            var closed=executor.afterPending(A,()->order.add("close")); assertFalse(closed.isDone());
-            assertThrows(RejectedExecutionException.class,()->executor.afterPending(A,()->{}));
-            release.countDown(); closed.get(2,TimeUnit.SECONDS);
-            assertEquals(List.of("running","flush","queued","close"),order);
+
+    @Test
+    void reservedCloseBarrierWaitsForRunningAndQueuedTasks() throws Exception {
+        try (var executor = new PartitionExecutor(1, 1, 1)) {
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            List<String> order = java.util.Collections.synchronizedList(new ArrayList<>());
+            executor.submit(
+                    A,
+                    () -> {
+                        entered.countDown();
+                        release.await();
+                        order.add("running");
+                        return null;
+                    });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            executor.submit(
+                    A,
+                    () -> {
+                        order.add("queued");
+                        return null;
+                    });
+            executor.control(A, () -> order.add("flush"));
+            var closed = executor.afterPending(A, () -> order.add("close"));
+            assertFalse(closed.isDone());
+            assertThrows(
+                    RejectedExecutionException.class, () -> executor.afterPending(A, () -> {}));
+            release.countDown();
+            closed.get(2, TimeUnit.SECONDS);
+            assertEquals(List.of("running", "flush", "queued", "close"), order);
         }
     }
 }

@@ -11,7 +11,8 @@ import java.nio.file.Path;
 class BrokerLifecycleTest {
     @TempDir Path directory;
 
-    @Test void locksDataRootUntilShutdownAndCanRestart() throws Exception {
+    @Test
+    void locksDataRootUntilShutdownAndCanRestart() throws Exception {
         var config = BrokerConfig.defaults(directory).withPort(0);
         try (var broker = LegacyBrokerFixture.start(config)) {
             assertTrue(broker.address().getPort() > 0);

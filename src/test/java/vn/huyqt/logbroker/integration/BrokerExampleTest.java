@@ -12,7 +12,8 @@ import vn.huyqt.logbroker.example.LegacyClientExample;
 class BrokerExampleTest {
     @TempDir Path directory;
 
-    @Test void exampleCreatesProducesAndFetchesThenCanRepeat() throws Exception {
+    @Test
+    void exampleCreatesProducesAndFetchesThenCanRepeat() throws Exception {
         try (var broker = LegacyBrokerFixture.start(BrokerConfig.defaults(directory).withPort(0))) {
             int port = broker.address().getPort();
             assertEquals(1, LegacyClientExample.run("127.0.0.1", port, "demo"));

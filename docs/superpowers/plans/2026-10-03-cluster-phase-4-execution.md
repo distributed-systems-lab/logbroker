@@ -25,7 +25,34 @@ acceptance is deferred at the user's request on 2026-10-04.
 | 15 Cluster process/fault acceptance | Implemented; recorded ext4 process/campaign evidence passed | `cebe75a`; diagnostics `1c294d4` |
 | 16 Operations/examples/documentation/final verification | Implemented; final fresh ext4 acceptance deferred by user | `1c294d4` plus this documentation commit |
 
-## Verification evidence
+## Phase 4 formatting and comment review, 2026-10-04
+
+User requested formatting and comment best practices after Tasks 15–16 were committed.
+Scope is the 146 Java files changed since Phase 4 baseline 1f7f498, including production
+code and test fixtures; 145 files needed edits. Used the locally cached google-java-format
+1.19.2 with AOSP four-space indentation, preserving import order, unused imports and
+string literals (`--aosp --skip-sorting-imports --skip-removing-unused-imports
+--skip-reflowing-long-strings`). No build formatter dependency was introduced.
+
+Comment additions explain lifecycle generation/recovery UUID, applied unfence authority,
+disconnection semantics, observer force/checkpoint/publication order, inventory INTENT/COMPLETE,
+RF1 missing-log refusal, stale assignment ownership transfer, borrowed resources, monotonic
+deadlines, Produce UNKNOWN, non-atomic diagnostic snapshots, and historical v1 fixtures.
+Updated metadata apply failure documentation to cover all record invariants.
+
+JDK javac scanner comparison against c20b478 confirms identical non-comment Java tokens
+in all 146 selected files. Formatter dry-run reports no remaining changes and diff-check
+is clean. Verification uses the isolated target/phase4-format-verify build with TEMP/TMP
+on D. The first PowerShell wrapper stopped on a Java stderr recovery warning because
+ErrorActionPreference was Stop; test XML had no failures, but no Maven completion was
+claimed. The rerun uses Continue so Maven's actual exit code determines success.
+
+Final verification completed at 10:37:24 Asia/Saigon: Windows, Java 21/Maven 3.9.12,
+`mvn '-DargLine=-Xms32m -Xmx512m' verify`, exit 0, BUILD SUCCESS. Surefire XML totals:
+430 tests in 132 classes, zero failures/errors, 11 platform skips. Full log:
+target/phase4-format-final.log. No WSL tests were run; the deferred ext4 gate is unchanged.
+
+## Previous implementation verification
 
 Ruling: On 2026-10-04 the user requested no further WSL testing for now and asked
 to free test data on C, then continue implementation. Finish implementation and

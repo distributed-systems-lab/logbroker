@@ -8,8 +8,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * One admitted request's identity, deadline and cancellation hooks.
  *
- * <p>Thread-safe. Cancellation is one-way: once {@link #cancel()} runs, every registered hook
- * runs exactly once and later registrations run immediately.
+ * <p>Thread-safe. Cancellation is one-way: once {@link #cancel()} runs, every registered hook runs
+ * exactly once and later registrations run immediately.
  */
 public final class RequestContext {
     private final long connectionId;
@@ -31,7 +31,10 @@ public final class RequestContext {
         this.deadlineNanos = deadlineNanos;
         this.version = version;
     }
-    public short version() { return version; }
+
+    public short version() {
+        return version;
+    }
 
     public long connectionId() {
         return connectionId;
@@ -72,8 +75,7 @@ public final class RequestContext {
 
     /** Marks the request cancelled and runs registered hooks on the calling thread; idempotent. */
     public void cancel() {
-        if (!cancelled.compareAndSet(false, true))
-            return;
+        if (!cancelled.compareAndSet(false, true)) return;
         List<Runnable> actions;
         synchronized (this) {
             actions = List.copyOf(cancellation);

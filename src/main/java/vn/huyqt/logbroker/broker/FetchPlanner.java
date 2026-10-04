@@ -19,10 +19,9 @@ import vn.huyqt.logbroker.protocol.ClusterProtocol;
 /**
  * Assembles independent partition results under one wire-byte budget.
  *
- * <p>Budget rules follow section 7 of
- * {@code docs/superpowers/specs/2026-09-25-broker-phase-2-design.md}. The planner holds no
- * state between calls and never waits for new data; long polling is done by
- * {@link FetchCoordinator}.
+ * <p>Budget rules follow section 7 of {@code
+ * docs/superpowers/specs/2026-09-25-broker-phase-2-design.md}. The planner holds no state between
+ * calls and never waits for new data; long polling is done by {@link FetchCoordinator}.
  */
 public final class FetchPlanner {
     private final Function<TopicPartition, PartitionRuntime> lookup;
@@ -40,73 +39,126 @@ public final class FetchPlanner {
     /**
      * Reads the request's partitions once, in request order, each on its own lane.
      *
-     * <p>Each partition receives what is left of {@code maxBytes} after the earlier ones. Only
-     * the first data batch of the whole response may exceed the remaining budget. A partition
-     * that gets no budget returns an empty successful result, which does not mean its log is
-     * exhausted. Per-partition errors, including {@code UNKNOWN_PARTITION} for a partition the
-     * lookup does not resolve, do not affect other partitions. An invalid request budget yields
-     * a top-level {@code INVALID_REQUEST}.
+     * <p>Each partition receives what is left of {@code maxBytes} after the earlier ones. Only the
+     * first data batch of the whole response may exceed the remaining budget. A partition that gets
+     * no budget returns an empty successful result, which does not mean its log is exhausted.
+     * Per-partition errors, including {@code UNKNOWN_PARTITION} for a partition the lookup does not
+     * resolve, do not affect other partitions. An invalid request budget yields a top-level {@code
+     * INVALID_REQUEST}.
      */
     public CompletableFuture<FetchReply> read(Fetch request) {
-        if (request.entries().isEmpty() || request.entries().size() > config.protocolLimits().maxPartitionEntries()
-                || request.maxBytes() <= 0 || request.maxBytes() > config.maxFetchBytes()
-                || request.minBytes() < 0 || request.minBytes() > request.maxBytes()) {
-            return CompletableFuture.completedFuture(new FetchReply(
-                    new Error(ErrorCode.INVALID_REQUEST, "Invalid Fetch budget"), List.of()));
+        if (request.entries().isEmpty()
+                || request.entries().size() > config.protocolLimits().maxPartitionEntries()
+                || request.maxBytes() <= 0
+                || request.maxBytes() > config.maxFetchBytes()
+                || request.minBytes() < 0
+                || request.minBytes() > request.maxBytes()) {
+            return CompletableFuture.completedFuture(
+                    new FetchReply(
+                            new Error(ErrorCode.INVALID_REQUEST, "Invalid Fetch budget"),
+                            List.of()));
         }
         var state = new State(request.maxBytes());
         // Partitions are read one after another because each read needs the budget left by the
         // previous ones; State is only touched by the chained stages.
         CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
         for (FetchEntry entry : request.entries()) {
-            chain = chain.thenCompose(ignored -> {
-                PartitionRuntime runtime = lookup.apply(entry.partition());
-                if (runtime == null) {
-                    state.results.add(new FetchResult(entry.partition(), new Error(
-                            ErrorCode.UNKNOWN_PARTITION, "Unknown partition"), -1, -1, List.of()));
-                    return CompletableFuture.completedFuture(null);
-                }
-                return runtime.read(entry, state.remaining, !state.anyData)
-                        .thenAccept(result -> {
-                            state.results.add(result);
-                            for (var batch : result.batches()) {
-                                state.remaining = Math.max(0, state.remaining
-                                        - WireBatchCodec.fetchSize(batch.batch()));
-                                state.anyData = true;
-                            }
-                        });
-            });
+            chain =
+                    chain.thenCompose(
+                            ignored -> {
+                                PartitionRuntime runtime = lookup.apply(entry.partition());
+                                if (runtime == null) {
+                                    state.results.add(
+                                            new FetchResult(
+                                                    entry.partition(),
+                                                    new Error(
+                                                            ErrorCode.UNKNOWN_PARTITION,
+                                                            "Unknown partition"),
+                                                    -1,
+                                                    -1,
+                                                    List.of()));
+                                    return CompletableFuture.completedFuture(null);
+                                }
+                                return runtime.read(entry, state.remaining, !state.anyData)
+                                        .thenAccept(
+                                                result -> {
+                                                    state.results.add(result);
+                                                    for (var batch : result.batches()) {
+                                                        state.remaining =
+                                                                Math.max(
+                                                                        0,
+                                                                        state.remaining
+                                                                                - WireBatchCodec
+                                                                                        .fetchSize(
+                                                                                                batch
+                                                                                                        .batch()));
+                                                        state.anyData = true;
+                                                    }
+                                                });
+                            });
         }
         return chain.thenApply(ignored -> new FetchReply(Error.none(), state.results));
     }
 
-    /** V2 budget is shared across entries; only the explicitly delegated first batch may exceed it. */
-    public CompletableFuture<ClusterProtocol.FetchReply> read(ClusterProtocol.Fetch request,
-            Function<ClusterProtocol.Route, ErrorCode> admission) {
-        if (request.maxBytes() > config.maxFetchBytes() || request.entries().size() > config.protocolLimits().maxPartitionEntries())
-            return CompletableFuture.completedFuture(new ClusterProtocol.FetchReply(
-                    new Error(ErrorCode.INVALID_REQUEST, "Fetch exceeds configured bounds"), List.of()));
+    /**
+     * V2 budget is shared across entries; only the explicitly delegated first batch may exceed it.
+     */
+    public CompletableFuture<ClusterProtocol.FetchReply> read(
+            ClusterProtocol.Fetch request, Function<ClusterProtocol.Route, ErrorCode> admission) {
+        if (request.maxBytes() > config.maxFetchBytes()
+                || request.entries().size() > config.protocolLimits().maxPartitionEntries())
+            return CompletableFuture.completedFuture(
+                    new ClusterProtocol.FetchReply(
+                            new Error(ErrorCode.INVALID_REQUEST, "Fetch exceeds configured bounds"),
+                            List.of()));
         var results = new ArrayList<ClusterProtocol.FetchResult>();
-        int[] remaining = {request.maxBytes()}; boolean[] anyData = {false};
+        int[] remaining = {request.maxBytes()};
+        boolean[] anyData = {false};
         CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
-        for (var entry : request.entries()) chain = chain.thenCompose(unused -> {
-            var route = entry.route(); ErrorCode error = admission.apply(route);
-            PartitionRuntime runtime = lookup.apply(route.partition());
-            if (error == ErrorCode.NONE && runtime == null) error = ErrorCode.PARTITION_UNAVAILABLE;
-            if (error != ErrorCode.NONE) {
-                results.add(new ClusterProtocol.FetchResult(route.partition(), new Error(error, "Partition admission refused"),
-                        -1, -1, -1, List.of()));
-                return CompletableFuture.completedFuture(null);
-            }
-            return runtime.read(new FetchEntry(route.partition(), entry.offset(), entry.maxBytes()), remaining[0],
-                    request.allowOversizedFirstBatch() && !anyData[0], () -> admission.apply(route) == ErrorCode.NONE)
-                    .thenAccept(result -> {
-                        results.add(result);
-                        for (var batch : result.batches()) {
-                            remaining[0] = Math.max(0, remaining[0] - WireBatchCodec.fetchSize(batch.batch())); anyData[0] = true;
-                        }
-                    });
-        });
+        for (var entry : request.entries())
+            chain =
+                    chain.thenCompose(
+                            unused -> {
+                                var route = entry.route();
+                                ErrorCode error = admission.apply(route);
+                                PartitionRuntime runtime = lookup.apply(route.partition());
+                                if (error == ErrorCode.NONE && runtime == null)
+                                    error = ErrorCode.PARTITION_UNAVAILABLE;
+                                if (error != ErrorCode.NONE) {
+                                    results.add(
+                                            new ClusterProtocol.FetchResult(
+                                                    route.partition(),
+                                                    new Error(error, "Partition admission refused"),
+                                                    -1,
+                                                    -1,
+                                                    -1,
+                                                    List.of()));
+                                    return CompletableFuture.completedFuture(null);
+                                }
+                                return runtime.read(
+                                                new FetchEntry(
+                                                        route.partition(),
+                                                        entry.offset(),
+                                                        entry.maxBytes()),
+                                                remaining[0],
+                                                request.allowOversizedFirstBatch() && !anyData[0],
+                                                () -> admission.apply(route) == ErrorCode.NONE)
+                                        .thenAccept(
+                                                result -> {
+                                                    results.add(result);
+                                                    for (var batch : result.batches()) {
+                                                        remaining[0] =
+                                                                Math.max(
+                                                                        0,
+                                                                        remaining[0]
+                                                                                - WireBatchCodec
+                                                                                        .fetchSize(
+                                                                                                batch
+                                                                                                        .batch()));
+                                                        anyData[0] = true;
+                                                    }
+                                                });
+                            });
         return chain.thenApply(unused -> new ClusterProtocol.FetchReply(Error.none(), results));
     }
 

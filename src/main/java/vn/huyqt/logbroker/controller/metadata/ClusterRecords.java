@@ -14,7 +14,10 @@ public final class ClusterRecords {
         public Endpoint {
             Objects.requireNonNull(host);
             byte[] utf8 = host.getBytes(StandardCharsets.UTF_8);
-            if (host.isBlank() || utf8.length > 255 || port < 1 || port > 65535
+            if (host.isBlank()
+                    || utf8.length > 255
+                    || port < 1
+                    || port > 65535
                     || !new String(utf8, StandardCharsets.UTF_8).equals(host))
                 throw new IllegalArgumentException("Invalid advertised endpoint");
         }
@@ -25,17 +28,20 @@ public final class ClusterRecords {
         public Session {
             requireId(storageId);
             requireId(incarnationId);
-            if (brokerId < 0 || brokerEpoch < 0) throw new IllegalArgumentException("Invalid session");
+            if (brokerId < 0 || brokerEpoch < 0)
+                throw new IllegalArgumentException("Invalid session");
         }
     }
 
     public record FeatureLevel(short level) {
         public FeatureLevel {
-            if (level != 2) throw new IllegalArgumentException("Unsupported metadata feature level");
+            if (level != 2)
+                throw new IllegalArgumentException("Unsupported metadata feature level");
         }
     }
 
-    public record BrokerRegistration(Session session, Endpoint endpoint, short minVersion, short maxVersion) {
+    public record BrokerRegistration(
+            Session session, Endpoint endpoint, short minVersion, short maxVersion) {
         public BrokerRegistration {
             Objects.requireNonNull(session);
             Objects.requireNonNull(endpoint);
@@ -47,7 +53,8 @@ public final class ClusterRecords {
     /** Fencing is committed metadata; heartbeat timeout alone never changes this record locally. */
     public record BrokerState(int brokerId, long brokerEpoch, boolean fenced) {
         public BrokerState {
-            if (brokerId < 0 || brokerEpoch < 0) throw new IllegalArgumentException("Invalid broker state");
+            if (brokerId < 0 || brokerEpoch < 0)
+                throw new IllegalArgumentException("Invalid broker state");
         }
     }
 
@@ -60,13 +67,22 @@ public final class ClusterRecords {
     }
 
     /** RF=1 assignment; leaderEpoch changes on a leader grant, partitionEpoch on every change. */
-    public record PartitionRecord(UUID topicId, int partitionId, List<Integer> replicas,
-                                  int leaderId, long leaderEpoch, long partitionEpoch) {
+    public record PartitionRecord(
+            UUID topicId,
+            int partitionId,
+            List<Integer> replicas,
+            int leaderId,
+            long leaderEpoch,
+            long partitionEpoch) {
         public PartitionRecord {
             requireId(topicId);
             replicas = List.copyOf(replicas);
-            if (partitionId < 0 || replicas.size() != 1 || replicas.getFirst() < 0
-                    || leaderId != replicas.getFirst() || leaderEpoch < 0 || partitionEpoch < leaderEpoch)
+            if (partitionId < 0
+                    || replicas.size() != 1
+                    || replicas.getFirst() < 0
+                    || leaderId != replicas.getFirst()
+                    || leaderEpoch < 0
+                    || partitionEpoch < leaderEpoch)
                 throw new IllegalArgumentException("Invalid RF=1 partition assignment");
         }
     }

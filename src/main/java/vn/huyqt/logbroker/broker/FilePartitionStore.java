@@ -12,8 +12,8 @@ import vn.huyqt.logbroker.storage.RecordBatch;
 /**
  * Delegates broker data operations to the Phase 1 partition log.
  *
- * <p>Format, recovery and durability semantics are those of {@link PartitionLog}; see
- * {@code docs/storage-format-v1.md}.
+ * <p>Format, recovery and durability semantics are those of {@link PartitionLog}; see {@code
+ * docs/storage-format-v1.md}.
  */
 public final class FilePartitionStore implements PartitionStore {
     private final PartitionLog log;
@@ -33,11 +33,16 @@ public final class FilePartitionStore implements PartitionStore {
     /** Production cluster factory honors createIfMissing and strict directory publication. */
     public static PartitionStore.Factory clusterFactory() {
         return new PartitionStore.Factory() {
-            public PartitionStore open(Path directory,LogConfig config) throws IOException {
+            public PartitionStore open(Path directory, LogConfig config) throws IOException {
                 throw new IOException("Cluster log open requires explicit recovery options");
             }
-            public PartitionStore open(Path directory,LogConfig config,vn.huyqt.logbroker.storage.LogOpenOptions options) throws IOException {
-                return new FilePartitionStore(PartitionLog.open(directory,config,options));
+
+            public PartitionStore open(
+                    Path directory,
+                    LogConfig config,
+                    vn.huyqt.logbroker.storage.LogOpenOptions options)
+                    throws IOException {
+                return new FilePartitionStore(PartitionLog.open(directory, config, options));
             }
         };
     }
