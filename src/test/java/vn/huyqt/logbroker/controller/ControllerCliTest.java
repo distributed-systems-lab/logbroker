@@ -66,6 +66,7 @@ class ControllerCliTest {
     var settings = ControllerMain.settings(file);
     assertEquals(1, settings.config().identity().nodeId());
     assertEquals(3, settings.config().identity().voters().size());
+    assertEquals(2, settings.config().identity().metadataVersion());
     Files.writeString(file, "unknown.option=yes\n", StandardOpenOption.APPEND);
     assertThrows(IllegalArgumentException.class, () -> ControllerMain.settings(file));
   }

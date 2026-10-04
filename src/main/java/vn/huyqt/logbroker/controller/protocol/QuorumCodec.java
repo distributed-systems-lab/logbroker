@@ -502,7 +502,7 @@ public final class QuorumCodec {
           }
           case 111 -> new BrokerControlProtocol.Heartbeat(session(), nonnegative(), nonnegative(), uuid(), bool(), timeout());
           case 112 -> new BrokerControlProtocol.ObserverFetch(session(), nonnegative(), nonnegative(), nonnegative(),
-              positive(config.fetchMaxBytes()), range(0, (int) config.fetchIdleWait().toMillis()));
+              positive(config.fetchMaxBytes()), range(0, 100));
           case 113 -> new BrokerControlProtocol.ObserverSnapshot(session(), nonnegative(), snapshot(), nonnegative(), positive(config.snapshotChunkBytes()));
           default -> throw new IOException("Unknown operation");
         };

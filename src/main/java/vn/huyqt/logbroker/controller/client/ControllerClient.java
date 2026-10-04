@@ -88,8 +88,9 @@ public final class ControllerClient implements AutoCloseable {
     new TopicCreated(new UUID(0, 1), name, partitions);
     return invoke(
         -1,
-        remaining -> new CreateTopic(name, partitions, remaining),
-        reply -> ((CreateTopicReply) reply).topicId());
+        remaining -> identity.metadataVersion() == 2 ? new BrokerControlProtocol.CreateTopic(name, partitions, (short) 1, remaining)
+                : new CreateTopic(name, partitions, remaining),
+        reply -> reply instanceof BrokerControlProtocol.CreateTopicReply created ? created.topicId() : ((CreateTopicReply) reply).topicId());
   }
 
   /**
@@ -101,7 +102,7 @@ public final class ControllerClient implements AutoCloseable {
         -1,
         ReadMetadata::new,
         reply -> {
-          var view = ((MetadataReply) reply).view();
+          var view = metadataView(reply);
           if (view.consistency() != Consistency.LINEARIZABLE)
             throw new IllegalArgumentException("Nonlinearizable reply");
           return view;
@@ -116,7 +117,26 @@ public final class ControllerClient implements AutoCloseable {
   public CompletableFuture<MetadataView> localMetadata(int nodeId) {
     identity.voter(nodeId);
     return invoke(
-        nodeId, ignored -> new ReadLocalMetadata(), reply -> ((MetadataReply) reply).view());
+        nodeId, ignored -> new ReadLocalMetadata(), ControllerClient::metadataView);
+  }
+  private static MetadataView metadataView(Reply reply) {
+    if (reply instanceof MetadataReply metadata) return metadata.view();
+    var metadata = (BrokerControlProtocol.MetadataReply) reply;
+    return new MetadataView(metadata.consistency(), metadata.nodeId(), metadata.meta().epoch(), metadata.meta().leaderId(),
+            metadata.commitOffset(), metadata.image().appliedOffset(), metadata.image().topics());
+  }
+  /** Full schema-v2 linearizable image, including broker sessions and assignments. */
+  public CompletableFuture<BrokerControlProtocol.MetadataReply> clusterMetadata() {
+    return invoke(-1, ReadMetadata::new, reply -> {
+      var metadata = (BrokerControlProtocol.MetadataReply) reply;
+      if (metadata.consistency() != Consistency.LINEARIZABLE) throw new IllegalArgumentException("Nonlinearizable reply");
+      return metadata;
+    });
+  }
+  /** Full schema-v2 image from one node; may be stale. */
+  public CompletableFuture<BrokerControlProtocol.MetadataReply> clusterLocalMetadata(int nodeId) {
+    identity.voter(nodeId);
+    return invoke(nodeId, ignored -> new ReadLocalMetadata(), reply -> (BrokerControlProtocol.MetadataReply) reply);
   }
 
   /**
@@ -127,7 +147,8 @@ public final class ControllerClient implements AutoCloseable {
   public CompletableFuture<QuorumStatus> describe(int nodeId) {
     identity.voter(nodeId);
     return invoke(
-        nodeId, ignored -> new DescribeQuorum(), reply -> ((DescribeQuorumReply) reply).status());
+        nodeId, ignored -> new DescribeQuorum(), reply -> reply instanceof BrokerControlProtocol.DescribeReply described
+                ? described.status() : ((DescribeQuorumReply) reply).status());
   }
 
   private synchronized <T> CompletableFuture<T> invoke(
@@ -197,13 +218,13 @@ public final class ControllerClient implements AutoCloseable {
                               1, Math.min(30_000, (call.deadline - clock.nanoTime()) / 1_000_000));
                   Request request = call.request.apply(remaining);
                   var frame =
-                      new Frame(
+                      new Frame(identity.metadataVersion(), BrokerControlProtocol.SenderRole.ADMIN,
                           QuorumProtocol.operation(request),
                           false,
                           identity.clusterId(),
                           -1,
                           requestId,
-                          identity.voterHash(),
+                          identity.metadataVersion() == 2 ? new byte[32] : identity.voterHash(),
                           request);
                   call.operation = frame.operation();
                   // Marked before the write and never cleared: a failed write or a later
@@ -241,6 +262,8 @@ public final class ControllerClient implements AutoCloseable {
       return;
     }
     if (!frame.response()
+        || frame.version() != identity.metadataVersion()
+        || frame.senderRole() != BrokerControlProtocol.SenderRole.VOTER
         || frame.operation() != call.operation
         || identity.voters().stream().noneMatch(v -> v.id() == frame.senderId())
         || call.pinned >= 0 && frame.senderId() != call.pinned) {

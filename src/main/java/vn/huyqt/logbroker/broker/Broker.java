@@ -34,6 +34,7 @@ public final class Broker implements AutoCloseable {
     public InetSocketAddress address() { return runtime.address(); }
     public boolean canServe() { return runtime.canServe(); }
     public BrokerMetadata clusterMetadata() { return runtime.metadata(); }
+    public vn.huyqt.logbroker.broker.cluster.BrokerStatus status() { return runtime.status(); }
 
     /** Drains observer and partition work before closing storage and releasing the root lock. */
     public CompletableFuture<Void> shutdown(Duration deadline) {

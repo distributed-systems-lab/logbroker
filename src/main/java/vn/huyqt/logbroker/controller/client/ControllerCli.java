@@ -37,10 +37,10 @@ public final class ControllerCli {
           switch (command) {
             case "generate-cluster-id" -> Set.of();
             case "format" -> Set.of("data", "node", "cluster", "voters", "metadata-version");
-            case "create-topic" -> Set.of("cluster", "voters", "bootstrap", "name", "partitions");
-            case "metadata" -> Set.of("cluster", "voters", "bootstrap");
+            case "create-topic" -> Set.of("cluster", "voters", "bootstrap", "name", "partitions", "metadata-version");
+            case "metadata" -> Set.of("cluster", "voters", "bootstrap", "metadata-version");
             case "local-metadata", "describe-quorum" ->
-                Set.of("cluster", "voters", "bootstrap", "node");
+                Set.of("cluster", "voters", "bootstrap", "node", "metadata-version");
             default -> throw new IllegalArgumentException("Unknown command: " + command);
           };
       var options = ControllerOptions.parse(args, 1, keys);
@@ -66,7 +66,7 @@ public final class ControllerCli {
         ControllerOptions.identity(
             ControllerOptions.required(options, "cluster"),
             Integer.parseInt(ControllerOptions.required(options, "node")),
-            ControllerOptions.required(options, "voters"), Short.parseShort(options.getOrDefault("metadata-version", "1")));
+            ControllerOptions.required(options, "voters"), Short.parseShort(options.getOrDefault("metadata-version", "2")));
     Path root = Path.of(ControllerOptions.required(options, "data"));
     QuorumStateStore.format(root, identity, new DurableFiles());
     out.println("FORMATTED node=" + identity.nodeId() + " data=" + root.toAbsolutePath());
@@ -79,7 +79,8 @@ public final class ControllerCli {
         cluster = ControllerOptions.required(options, "cluster");
     // ClusterIdentity needs a member node ID; the client never uses it, so any voter will do.
     int first = Integer.parseInt(voters.substring(0, voters.indexOf('@')));
-    var identity = ControllerOptions.identity(cluster, first, voters);
+    var identity = ControllerOptions.identity(cluster, first, voters,
+            Short.parseShort(options.getOrDefault("metadata-version", "2")));
     var bootstrap = new ArrayList<InetSocketAddress>();
     if (options.containsKey("bootstrap")) {
       for (String token : options.get("bootstrap").split(",")) {
@@ -111,6 +112,20 @@ public final class ControllerCli {
                             Integer.parseInt(ControllerOptions.required(options, "partitions")))
                         .get(31, TimeUnit.SECONDS));
         case "metadata", "local-metadata" -> {
+          if (identity.metadataVersion() == 2) {
+            var metadata = (command.equals("metadata") ? client.clusterMetadata()
+                    : client.clusterLocalMetadata(Integer.parseInt(ControllerOptions.required(options, "node"))))
+                    .get(31, TimeUnit.SECONDS);
+            out.println("consistency=" + metadata.consistency() + " node=" + metadata.nodeId()
+                    + " epoch=" + metadata.meta().epoch() + " leader=" + metadata.meta().leaderId()
+                    + " commit=" + metadata.commitOffset() + " applied=" + metadata.image().appliedOffset());
+            for (var broker : metadata.image().brokers().values())
+              out.println("broker=" + broker.registration().session().brokerId() + " session=" + broker.registration().session()
+                      + " endpoint=" + broker.registration().endpoint() + " fenced=" + broker.fenced() + " stateOffset=" + broker.stateOffset());
+            for (var topic : metadata.image().topics()) out.println("topic=" + topic.name() + " topicId=" + topic.id() + " partitions=" + topic.partitions());
+            for (var partition : metadata.image().partitions().values()) out.println("assignment=" + partition);
+            break;
+          }
           var view =
               (command.equals("metadata")
                       ? client.metadata()

@@ -151,6 +151,12 @@ public final class ClusterPartitionManager {
             || !desired.containsKey(partition) || failures.containsKey(partition) ? Optional.empty() : Optional.of(runtime.runtime());
     }
     public synchronized Map<TopicPartition,String> failures() { return Map.copyOf(failures); }
+    public synchronized Map<String,Integer> stateCounts() {
+        int ready = 0;
+        for (var partition : desired.keySet()) if (runtime(partition).isPresent()) ready++;
+        return Map.of("desired", desired.size(), "ready", ready, "failed", failures.size(),
+                "pending", Math.max(0, desired.size() - ready - failures.size()));
+    }
     private void closeOwned(TopicPartition partition,Owned entry) throws Exception {
         // This ordered worker may wait; neither metadata nor Netty threads ever do.
         entry.runtime().closeAsync().get(); entry.store().flush(); entry.store().close();

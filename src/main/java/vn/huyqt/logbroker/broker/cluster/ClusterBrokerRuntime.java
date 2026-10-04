@@ -65,7 +65,10 @@ public final class ClusterBrokerRuntime {
                         var broker=owner.get(); if(broker!=null) broker.shutdown(config.shutdownTimeout());
                     }
                 });
-            },error-> { var broker=owner.get(); if(broker!=null) broker.shutdown(config.shutdownTimeout()); });
+            },error-> {
+                System.getLogger(ClusterBrokerRuntime.class.getName()).log(System.Logger.Level.ERROR, "Observer failed", error);
+                var broker=owner.get(); if(broker!=null) broker.shutdown(config.shutdownTimeout());
+            });
             var lifecycle=new BrokerLifecycle(identity.identity(),control,observer,clock,gate);
             var metadata=new ClusterMetadataService(control,observer::image,clock);
             java.util.function.Function<vn.huyqt.logbroker.protocol.Protocol.TopicPartition,PartitionRuntime> resolve=tp->partitions.runtime(tp).orElse(null);
@@ -78,7 +81,10 @@ public final class ClusterBrokerRuntime {
             final DeadlineScheduler activeClock = clock;
             lifecycle.start().whenComplete((unused, error) -> {
                 if (error != null && !(error instanceof CancellationException))
-                    activeClock.schedule(activeClock.nanoTime(), () -> runtime.shutdown(config.shutdownTimeout()));
+                    activeClock.schedule(activeClock.nanoTime(), () -> {
+                        System.getLogger(ClusterBrokerRuntime.class.getName()).log(System.Logger.Level.ERROR, "Broker recovery failed", error);
+                        runtime.shutdown(config.shutdownTimeout());
+                    });
             });
             return runtime;
         } catch(Throwable error) {
@@ -98,6 +104,13 @@ public final class ClusterBrokerRuntime {
     public InetSocketAddress address() { return address; }
     public boolean canServe() { return gate.canServe(); }
     public BrokerMetadata metadata() { return metadata; }
+    public BrokerStatus status() {
+        var budgets = new java.util.HashMap<>(transport.budgetUsage());
+        budgets.put("observerDiskTasks", (long) disk.getQueue().size());
+        return new BrokerStatus(identity.identity(), lifecycle.session(), lifecycle.state(), control.controllerHint(),
+                lifecycle.heartbeatAgeMillis(), observer.image().appliedOffset(), observerStore.durableEnd(),
+                observerStore.snapshotEnd(), observerStore.generation(), partitions.stateCounts(), budgets, partitions.failures());
+    }
     /** Any incomplete storage drain keeps the root lock and its files owned. */
     public synchronized CompletableFuture<Void> shutdown(Duration timeout) {
         if(stopping!=null) return stopping;

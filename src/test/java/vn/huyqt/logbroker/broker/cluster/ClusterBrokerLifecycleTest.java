@@ -20,6 +20,12 @@ class ClusterBrokerLifecycleTest {
         var factory=new ScriptedControlTransport.Factory();
         try(var broker=Broker.start(BrokerConfig.defaults(root).withPort(0),cluster,files,factory)) {
             assertTrue(broker.address().getPort()>0); assertFalse(broker.canServe());
+            var status = broker.status();
+            assertEquals(cluster.brokerId(), status.identity().brokerId());
+            assertNotNull(status.observerGeneration());
+            assertEquals(0, status.appliedOffset());
+            assertEquals(-1, status.heartbeatAgeMillis());
+            assertEquals(0L, status.budgetUsage().get("requestContexts"));
             assertThrows(java.io.IOException.class,()->BrokerIdentityStore.open(root,cluster.clusterId(),cluster.brokerId(),files));
             assertFalse(Files.exists(root.resolve("metadata")));
             broker.shutdown(java.time.Duration.ofSeconds(5)).get(6,TimeUnit.SECONDS);

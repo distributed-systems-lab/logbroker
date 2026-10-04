@@ -142,6 +142,10 @@ public final class NettyServerTransport implements ServerTransport {
         if (listener != null)
             listener.close();
     }
+    public java.util.Map<String,Long> budgetUsage() {
+        return java.util.Map.of("connections", connectionBudget.used(), "requestBytes", inputBudget.used(),
+                "outboundBytes", outboundBudget.used(), "requestContexts", contextBudget.used());
+    }
 
     /**
      * {@inheritDoc}

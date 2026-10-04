@@ -14,6 +14,18 @@ import vn.huyqt.logbroker.controller.support.ControllerTestSupport;
 import vn.huyqt.logbroker.support.ManualScheduler;
 
 class ControllerClientTest {
+  @Test void schemaTwoAdminRequestsCarryRoleAndExposeFullClusterMetadata() throws Exception {
+    var identity = new ClusterIdentity(ID.clusterId(), 0, ID.voters(), (short) 2);
+    var clock = new ManualScheduler(); var factory = new FakeClientTransport.Factory();
+    try (var client = new ControllerClient(identity, BOOT, clock, factory)) {
+      var future = client.clusterMetadata();
+      assertEquals(2, factory.last().sent.version());
+      assertEquals(BrokerControlProtocol.SenderRole.ADMIN, factory.last().sent.senderRole());
+      var image = new vn.huyqt.logbroker.controller.metadata.MetadataImage(1, List.of(), (short) 2, Map.of(), Map.of());
+      factory.last().reply(new BrokerControlProtocol.MetadataReply(FakeClientTransport.ok(), Consistency.LINEARIZABLE, 0, 1, image));
+      assertEquals(image, future.get(2, TimeUnit.SECONDS).image());
+    }
+  }
   @Test
   void boundsActiveRequestsAndCancellationReleasesCorrelation() throws Exception {
     var clock = new ManualScheduler();
@@ -124,7 +136,8 @@ final class FakeClientTransport implements ControllerClientTransport {
 
   void reply(Reply reply, long requestId, UUID cluster) {
     receive.accept(
-        new Frame(sent.operation(), true, cluster, 0, requestId, sent.voterHash(), reply));
+        new Frame(sent.version(), BrokerControlProtocol.SenderRole.VOTER, sent.operation(), true, cluster, 0,
+                requestId, sent.version() == 2 ? ControllerTestSupport.identity(0).voterHash() : sent.voterHash(), reply));
   }
 
   void acceptThenLoseResponse() {

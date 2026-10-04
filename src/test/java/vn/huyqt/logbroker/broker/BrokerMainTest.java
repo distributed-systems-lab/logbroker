@@ -10,6 +10,20 @@ import org.junit.jupiter.api.io.TempDir;
 class BrokerMainTest {
     @TempDir Path directory;
 
+    @Test void statusLineReportsStateAndBudgetsWithoutRecordPayloads() {
+        var identity = new vn.huyqt.logbroker.broker.cluster.BrokerIdentityStore.Identity(
+                java.util.UUID.randomUUID(), 7, java.util.UUID.randomUUID());
+        var status = new vn.huyqt.logbroker.broker.cluster.BrokerStatus(identity, null,
+                vn.huyqt.logbroker.broker.cluster.BrokerLifecycle.State.RECOVERING, 1, 42,
+                11, 12, 8, java.util.UUID.randomUUID(), java.util.Map.of("ready", 2),
+                java.util.Map.of("requestBytes", 4096L), java.util.Map.of());
+        String line = BrokerMain.statusLine(status);
+        assertTrue(line.contains("state=RECOVERING"));
+        assertTrue(line.contains("appliedOffset=11"));
+        assertTrue(line.contains("durableOffset=12"));
+        assertTrue(line.contains("requestBytes=4096"));
+    }
+
     @Test void explicitClusterFormatPublishesManifestAndRequiresClusterConfig() throws Exception {
         var properties=directory.resolve("cluster.properties");
         Files.writeString(properties,"cluster.id=00000000-0000-0000-0000-000000000001\nbroker.id=7\nadvertised.host=localhost\nadvertised.port=9092\ncontroller.bootstrap.servers=localhost:19090\n");

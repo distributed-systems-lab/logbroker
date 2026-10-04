@@ -105,12 +105,20 @@ class NettyServerTransportTest {
                         Thread.sleep(5);
                     assertEquals(retained, inputBudget.used(),
                             "Long poll retains its decoded request after later validation completes");
+                    assertEquals(retained, server.budgetUsage().get("requestBytes"));
+                    try (var saturation = inputBudget.reserve(config.maxQueuedRequestBytes() - retained).orElseThrow()) {
+                        assertTrue(inputBudget.reserve(1).isEmpty());
+                        assertEquals(config.maxQueuedRequestBytes(), server.budgetUsage().get("requestBytes"));
+                        assertEquals(1L, server.budgetUsage().get("requestContexts"));
+                    }
+                    assertEquals(retained, server.budgetUsage().get("requestBytes"));
                 }
             } finally {
                 server.closeAsync().get();
                 fetch.close(); runtime.close();
                 assertEquals(0, inputBudget.used());
                 assertEquals(0, waiterBudget.used());
+                assertEquals(0L, server.budgetUsage().get("requestContexts"));
             }
         }
     }

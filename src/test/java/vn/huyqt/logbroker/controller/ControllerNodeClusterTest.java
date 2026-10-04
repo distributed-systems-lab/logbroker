@@ -113,6 +113,7 @@ class ControllerNodeClusterTest {
           vn.huyqt.logbroker.controller.client.ControllerCli.run(
               new String[] {
                 "create-topic",
+                "--metadata-version", "1",
                 "--cluster",
                 new UUID(0, 123).toString(),
                 "--voters",
@@ -134,6 +135,7 @@ class ControllerNodeClusterTest {
           vn.huyqt.logbroker.controller.client.ControllerCli.run(
               new String[] {
                 "local-metadata",
+                "--metadata-version", "1",
                 "--cluster",
                 new UUID(0, 123).toString(),
                 "--voters",

@@ -169,6 +169,7 @@ public final class BrokerControlClient implements AutoCloseable {
     }
     public synchronized byte[] voterHash() { if(hash==null) throw new IllegalStateException("Membership undiscovered"); return hash.clone(); }
     public synchronized long controllerEpoch() { return epoch; }
+    public synchronized int controllerHint() { return leader; }
     BrokerClusterConfig settings() { return config; }
     @Override public synchronized void close() {
         if(closed) return; closed=true; clearConnection();

@@ -7,7 +7,7 @@ import java.time.Duration;
 import java.util.HashSet;
 import java.util.Properties;
 import java.util.Set;
-import java.util.concurrent.CountDownLatch;
+import vn.huyqt.logbroker.broker.cluster.BrokerStatus;
 import vn.huyqt.logbroker.protocol.ProtocolLimits;
 import vn.huyqt.logbroker.storage.LogConfig;
 import vn.huyqt.logbroker.broker.cluster.BrokerClusterConfig;
@@ -45,7 +45,36 @@ public final class BrokerMain {
         }, "broker-shutdown-hook"));
         System.out.println("READY " + broker.address().getPort());
         System.out.flush();
-        new CountDownLatch(1).await();
+        var previous = broker.status().lifecycle();
+        long nextReport = 0;
+        try {
+            while (true) {
+                var status = broker.status();
+                long now = System.nanoTime();
+                if (status.lifecycle() != previous || now >= nextReport) {
+                    System.out.println(statusLine(status));
+                    System.out.flush();
+                    previous = status.lifecycle();
+                    nextReport = now + Duration.ofSeconds(5).toNanos();
+                }
+                if (status.lifecycle() == vn.huyqt.logbroker.broker.cluster.BrokerLifecycle.State.FAILED
+                        || status.lifecycle() == vn.huyqt.logbroker.broker.cluster.BrokerLifecycle.State.STOPPING)
+                    throw new IllegalStateException("Broker failed; see preceding diagnostic");
+                Thread.sleep(100);
+            }
+        } finally {
+            broker.close();
+        }
+    }
+
+    static String statusLine(BrokerStatus status) {
+        return "STATUS broker=" + status.identity().brokerId() + " storageId=" + status.identity().storageId()
+                + " session=" + status.session() + " state=" + status.lifecycle()
+                + " controllerHint=" + status.controllerHint() + " heartbeatAgeMillis=" + status.heartbeatAgeMillis()
+                + " appliedOffset=" + status.appliedOffset() + " durableOffset=" + status.durableOffset()
+                + " snapshotEnd=" + status.snapshotEnd() + " generation=" + status.observerGeneration()
+                + " partitions=" + status.partitionCounts() + " budgets=" + status.budgetUsage()
+                + " failedPartitions=" + status.partitionFailures().keySet();
     }
 
     static BrokerClusterConfig clusterConfig(String[] args) throws IOException {

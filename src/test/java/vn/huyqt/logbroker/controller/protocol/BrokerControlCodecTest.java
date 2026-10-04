@@ -10,6 +10,18 @@ import vn.huyqt.logbroker.controller.protocol.QuorumProtocol.*;
 import vn.huyqt.logbroker.controller.support.ControllerTestSupport;
 
 class BrokerControlCodecTest {
+    @Test void observerWaitBoundIsIndependentOfVoterFetchIdleWait() throws Exception {
+        var smallVoterWait = ControllerConfig.builder(ControllerTestSupport.identity(0))
+                .fetchIdleWait(java.time.Duration.ofMillis(20)).build();
+        var request = new BrokerControlProtocol.ObserverFetch(session, 3, 9, 2, 4096, 100);
+        var frame = new Frame((short) 2, BrokerControlProtocol.SenderRole.BROKER, (short) 112,
+                false, config.identity().clusterId(), 7, 12, new byte[32], request);
+        assertEquals(request, QuorumCodec.decode(QuorumCodec.encode(frame), smallVoterWait).message());
+        var excessive = new Frame((short) 2, BrokerControlProtocol.SenderRole.BROKER, (short) 112,
+                false, config.identity().clusterId(), 7, 13, new byte[32],
+                new BrokerControlProtocol.ObserverFetch(session, 3, 9, 2, 4096, 101));
+        assertThrows(IOException.class, () -> QuorumCodec.decode(QuorumCodec.encode(excessive), smallVoterWait));
+    }
     private final ControllerConfig config = ControllerConfig.defaults(ControllerTestSupport.identity(0));
     private final ClusterRecords.Session session = new ClusterRecords.Session(7, new UUID(0, 1), new UUID(0, 2), 9);
 

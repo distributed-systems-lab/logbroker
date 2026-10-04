@@ -98,7 +98,7 @@ public final class ControllerMain {
     String cluster = remove(values, "cluster.id"), voters = remove(values, "voters");
     int node = Integer.parseInt(remove(values, "node.id"));
     Path data = Path.of(remove(values, "data.dir"));
-    short metadataVersion = Short.parseShort(values.getOrDefault("metadata.version", "1"));
+    short metadataVersion = Short.parseShort(values.getOrDefault("metadata.version", "2"));
     values.remove("metadata.version");
     var builder = ControllerConfig.builder(ControllerOptions.identity(cluster, node, voters, metadataVersion));
     if (values.containsKey("broker.session.timeout.ms"))

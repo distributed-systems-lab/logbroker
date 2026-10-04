@@ -28,6 +28,7 @@ public final class BrokerLifecycle {
     private long generation, expectedEpoch, registrationOffset, target, recoveryBase, grantOffset=-1, sequence, controllerEpoch;
     private UUID recoveryId;
     private boolean startedOnce,targetCaptured;
+    private long lastHeartbeat = -1;
     private MetadataImage applied;
     private CompletableFuture<Reply> flight;
     private DeadlineScheduler.Ticket timer;
@@ -83,6 +84,7 @@ public final class BrokerLifecycle {
             if(!(reply instanceof HeartbeatReply heartbeat) || heartbeat.meta().epoch()<controllerEpoch
                 || heartbeat.meta().epoch()<control.controllerEpoch()) { schedule(this::heartbeat); return; }
             controllerEpoch=heartbeat.meta().epoch();
+            lastHeartbeat=clock.nanoTime();
             if(!sentRecovery.equals(new UUID(0,0)) && !sentRecovery.equals(recoveryId)) { schedule(this::heartbeat); return; }
             if(heartbeat.brokerEpoch()!=session.brokerEpoch() && heartbeat.status()!=SessionStatus.STALE_SESSION
                 && heartbeat.status()!=SessionStatus.REGISTRATION_REQUIRED) { failed(new IOException("Heartbeat epoch mismatch")); return; }
@@ -161,6 +163,9 @@ public final class BrokerLifecycle {
         started.completeExceptionally(new CancellationException("Broker stopping")); stopped=observer.stop(); return stopped;
     }
     public synchronized State state() { return state; }
+    public synchronized long heartbeatAgeMillis() {
+        return lastHeartbeat < 0 ? -1 : Math.max(0, clock.nanoTime() - lastHeartbeat) / 1_000_000;
+    }
     public synchronized Session session() { return session; }
     public synchronized long recoveryTarget() { return target; }
 }

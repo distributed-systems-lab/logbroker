@@ -24,7 +24,7 @@ public final class ObserverStore implements AutoCloseable {
     private final StateJournal journal;
     private final MetadataStateMachine metadata;
     private volatile UUID generation;
-    private long committed,start;
+    private volatile long committed,start;
     private volatile long prefixEpoch;
     private SnapshotId base;
     private QuorumLog log;
@@ -167,6 +167,7 @@ public final class ObserverStore implements AutoCloseable {
     public MetadataImage image() { return metadata.image(); }
     public UUID generation() { return generation; }
     public long durableEnd() { return committed; }
+    public long snapshotEnd() { return start; }
     /** Cached at durable publication, so the observer loop never reads a disk-owned epoch index. */
     public long prefixEpoch() { return prefixEpoch; }
     public SnapshotStore snapshots() throws IOException { healthy(); if (membership==null) throw new IOException("Membership discovery required"); return snapshots; }
